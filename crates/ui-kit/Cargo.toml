@@ -1,0 +1,12 @@
+[package]
+name = "stringari-ui"
+description = "Stringari Design System para egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+egui = { workspace = true }

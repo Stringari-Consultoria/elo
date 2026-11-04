@@ -1,0 +1,25 @@
+[package]
+name = "elo-server"
+description = "Servidor do Elo: IDs, convites e relay das sessões (o conteúdo é cifrado ponta a ponta)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+elo-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { workspace = true }
+rustls-pemfile = "2"
+rcgen = "0.13"
+
+[dev-dependencies]
+elo-core = { workspace = true }

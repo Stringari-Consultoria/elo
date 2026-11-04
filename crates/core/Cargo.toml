@@ -1,0 +1,29 @@
+[package]
+name = "elo-core"
+description = "Núcleo do Elo: conexão com o servidor, sessões de anfitrião e visualizador, captura e controle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+elo-proto = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = "1"
+arboard = { version = "3", default-features = false }
+image = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xtest", "randr"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+xcap = "0.7"
+enigo = "0.5"
+
+[dev-dependencies]

@@ -1,0 +1,22 @@
+[package]
+name = "elo-proto"
+description = "Protocolo do Elo: mensagens, criptografia ponta a ponta e codificação de tela"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+postcard = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+hkdf = { workspace = true }
+spake2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+image = { workspace = true }
+jpeg-encoder = { workspace = true }
+thiserror = { workspace = true }

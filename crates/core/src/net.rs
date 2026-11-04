@@ -1,0 +1,184 @@
+//! Conexão com o servidor (TCP, com TLS por padrão) e leitura de quadros sem
+//! bloquear (para alternar envio e recebimento na mesma thread).
+
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
+use std::sync::Arc;
+use std::time::Duration;
+
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use sha2::{Digest, Sha256};
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServerCfg {
+    /// "host:porta"
+    pub address: String,
+    pub tls: bool,
+    /// Impressão digital SHA-256 (hex) de certificado autoassinado; vazio = cadeia pública.
+    pub pin: String,
+}
+
+impl Default for ServerCfg {
+    fn default() -> Self {
+        Self { address: format!("elo.stringari.com.br:{}", elo_proto::DEFAULT_PORT), tls: true, pin: String::new() }
+    }
+}
+
+pub enum Conn {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+impl Conn {
+    pub fn tcp(&self) -> &TcpStream {
+        match self {
+            Conn::Plain(s) => s,
+            Conn::Tls(t) => t.get_ref(),
+        }
+    }
+
+    pub fn set_read_timeout(&self, d: Option<Duration>) {
+        let _ = self.tcp().set_read_timeout(d);
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Conn::Plain(s) => s.read(buf),
+            Conn::Tls(t) => t.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Conn::Plain(s) => s.write(buf),
+            Conn::Tls(t) => t.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Conn::Plain(s) => s.flush(),
+            Conn::Tls(t) => t.flush(),
+        }
+    }
+}
+
+/// Aceita o certificado cuja impressão digital confere (servidores próprios autoassinados).
+#[derive(Debug)]
+struct Pinned(Vec<u8>, Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(&self, end: &CertificateDer<'_>, _: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if Sha256::digest(end.as_ref()).as_slice() == self.0.as_slice() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("certificado do servidor não confere com a impressão digital configurada".into()))
+        }
+    }
+    fn verify_tls12_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(m, c, d, &self.1.signature_verification_algorithms)
+    }
+    fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(m, c, d, &self.1.signature_verification_algorithms)
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.1.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn hex(s: &str) -> Option<Vec<u8>> {
+    let s: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    (s.len() == 64).then(|| (0..32).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap_or(0)).collect())
+}
+
+pub fn connect(cfg: &ServerCfg) -> Result<Conn, String> {
+    let addr = if cfg.address.contains(':') { cfg.address.clone() } else { format!("{}:{}", cfg.address, elo_proto::DEFAULT_PORT) };
+    let tcp = {
+        use std::net::ToSocketAddrs;
+        let addrs: Vec<_> = addr.to_socket_addrs().map_err(|e| format!("servidor {addr}: {e}"))?.collect();
+        let mut last = String::from("sem endereço");
+        let mut ok = None;
+        for a in addrs {
+            match TcpStream::connect_timeout(&a, Duration::from_secs(8)) {
+                Ok(s) => {
+                    ok = Some(s);
+                    break;
+                }
+                Err(e) => last = e.to_string(),
+            }
+        }
+        ok.ok_or_else(|| format!("não foi possível conectar a {addr}: {last}"))?
+    };
+    let _ = tcp.set_nodelay(true);
+    if !cfg.tls {
+        return Ok(Conn::Plain(tcp));
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
+    let config = match hex(&cfg.pin) {
+        Some(fp) => builder.dangerous().with_custom_certificate_verifier(Arc::new(Pinned(fp, provider))).with_no_client_auth(),
+        None => {
+            let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+            builder.with_root_certificates(roots).with_no_client_auth()
+        }
+    };
+    let host = addr.rsplit_once(':').map(|x| x.0).unwrap_or(&addr).trim_matches(['[', ']']).to_string();
+    let name = ServerName::try_from(host.clone()).unwrap_or_else(|_| ServerName::try_from("elo".to_string()).expect("nome"));
+    let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
+    let mut s = rustls::StreamOwned::new(conn, tcp);
+    // Força o aperto de mão TLS agora (erros de certificado aparecem aqui).
+    s.flush().map_err(|e| format!("TLS com {addr}: {e}"))?;
+    while s.conn.is_handshaking() {
+        s.conn.complete_io(&mut s.sock).map_err(|e| format!("TLS com {addr}: {e}"))?;
+    }
+    Ok(Conn::Tls(Box::new(s)))
+}
+
+/// Leitor de quadros que tolera timeouts no meio de um quadro.
+pub struct Framer {
+    buf: Vec<u8>,
+}
+
+impl Default for Framer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Framer {
+    pub fn new() -> Self {
+        Self { buf: Vec::with_capacity(1 << 16) }
+    }
+
+    /// Próximo quadro completo, `Ok(None)` se ainda não chegou.
+    pub fn poll(&mut self, r: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
+        loop {
+            if let Some(f) = self.take() {
+                return Ok(Some(f));
+            }
+            let mut tmp = [0u8; 64 * 1024];
+            match r.read(&mut tmp) {
+                Ok(0) => return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "conexão encerrada")),
+                Ok(n) => self.buf.extend_from_slice(&tmp[..n]),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => return Ok(self.take()),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn take(&mut self) -> Option<Vec<u8>> {
+        if self.buf.len() < 4 {
+            return None;
+        }
+        let n = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        if self.buf.len() < 4 + n {
+            return None;
+        }
+        let f = self.buf[4..4 + n].to_vec();
+        self.buf.drain(..4 + n);
+        Some(f)
+    }
+}
