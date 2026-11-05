@@ -195,10 +195,18 @@ impl Opener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixStream;
+    use std::net::{TcpListener, TcpStream};
+
+    /// Par de sockets conectados (TCP local: funciona em todos os sistemas).
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (b, _) = l.accept().unwrap();
+        (a, b)
+    }
 
     fn pair(host_pw: Vec<String>, viewer_pw: &str) -> (Result<Keys>, Result<Keys>) {
-        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let (mut a, mut b) = socket_pair();
         let h = std::thread::spawn(move || host_handshake(&mut b, &host_pw));
         let v = viewer_handshake(&mut a, viewer_pw);
         (v, h.join().unwrap())
