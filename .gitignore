@@ -1,1 +1,4 @@
 /target
+/dist
+/.dev-config
+/dados-servidor

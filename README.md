@@ -53,7 +53,36 @@ e informe na política de privacidade do serviço.
 JPEG. Quando a tela para, os blocos são refinados em qualidade alta. Há controle
 de fluxo (até 2 quadros sem confirmação), então a sessão se adapta a links lentos.
 
-## Rodando
+## Comandos (Makefile)
+
+`make` lista tudo. Os principais:
+
+| Comando | O que faz |
+|---|---|
+| `make build` | Compila em release; executáveis em `dist/elo` e `dist/elo-server` |
+| `make install` | Compila e instala em `~/.local/bin`, com atalho **Elo** no menu |
+| `make uninstall` | Remove a instalação (mantém as configurações) |
+| `make run` | Abre o app (release) |
+| `make run-dev` | Abre em debug com configuração separada (`.dev-config/`) |
+| `make server` | Servidor avulso local sem TLS (`PORTA=` e `DADOS=` opcionais) |
+| `make ci` | Clippy e testes, como no CI |
+
+## Instalando (Linux)
+
+```sh
+make install     # ou: scripts/instalar-linux.sh
+make uninstall   # ou: scripts/instalar-linux.sh --remover
+```
+
+Instala `elo` e `elo-server` em `~/.local/bin` e cria o atalho **Elo** no menu
+de aplicativos. Para atualizar depois de mudar o código, rode o script de novo.
+O executável é um arquivo só (as fontes vão embutidas); dá para copiar
+`~/.local/bin/elo` para outro Linux x86_64 com glibc igual ou mais nova.
+
+> Compile fora de sandboxes (ex.: VS Code em flatpak): o executável herda a
+> glibc do ambiente em que foi compilado e pode não abrir no sistema.
+
+## Rodando (desenvolvimento)
 
 ```sh
 cargo run -p elo --release
