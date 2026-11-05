@@ -224,39 +224,47 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
 /// Pareamento: o primeiro a chegar espera; o segundo entrega seu stream e o
 /// primeiro faz o relay entre os dois.
 async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16], host: bool) {
-    let first = {
+    enum Step {
+        Expired,
+        /// Já há alguém do mesmo lado esperando (pedido repetido).
+        Duplicate,
+        /// Segundo a chegar: entrega o stream a quem espera.
+        Second(oneshot::Sender<BoxStream>),
+        /// Primeiro a chegar: espera o outro e faz o relay.
+        First(oneshot::Receiver<BoxStream>, (String, String)),
+    }
+    // Verificar e registrar a espera na mesma trava: se os dois lados chegam
+    // juntos, um deles é sempre o segundo (antes, os dois podiam se achar o
+    // primeiro, e um sobrescrevia a espera do outro).
+    let step = {
         let mut p = state.pending.lock().await;
-        let Some(pd) = p.get_mut(&session) else {
-            let _ = write_msg(&mut s, &FromServer::Error { code: ErrorCode::Expired, message: "sessão expirada".into() }).await;
-            return;
-        };
-        if pd.secret != secret || pd.created.elapsed() > Duration::from_secs(120) {
-            let _ = write_msg(&mut s, &FromServer::Error { code: ErrorCode::Expired, message: "sessão expirada".into() }).await;
-            return;
-        }
-        match pd.waiting.take() {
-            Some((was_host, tx)) if was_host != host => {
-                let ids = (pd.host_id.clone(), pd.viewer_id.clone());
-                p.remove(&session);
-                Some((tx, ids))
-            }
-            _ => None,
+        match p.get_mut(&session) {
+            Some(pd) if pd.secret == secret && pd.created.elapsed() <= Duration::from_secs(120) => match pd.waiting.take() {
+                Some((was_host, tx)) if was_host != host => {
+                    p.remove(&session);
+                    Step::Second(tx)
+                }
+                Some(w) => {
+                    pd.waiting = Some(w);
+                    Step::Duplicate
+                }
+                None => {
+                    let (tx, rx) = oneshot::channel();
+                    pd.waiting = Some((host, tx));
+                    Step::First(rx, (pd.host_id.clone(), pd.viewer_id.clone()))
+                }
+            },
+            _ => Step::Expired,
         }
     };
-    match first {
-        // Segundo a chegar: entrega o próprio stream a quem espera (que faz o relay).
-        Some((tx, _)) => {
+    match step {
+        Step::Expired | Step::Duplicate => {
+            let _ = write_msg(&mut s, &FromServer::Error { code: ErrorCode::Expired, message: "sessão expirada".into() }).await;
+        }
+        Step::Second(tx) => {
             let _ = tx.send(s);
         }
-        // Primeiro a chegar: espera o outro e faz o relay.
-        None => {
-            let (tx, rx) = oneshot::channel();
-            let ids = {
-                let mut p = state.pending.lock().await;
-                let Some(pd) = p.get_mut(&session) else { return };
-                pd.waiting = Some((host, tx));
-                (pd.host_id.clone(), pd.viewer_id.clone())
-            };
+        Step::First(rx, ids) => {
             let Ok(Ok(mut other)) = tokio::time::timeout(Duration::from_secs(120), rx).await else {
                 let _ = write_msg(&mut s, &FromServer::Error { code: ErrorCode::Expired, message: "o outro lado não entrou".into() }).await;
                 state.pending.lock().await.remove(&session);

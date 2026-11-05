@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Elo</string>
+    <key>CFBundleDisplayName</key>
+    <string>Elo</string>
+    <key>CFBundleIdentifier</key>
+    <string>br.com.stringari.elo</string>
+    <key>CFBundleExecutable</key>
+    <string>elo</string>
+    <key>CFBundleIconFile</key>
+    <string>Elo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSAO@</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSAO@</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>pt-BR</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>O Elo conecta a servidores e computadores na sua rede local para o acesso remoto.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Gabriel Stringari. MIT ou Apache-2.0.</string>
+</dict>
+</plist>

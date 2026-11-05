@@ -15,7 +15,7 @@ PORTA ?= 21116
 DADOS ?= dados-servidor
 
 .DEFAULT_GOAL := help
-.PHONY: help build run run-dev server server-tls install uninstall test lint ci clean
+.PHONY: help build run run-dev server server-tls install uninstall pacote-linux pacote-macos test lint ci clean
 
 help: ## Lista os comandos
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  make %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -43,6 +43,12 @@ install: ## Compila e instala em ~/.local/bin com atalho no menu de aplicativos
 
 uninstall: ## Remove a instalação (mantém as configurações)
 	$(HOST) scripts/instalar-linux.sh --remover
+
+pacote-linux: ## Instaladores Linux em dist/: .deb e .tar.gz
+	$(HOST) env CARGO_TARGET_DIR=$(HOSTDIR) scripts/pacote-linux.sh
+
+pacote-macos: ## Instalador macOS em dist/: .dmg com Elo.app (só no macOS)
+	scripts/pacote-macos.sh
 
 test: ## Roda os testes (os de sessão usam o X11 de DISPLAY)
 	$(CARGO) test --workspace

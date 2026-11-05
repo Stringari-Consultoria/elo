@@ -1,114 +1,101 @@
-# Elo by Stringari
+<p align="center">
+  <img src="packaging/icons/elo-256.png" width="96" height="96" alt="Ícone do Elo">
+</p>
 
-Suporte e acesso remoto: um computador vê e controla a tela de outro, com chat,
-área de transferência e envio de arquivos. É a mesma proposta do TeamViewer e do
-AnyDesk, escrita em Rust (egui) com o design system Stringari.
+<h1 align="center">Elo</h1>
 
-## Como funciona
+<p align="center">
+  Acesso remoto e suporte técnico, com cifragem ponta a ponta e servidor próprio.<br>
+  Feito em Rust. Sem conta, sem nuvem obrigatória.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml"><img src="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#licença"><img src="https://img.shields.io/badge/licen%C3%A7a-MIT%20ou%20Apache--2.0-blue" alt="Licença: MIT ou Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
+</p>
+
+---
+
+O Elo deixa um computador ver e controlar a tela de outro, com chat, área de
+transferência e envio de arquivos. A proposta é a mesma de ferramentas como
+TeamViewer e AnyDesk, com duas diferenças. **O servidor é seu**: ele vem
+embutido no app, ou você hospeda o seu. E **ninguém no meio consegue ler a
+sessão**, nem o próprio servidor.
+
+> **Estado do projeto: alfa.** Funciona e tem testes de ponta a ponta no Linux
+> (X11). Windows e macOS compilam, mas ainda não foram testados em máquinas
+> reais. Leia as [limitações](#limitações-conhecidas) antes de usar em produção.
+
+## Recursos
+
+- **Controle remoto** de mouse e teclado, com vários monitores.
+- **Chat, área de transferência e arquivos** nos dois sentidos.
+- **Cifragem ponta a ponta**: SPAKE2 a partir da senha, depois ChaCha20-Poly1305.
+- **Código de verificação** de 6 dígitos nas duas telas, contra ataques no meio.
+- **Pedido de acesso**: sem senha, o outro lado aceita na tela e escolhe as permissões.
+- **Acesso não assistido** com senha fixa.
+- **Permissões revogáveis** durante a sessão (controle, área de transferência, arquivos).
+- **Servidor embutido**: o app já sobe o servidor ao abrir, sem configurar nada.
+- **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
+- **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
+
+## Instalação
+
+Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Consultoria/elo/releases).
+
+| Sistema | Arquivo | Como instalar |
+|---|---|---|
+| Ubuntu, Debian e derivados | `elo_<versão>_amd64.deb` | `sudo apt install ./elo_<versão>_amd64.deb` |
+| Outras distros Linux | `elo-<versão>-linux-x86_64.tar.gz` | Extraia e rode `./instalar.sh` (instala em `~/.local`, sem root) |
+| macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
+
+**No Linux** a sessão precisa ser **X11**. No Ubuntu, escolha "Ubuntu no Xorg"
+na tela de login. Wayland ainda não é suportado.
+
+**No macOS**, os builds ainda não são assinados pela Apple. Na primeira vez,
+clique com o botão direito no Elo e escolha **Abrir**. Para ser acessado, o Elo
+precisa das permissões de **Gravação de Tela** e **Acessibilidade**, em Ajustes
+do Sistema → Privacidade e Segurança.
+
+Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
+
+## Como usar
 
 1. Quem precisa de ajuda abre o Elo e passa o **ID** (9 dígitos) e a **senha temporária**.
-2. Quem ajuda digita o ID (e a senha, se tiver) e clica em **Conectar**.
-3. Sem senha, aparece um **pedido de acesso** na tela do outro lado, com um código
-   de verificação e as permissões (controle, área de transferência, arquivos).
-4. Durante a sessão, uma faixa amarela avisa **"Este computador está sendo acessado
-   por …"** e tem um botão **Encerrar**. As permissões podem ser retiradas no meio da sessão.
+2. Quem ajuda digita o ID e a senha e clica em **Conectar**.
+3. Sem a senha, aparece um **pedido de acesso** do outro lado, com o código de
+   verificação e as permissões. Confira se o código é igual nas duas telas.
+4. Durante a sessão, uma faixa avisa **"Este computador está sendo acessado
+   por …"**, com o botão **Encerrar**.
 
-**Acesso não assistido:** defina uma senha fixa (8+ caracteres) nas configurações
-e ligue a chave na tela inicial. Com ela, a conexão entra sem ninguém do outro lado.
+**Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
+configurações e ligue a opção na tela inicial. A conexão então entra sem
+ninguém do outro lado.
 
-## Segurança
+## Servidor
 
-- **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
-  partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
-  repassa bytes: não tem a chave, não lê a sessão e não consegue se passar por
-  nenhum dos lados sem saber a senha.
-- **Código de verificação** de 6 dígitos nas duas telas. Se for igual, ninguém
-  está no meio. Vale principalmente nas conexões por pedido (sem senha).
-- **Senha errada:** após 5 tentativas em 5 minutos, o computador recusa novas
-  conexões por um tempo. O servidor também limita tentativas por IP.
-- **TLS** entre os apps e o servidor (certificado público ou autoassinado com
-  impressão digital fixada nas configurações).
-- O arquivo de configuração (que guarda o segredo do dispositivo e a senha fixa)
-  é gravado com permissão 0600 no Linux e no macOS.
+O servidor guarda os IDs, entrega os pedidos de conexão e repassa os bytes das
+sessões. Ele nunca tem a chave da sessão. Existem três jeitos de usar:
 
-### LGPD: o que fica no servidor
+### 1. Embutido no app (padrão)
 
-O servidor registra **apenas metadados**: ID, nome e sistema de cada computador,
-IP de origem, início, fim e volume de dados de cada sessão (`sessoes.jsonl`).
-Telas, teclas, arquivos, chat e área de transferência **não passam em claro**
-pelo servidor. Esses metadados são dados pessoais: defina prazo de retenção
-e informe na política de privacidade do serviço.
+Ao abrir, o Elo sobe o servidor na porta `21116`, com TLS e certificado
+autoassinado, e conecta nele. Ao fechar, o servidor para.
 
-## Estrutura
+Em **Configurações → Servidor** aparecem o endereço deste computador na rede e
+a impressão digital do certificado, com botões para copiar. Nos outros
+computadores, desligue **"Rodar o servidor neste computador"** e preencha esses
+dados. A porta `21116` precisa estar liberada no firewall.
 
-| Pasta | O que é |
-|---|---|
-| `apps/elo` | App desktop (egui/wgpu) |
-| `apps/elo-server` | Servidor de rendezvous e retransmissão (tokio): biblioteca embutida no app e binário avulso |
-| `crates/proto` | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
-| `crates/core` | Captura de tela, injeção de entrada, cliente e sessões |
-| `crates/ui-kit` | Design system Stringari (o mesmo do Traço) |
+### 2. Pela internet com Cloudflare Tunnel
 
-**Vídeo:** a tela é dividida em blocos de 64 px; só os blocos que mudaram vão em
-JPEG. Quando a tela para, os blocos são refinados em qualidade alta. Há controle
-de fluxo (até 2 quadros sem confirmação), então a sessão se adapta a links lentos.
+O servidor aceita **WebSocket** na mesma porta. Por isso funciona atrás do
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
+sem abrir portas e sem instalar nada nos outros computadores.
 
-## Comandos (Makefile)
-
-`make` lista tudo. Os principais:
-
-| Comando | O que faz |
-|---|---|
-| `make build` | Compila em release; executáveis em `dist/elo` e `dist/elo-server` |
-| `make install` | Compila e instala em `~/.local/bin`, com atalho **Elo** no menu |
-| `make uninstall` | Remove a instalação (mantém as configurações) |
-| `make run` | Abre o app (release) |
-| `make run-dev` | Abre em debug com configuração separada (`.dev-config/`) |
-| `make server` | Servidor avulso local sem TLS (`PORTA=` e `DADOS=` opcionais) |
-| `make ci` | Clippy e testes, como no CI |
-
-## Instalando (Linux)
-
-```sh
-make install     # ou: scripts/instalar-linux.sh
-make uninstall   # ou: scripts/instalar-linux.sh --remover
-```
-
-Instala `elo` e `elo-server` em `~/.local/bin` e cria o atalho **Elo** no menu
-de aplicativos. Para atualizar depois de mudar o código, rode o script de novo.
-O executável é um arquivo só (as fontes vão embutidas); dá para copiar
-`~/.local/bin/elo` para outro Linux x86_64 com glibc igual ou mais nova.
-
-> Compile fora de sandboxes (ex.: VS Code em flatpak): o executável herda a
-> glibc do ambiente em que foi compilado e pode não abrir no sistema.
-
-## Rodando (desenvolvimento)
-
-```sh
-cargo run -p elo --release
-```
-
-**O servidor já vem junto.** Ao abrir, o Elo sobe o servidor dentro do próprio
-app (porta `21116`, TLS com certificado autoassinado guardado na pasta de
-configuração, em `servidor/`) e conecta nele. Não precisa de terminal. Ao
-fechar o app, o servidor para.
-
-Para os outros computadores usarem esse servidor: em **Configurações → Servidor**
-deste computador aparecem o endereço (`IP:21116`) e a impressão digital do
-certificado. Nos outros, desligue **"Rodar o servidor neste computador"** e
-preencha endereço, TLS e impressão digital. A porta precisa estar liberada no
-firewall (no Windows, aceite o aviso do firewall na primeira abertura).
-
-Desligando a opção, o app conecta em qualquer outro servidor (o padrão é
-`elo.stringari.com.br:21116`, com TLS e certificado público).
-
-### Pela internet com Cloudflare Tunnel
-
-O servidor também aceita **WebSocket** na mesma porta, então funciona atrás do
-Cloudflare Tunnel sem instalar nada nos outros computadores.
-
-1. No túnel, crie um *Public Hostname* (ex.: `elo.seudominio.com`), tipo
-   **HTTP**, URL `localhost:21116`. Em YAML:
+1. No túnel, crie um *Public Hostname*, por exemplo `elo.seudominio.com`, do
+   tipo **HTTP**, apontando para `localhost:21116`:
 
    ```yaml
    ingress:
@@ -117,57 +104,150 @@ Cloudflare Tunnel sem instalar nada nos outros computadores.
      - service: http_status:404
    ```
 
-   Sem TLS, o servidor só aceita conexões vindas do próprio computador (o
-   `cloudflared`); o TLS fica com o Cloudflare. Se preferir `https://localhost:21116`,
-   ligue `noTLSVerify` (certificado autoassinado).
-2. No Elo deste computador, em **Configurações → Servidor**, preencha
-   **Endereço público** com `wss://elo.seudominio.com`. Para não deixar a porta
-   aberta na rede local, desligue **"Aceitar conexões diretas da rede"**.
-3. Nos outros computadores: desligue **"Rodar o servidor neste computador"** e
-   use o endereço `wss://elo.seudominio.com`, com a impressão digital vazia.
+2. No Elo que roda o servidor, em **Configurações → Servidor**, preencha
+   **Endereço público** com `wss://elo.seudominio.com`. Se não precisar de
+   acesso direto pela rede local, desligue **"Aceitar conexões diretas da rede"**.
+3. Nos outros computadores, desligue o servidor local e use
+   `wss://elo.seudominio.com` como endereço, com a impressão digital vazia.
 
-O servidor usa o IP real do cliente (`CF-Connecting-IP`) nos limites de
-tentativas e nos registros, e manda ping a cada 30 s para o Cloudflare não
-fechar conexões paradas. Atenção: toda a sessão (tela inclusive) passa pelo
-Cloudflare; uso pesado de banda pode esbarrar nos termos do plano gratuito.
+Conexões sem TLS só são aceitas quando vêm do próprio computador, que é o caso
+do `cloudflared`. O servidor usa o IP real do cliente (`CF-Connecting-IP`) nos
+limites de tentativas. Atenção: a sessão inteira, tela incluída, passa pelo
+Cloudflare. Uso pesado de banda pode esbarrar nos termos do plano gratuito.
 
-### Servidor avulso (opcional)
+### 3. Servidor avulso
 
-O mesmo servidor também roda sozinho, para hospedar em uma máquina dedicada:
+O mesmo servidor também roda sozinho, para hospedar numa máquina dedicada:
 
 ```sh
-# testes locais
-cargo run -p elo-server -- --listen 127.0.0.1:21116 --data ./dados --no-tls
-
-# produção: certificado público
+# certificado público (Let's Encrypt etc.)
 elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --cert fullchain.pem --key privkey.pem
+
+# certificado autoassinado: cole nos apps a impressão digital que ele imprime
+elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --self-signed
 ```
 
-Com `--self-signed` (padrão sem `--cert`), cole nos apps a impressão digital que
-o servidor imprime ao iniciar.
+O `elo-server` vem junto nos instaladores.
 
-`ELO_CONFIG_DIR` muda a pasta de configuração (útil para rodar duas instâncias
+## Segurança
+
+- **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
+  partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
+  repassa bytes: não tem a chave, não lê a sessão e não consegue se passar por
+  nenhum dos lados sem saber a senha.
+- **Código de verificação** de 6 dígitos nas duas telas. Se for igual, não há
+  ninguém no meio. É especialmente importante nas conexões por pedido (sem senha).
+- **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
+  novas conexões por um tempo. O servidor também limita tentativas por IP.
+- **TLS** entre o app e o servidor, com certificado público ou com impressão
+  digital fixada.
+- O arquivo de configuração, que guarda o segredo do dispositivo e a senha
+  fixa, é gravado com permissão `0600` no Linux e no macOS.
+
+Encontrou uma vulnerabilidade? **Não abra uma issue pública.** Veja
+[SECURITY.md](SECURITY.md).
+
+### Privacidade (LGPD)
+
+O servidor registra **apenas metadados**: ID, nome e sistema de cada
+computador, IP de origem, e início, fim e volume de cada sessão (em
+`sessoes.jsonl`). Telas, teclas, arquivos, chat e área de transferência nunca
+passam em claro pelo servidor. Se você oferece o Elo como serviço, esses
+metadados são dados pessoais: defina um prazo de retenção e informe na sua
+política de privacidade.
+
+## Como funciona por dentro
+
+| Pasta | O que é |
+|---|---|
+| [`apps/elo`](apps/elo) | App desktop (egui + wgpu) |
+| [`apps/elo-server`](apps/elo-server) | Servidor de IDs e retransmissão (tokio). É biblioteca, embutida no app, e também binário avulso |
+| [`crates/proto`](crates/proto) | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
+| [`crates/core`](crates/core) | Captura de tela, injeção de entrada, cliente e sessões |
+| [`crates/ui-kit`](crates/ui-kit) | Design system Stringari |
+| [`packaging`](packaging) e [`scripts`](scripts) | Ícones, `Info.plist` e scripts dos instaladores |
+
+- **Conexão:** cada app mantém uma conexão de controle com o servidor (TCP +
+  TLS, ou WebSocket). Para abrir uma sessão, o servidor gera um convite e as
+  duas pontas entram no relay. A partir daí, o servidor só copia bytes.
+- **Vídeo:** a tela é dividida em blocos de 64 px, e só os blocos que mudaram
+  vão em JPEG. Quando a tela para, os blocos são refinados em qualidade alta.
+  Com até 2 quadros sem confirmação, a sessão se adapta a links lentos.
+
+## Desenvolvimento
+
+Requisitos: **Rust 1.88+** ([rustup](https://rustup.rs)). No Linux (Debian/Ubuntu):
+
+```sh
+sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxcb1-dev libxdo-dev
+```
+
+Os atalhos ficam no `Makefile` (`make` lista todos):
+
+| Comando | O que faz |
+|---|---|
+| `make run` | Abre o app (release) |
+| `make run-dev` | Abre em debug, com configuração separada em `.dev-config/` |
+| `make server` | Servidor avulso local, sem TLS, para testes |
+| `make ci` | Clippy e testes, igual ao CI |
+| `make build` | Executáveis em `dist/` |
+| `make install` | Instala em `~/.local/bin`, com atalho no menu (Linux) |
+| `make pacote-linux` | Gera `.deb` e `.tar.gz` em `dist/` |
+| `make pacote-macos` | Gera o `.dmg` em `dist/` (só no macOS) |
+
+Os testes de ponta a ponta sobem um servidor de verdade e fazem sessões
+completas pelo relay, também via WebSocket. As partes que capturam a tela usam
+o X11 de `DISPLAY` e são puladas sem ele.
+
+`ELO_CONFIG_DIR` muda a pasta de configuração. Serve para rodar duas instâncias
 na mesma máquina: na segunda, desligue o servidor local e aponte para
-`127.0.0.1:21116` com a impressão digital da primeira).
+`127.0.0.1:21116` com a impressão digital da primeira.
 
-## Limitações (leia antes de vender)
+**Releases:** ao enviar uma tag `v*`, o workflow
+[`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`
+(no Ubuntu 22.04, para funcionar em distros mais antigas) e o `.dmg` universal,
+e publica a release.
+
+## Limitações conhecidas
 
 - **Só retransmissão.** Todo o tráfego passa pelo servidor; não há conexão
-  direta P2P (hole punching). Funciona atrás de qualquer NAT, mas o custo de
-  banda do servidor cresce com o uso, e a latência depende da distância até ele.
-- **Windows e macOS não foram compilados nem testados aqui.** O código usa xcap
-  e enigo nessas plataformas; o CI compila nos três sistemas, mas o
-  comportamento real (permissões de Gravação de Tela e Acessibilidade no macOS,
-  telas UAC no Windows) precisa ser testado em máquinas reais.
-- **Linux: só X11.** Wayland bloqueia captura e injeção de entrada sem portal
+  direta P2P (hole punching). Funciona atrás de qualquer NAT, mas a banda do
+  servidor cresce com o uso e a latência depende da distância até ele.
+- **Windows e macOS não foram testados em máquinas reais.** O CI compila nos
+  três sistemas, mas permissões do macOS e telas UAC do Windows precisam de teste.
+- **Linux: só X11.** No Wayland, captura e controle exigem o portal
   (xdg-desktop-portal/PipeWire), que ainda não foi implementado.
-- **Ctrl+Alt+Del:** no Linux é enviado como atalho comum. No Windows a tela
-  segura (SAS) só pode ser chamada por um serviço do sistema; o Elo ainda não
-  tem esse serviço. Também não há acesso à tela de login nem antes do login.
-- **Não há:** áudio remoto, gravação de sessão, impressão remota, reinício com
-  reconexão automática, lista de contatos/conta na nuvem, nem instalador ou
-  assinatura de código.
-- Teclados com layout diferente nos dois lados: o texto é enviado como texto
-  (funciona), mas atalhos com teclas fora do ASCII podem não chegar.
-- O codec é JPEG por blocos (simples e robusto). Em telas com vídeo em
-  movimento usa mais banda que H.264/VP9.
+- **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
+  Windows exige um serviço do sistema que o Elo ainda não tem.
+- **Ainda não há:** áudio remoto, gravação de sessão, impressão remota,
+  reconexão após reiniciar, lista de contatos, nem builds assinados pela Apple
+  ou pela Microsoft.
+- Com layouts de teclado diferentes nos dois lados, o texto chega certo, mas
+  atalhos com teclas fora do ASCII podem não chegar.
+- O codec é JPEG por blocos (simples e robusto). Com vídeo em movimento na
+  tela, gasta mais banda que H.264 ou VP9.
+
+Quer ajudar com algum desses itens? Veja abaixo.
+
+## Contribuindo
+
+Contribuições são bem-vindas: correções, testes em Windows e macOS, suporte a
+Wayland, melhorias no codec. Leia o [CONTRIBUTING.md](CONTRIBUTING.md) antes de
+abrir um pull request.
+
+## Licença
+
+O código é licenciado, à sua escolha, sob a [MIT](LICENSE-MIT) ou a
+[Apache 2.0](LICENSE-APACHE). Salvo declaração em contrário, toda contribuição
+enviada para inclusão neste projeto é licenciada da mesma forma, sem termos
+adicionais.
+
+As fontes em `assets/fonts` (Geist e JetBrains Mono) são distribuídas sob a SIL
+Open Font License 1.1. Veja [NOTICE](NOTICE).
+
+TeamViewer e AnyDesk são marcas de seus respectivos donos. O Elo não é afiliado
+a eles nem endossado por eles.
+
+---
+
+<p align="center">Feito por <a href="https://github.com/Stringari-Consultoria">Stringari Consultoria</a>.</p>
