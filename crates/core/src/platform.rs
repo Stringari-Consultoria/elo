@@ -301,34 +301,37 @@ mod native {
     use elo_proto::msg::{Button, Key};
     use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 
+    /// Guarda só a posição dos monitores: o `xcap::Monitor` tem um ponteiro do
+    /// sistema e não é `Send` no Windows, então é buscado a cada captura.
     pub struct Cap {
-        mons: Vec<xcap::Monitor>,
+        origins: Vec<(i32, i32)>,
     }
 
     impl Screen for Cap {
         fn monitors(&mut self) -> Vec<Monitor> {
-            self.mons = xcap::Monitor::all().unwrap_or_default();
-            self.mons
-                .iter()
+            let mons = xcap::Monitor::all().unwrap_or_default();
+            self.origins = mons.iter().map(|m| (m.x().unwrap_or(0), m.y().unwrap_or(0))).collect();
+            mons.iter()
                 .enumerate()
                 .map(|(i, m)| Monitor { index: i as u8, name: m.name().unwrap_or_default(), width: m.width().unwrap_or(0), height: m.height().unwrap_or(0), primary: m.is_primary().unwrap_or(false) })
                 .collect()
         }
 
         fn capture(&mut self, monitor: u8) -> Result<Frame, String> {
-            if self.mons.is_empty() {
-                self.monitors();
-            }
-            let m = self.mons.get(monitor as usize).or(self.mons.first()).ok_or("sem monitor")?;
+            let mons = xcap::Monitor::all().map_err(|e| e.to_string())?;
+            let m = mons.get(monitor as usize).or(mons.first()).ok_or("sem monitor")?;
             let img = m.capture_image().map_err(|e| e.to_string())?;
             Ok(Frame { width: img.width(), height: img.height(), rgba: img.into_raw() })
         }
 
         fn cursor(&mut self, monitor: u8) -> Option<(i32, i32)> {
-            let m = self.mons.get(monitor as usize)?;
+            if self.origins.is_empty() {
+                self.monitors();
+            }
+            let (ox, oy) = *self.origins.get(monitor as usize)?;
             let e = Enigo::new(&Settings::default()).ok()?;
             let (x, y) = e.location().ok()?;
-            Some((x - m.x().unwrap_or(0), y - m.y().unwrap_or(0)))
+            Some((x - ox, y - oy))
         }
     }
 
@@ -412,8 +415,8 @@ mod native {
     }
 
     pub fn open_screen() -> Result<Box<dyn Screen>, String> {
-        let mons = xcap::Monitor::all().map_err(|e| e.to_string())?;
-        Ok(Box::new(Cap { mons }))
+        let origins = xcap::Monitor::all().map_err(|e| e.to_string())?.iter().map(|m| (m.x().unwrap_or(0), m.y().unwrap_or(0))).collect();
+        Ok(Box::new(Cap { origins }))
     }
 
     pub fn open_control() -> Result<Box<dyn Control>, String> {
