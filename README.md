@@ -49,6 +49,8 @@ Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Con
 | Ubuntu, Debian e derivados | `elo_<versão>_amd64.deb` | `sudo apt install ./elo_<versão>_amd64.deb` |
 | Outras distros Linux | `elo-<versão>-linux-x86_64.tar.gz` | Extraia e rode `./instalar.sh` (instala em `~/.local`, sem root) |
 | macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
+| Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
+| Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
 
 **No Linux** a sessão precisa ser **X11**. No Ubuntu, escolha "Ubuntu no Xorg"
 na tela de login. Wayland ainda não é suportado.
@@ -57,6 +59,11 @@ na tela de login. Wayland ainda não é suportado.
 clique com o botão direito no Elo e escolha **Abrir**. Para ser acessado, o Elo
 precisa das permissões de **Gravação de Tela** e **Acessibilidade**, em Ajustes
 do Sistema → Privacidade e Segurança.
+
+**No Windows**, os builds ainda não são assinados. Se o SmartScreen avisar,
+clique em **Mais informações → Executar assim mesmo**. Na primeira abertura, o
+Windows pergunta se o Elo pode receber conexões da rede: permita, para que o
+servidor embutido funcione.
 
 Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
 
@@ -165,7 +172,7 @@ política de privacidade.
 | [`crates/proto`](crates/proto) | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
 | [`crates/core`](crates/core) | Captura de tela, injeção de entrada, cliente e sessões |
 | [`crates/ui-kit`](crates/ui-kit) | Design system Stringari |
-| [`packaging`](packaging) e [`scripts`](scripts) | Ícones, `Info.plist` e scripts dos instaladores |
+| [`packaging`](packaging) e [`scripts`](scripts) | Ícones, `Info.plist`, script do Inno Setup e scripts dos instaladores |
 
 - **Conexão:** cada app mantém uma conexão de controle com o servidor (TCP +
   TLS, ou WebSocket). Para abrir uma sessão, o servidor gera um convite e as
@@ -194,6 +201,7 @@ Os atalhos ficam no `Makefile` (`make` lista todos):
 | `make install` | Instala em `~/.local/bin`, com atalho no menu (Linux) |
 | `make pacote-linux` | Gera `.deb` e `.tar.gz` em `dist/` |
 | `make pacote-macos` | Gera o `.dmg` em `dist/` (só no macOS) |
+| `make pacote-windows` | Gera o instalador `.exe` e o `.zip` em `dist/` (só no Windows, com [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
 
 Os testes de ponta a ponta sobem um servidor de verdade e fazem sessões
 completas pelo relay, também via WebSocket. As partes que capturam a tela usam
@@ -205,8 +213,8 @@ na mesma máquina: na segunda, desligue o servidor local e aponte para
 
 **Releases:** ao enviar uma tag `v*`, o workflow
 [`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`
-(no Ubuntu 22.04, para funcionar em distros mais antigas) e o `.dmg` universal,
-e publica a release.
+(no Ubuntu 22.04, para funcionar em distros mais antigas), o `.dmg` universal e
+o instalador e o `.zip` do Windows, e publica a release.
 
 ## Limitações conhecidas
 

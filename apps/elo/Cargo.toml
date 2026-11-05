@@ -21,3 +21,6 @@ rand = { workspace = true }
 directories = "6"
 rfd = "0.17"
 arboard = { version = "3", default-features = false }
+
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }
