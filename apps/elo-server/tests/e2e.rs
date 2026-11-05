@@ -142,3 +142,83 @@ fn tls_with_pinned_certificate() {
     assert!(reason.contains("TLS") || reason.contains("certificado"), "{reason}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Servidor embutido (como o app usa): sobe numa thread, o cliente conecta
+/// fixando a impressão digital, e ao parar a porta fica livre para religar.
+#[test]
+fn background_server_restarts_on_same_port() {
+    let dir = std::env::temp_dir().join(format!("elo-bg-{}", std::process::id()));
+    let cfg = |listen: String| elo_server::Config { listen, data: dir.clone(), tls: elo_server::Tls::SelfSigned };
+    let bg = elo_server::Background::start(cfg("127.0.0.1:0".into())).unwrap();
+    assert!(bg.running());
+    let port = bg.local_addr.port();
+    let fp = bg.fingerprint.clone().unwrap();
+    assert_eq!(elo_server::self_signed_fingerprint(&dir).as_deref(), Some(fp.as_str()));
+    let addr = format!("127.0.0.1:{port}");
+    let c = client::start(ServerCfg { address: addr.clone(), tls: true, pin: fp.clone() }, [5u8; 32], "Local".into());
+    let Some(Event::Online { id }) = wait(&c.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("não conectou ao servidor embutido") };
+    // Porta ocupada: erro claro na hora de iniciar.
+    assert!(elo_server::Background::start(cfg(addr.clone())).is_err());
+    drop(bg);
+    assert!(wait(&c.rx, 10, |e| matches!(e, Event::Offline { .. })).is_some(), "a conexão deveria cair ao parar o servidor");
+    // Religa na mesma porta; mesmo certificado e mesmo ID.
+    let bg = elo_server::Background::start(cfg(addr)).unwrap();
+    assert_eq!(bg.fingerprint.as_deref(), Some(fp.as_str()));
+    let Some(Event::Online { id: again }) = wait(&c.rx, 40, |e| matches!(e, Event::Online { .. })) else { panic!("não reconectou") };
+    assert_eq!(again, id);
+    c.tx.send(client::Command::Quit).unwrap();
+    drop(bg);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Como fica atrás do Cloudflare Tunnel: o cloudflared (local) fala WebSocket
+/// sem TLS com o servidor; um lado usa WebSocket e o outro o protocolo direto.
+#[test]
+fn websocket_like_cloudflare_tunnel() {
+    let dir = std::env::temp_dir().join(format!("elo-ws-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned }).unwrap();
+    let port = bg.local_addr.port();
+    let fp = bg.fingerprint.clone().unwrap();
+    let direct = ServerCfg { address: format!("127.0.0.1:{port}"), tls: true, pin: fp.clone() };
+    let ws = ServerCfg { address: format!("ws://127.0.0.1:{port}/"), tls: false, pin: String::new() };
+    // wss direto no servidor (certificado fixado) também funciona.
+    let wss = client::start(ServerCfg { address: format!("wss://127.0.0.1:{port}"), tls: true, pin: fp }, [8u8; 32], "C".into());
+    assert!(wait(&wss.rx, 10, |e| matches!(e, Event::Online { .. })).is_some(), "wss não conectou");
+    wss.tx.send(client::Command::Quit).unwrap();
+
+    let host = client::start(direct.clone(), [6u8; 32], "Anfitrião".into());
+    let viewer = client::start(ws.clone(), [7u8; 32], "Visualizador".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador (WebSocket) offline") };
+    if std::env::var("DISPLAY").is_err() {
+        eprintln!("sem DISPLAY: sessão pulada");
+        return;
+    }
+    viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    assert_eq!((hs, &from_id), (vs, &viewer_id));
+    let (htx, hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default() };
+    let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
+    let remote = Arc::new(Mutex::new(Remote::default()));
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(ws, vs, vsec, "s3nha-ws".into(), viewer_id, "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx);
+    assert!(wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. })).is_some(), "sessão por WebSocket não conectou");
+    let end = Instant::now() + Duration::from_secs(15);
+    while remote.lock().unwrap().version == 0 {
+        assert!(Instant::now() < end, "nenhum quadro recebido pelo WebSocket");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    vh.cmd.send(session::Cmd::Chat("via túnel".into())).unwrap();
+    assert!(wait(&hrx, 5, |e| matches!(e, HostEvent::Chat(t) if t == "via túnel")).is_some());
+    let f = dir.join("ws.bin");
+    std::fs::write(&f, (0..500_000u32).map(|i| (i % 251) as u8).collect::<Vec<_>>()).unwrap();
+    vh.cmd.send(session::Cmd::SendFile(f.clone())).unwrap();
+    let Some(HostEvent::File(t)) = wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.finished)) else { panic!("arquivo não chegou") };
+    assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), std::fs::read(&f).unwrap());
+    vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::Ended(_))).is_some());
+    drop(bg);
+    let _ = std::fs::remove_dir_all(dir);
+}

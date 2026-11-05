@@ -7,10 +7,62 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use elo_core::client::{self, Command, Control, Event};
+use elo_core::net::ServerCfg;
 use elo_core::session::{self, Handle, HostEvent, HostOptions, Remote, Transfer, ViewerEvent};
 use elo_proto::msg::{Monitor, Permissions};
 
-use crate::settings::Settings;
+use crate::settings::{LocalServer, Settings};
+
+/// Servidor embutido no app.
+pub struct Local {
+    /// Configuração com que foi iniciado (para saber se precisa reiniciar).
+    pub started: LocalServer,
+    pub server: Option<elo_server::Background>,
+    pub error: Option<String>,
+    /// Impressão digital do certificado (os outros computadores colam nas configurações).
+    pub fingerprint: String,
+    /// IP deste computador na rede, para os outros conectarem.
+    pub lan_ip: Option<String>,
+}
+
+impl Local {
+    fn start(cfg: &LocalServer) -> Self {
+        let mut l = Local { started: cfg.clone(), server: None, error: None, fingerprint: String::new(), lan_ip: None };
+        if !cfg.enabled {
+            return l;
+        }
+        let data = crate::settings::server_data_dir();
+        let host = if cfg.lan { "0.0.0.0" } else { "127.0.0.1" };
+        let c = elo_server::Config { listen: format!("{host}:{}", cfg.port), data: data.clone(), tls: elo_server::Tls::SelfSigned };
+        match elo_server::Background::start(c) {
+            Ok(b) => {
+                l.fingerprint = b.fingerprint.clone().unwrap_or_default();
+                l.server = Some(b);
+            }
+            Err(e) => {
+                // Porta ocupada por outra janela do Elo com a mesma pasta de
+                // configuração: o certificado é o mesmo, então ainda conecta nela.
+                l.fingerprint = elo_server::self_signed_fingerprint(&data).unwrap_or_default();
+                l.error = Some(e.to_string());
+            }
+        }
+        l.lan_ip = lan_ip();
+        l
+    }
+
+    /// Endereço da rede local ("ip:porta").
+    pub fn lan_address(&self) -> String {
+        format!("{}:{}", self.lan_ip.as_deref().unwrap_or("IP-deste-computador"), self.started.port)
+    }
+}
+
+/// IP local da interface de saída (não envia nada: UDP só escolhe a rota).
+fn lan_ip() -> Option<String> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then(|| ip.to_string())
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -100,6 +152,7 @@ pub struct EloApp {
     pub toasts: Vec<Toast>,
     pub show_settings: bool,
     pub new_permanent: String,
+    pub local: Local,
 }
 
 impl EloApp {
@@ -107,8 +160,11 @@ impl EloApp {
         let settings = Settings::load();
         stringari_ui::theme::install_fonts(&cc.egui_ctx);
         stringari_ui::theme::apply(&cc.egui_ctx, settings.dark);
-        let control = client::start(settings.server.clone(), settings.token, settings.device_name.clone());
-        Self {
+        // O servidor local sobe antes do cliente, que já conecta nele.
+        let local = Local::start(&settings.local_server);
+        let control = client::start(server_cfg(&settings, &local), settings.token, settings.device_name.clone());
+        let local_error = local.error.clone();
+        let mut app = Self {
             settings,
             status: Status::Connecting,
             control,
@@ -124,7 +180,12 @@ impl EloApp {
             toasts: Vec::new(),
             show_settings: false,
             new_permanent: String::new(),
+            local,
+        };
+        if let Some(e) = local_error {
+            app.error(format!("Servidor local: {e}"));
         }
+        app
     }
 
     pub fn toast(&mut self, t: impl Into<String>) {
@@ -168,8 +229,25 @@ impl EloApp {
         HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions }
     }
 
+    /// Servidor em uso: o local (se ligado) ou o configurado.
+    pub fn server_cfg(&self) -> ServerCfg {
+        server_cfg(&self.settings, &self.local)
+    }
+
+    /// Aplica as configurações de servidor: reinicia o local se mudou e
+    /// reconecta o cliente.
     pub fn reconnect_server(&mut self) {
-        let _ = self.control.tx.send(Command::Reconfigure(self.settings.server.clone()));
+        if !self.settings.local_server.same_bind(&self.local.started) {
+            // Libera a porta antes de subir de novo.
+            self.local.server = None;
+            self.local = Local::start(&self.settings.local_server);
+            if let Some(e) = &self.local.error {
+                let e = format!("Servidor local: {e}");
+                self.error(e);
+            }
+        }
+        self.local.started.public = self.settings.local_server.public.clone();
+        let _ = self.control.tx.send(Command::Reconfigure(self.server_cfg()));
     }
 
     pub fn downloads(&self) -> PathBuf {
@@ -201,7 +279,7 @@ impl EloApp {
                     let remote = Arc::new(Mutex::new(Remote::default()));
                     let (tx, rx) = channel();
                     let my = self.my_id().unwrap_or_default().to_string();
-                    let handle = session::viewer(self.settings.server.clone(), session, secret, password, my, self.settings.device_name.clone(), self.downloads(), remote.clone(), tx);
+                    let handle = session::viewer(self.server_cfg(), session, secret, password, my, self.settings.device_name.clone(), self.downloads(), remote.clone(), tx);
                     let q = self.settings.quality;
                     let (jpeg, fps) = quality(q);
                     let _ = handle.cmd.send(session::Cmd::Quality { jpeg, fps });
@@ -243,7 +321,7 @@ impl EloApp {
                         continue;
                     }
                     let (tx, rx) = channel();
-                    let handle = session::host(self.settings.server.clone(), session, secret, from_id.clone(), from_name.clone(), self.host_options(), tx);
+                    let handle = session::host(self.server_cfg(), session, secret, from_id.clone(), from_name.clone(), self.host_options(), tx);
                     self.hosts.push(HostSession { from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now() });
                 }
             }
@@ -315,6 +393,14 @@ impl EloApp {
         self.toasts.retain(|t| t.at.elapsed().as_secs() < if t.error { 10 } else { 5 });
         let busy = !self.views.is_empty() || !self.hosts.is_empty() || !self.asks.is_empty() || matches!(self.status, Status::Connecting) || self.pending_connect.is_some();
         ctx.request_repaint_after(std::time::Duration::from_millis(if busy { 16 } else { 250 }));
+    }
+}
+
+fn server_cfg(s: &Settings, local: &Local) -> ServerCfg {
+    if s.local_server.enabled {
+        ServerCfg { address: format!("127.0.0.1:{}", s.local_server.port), tls: true, pin: local.fingerprint.clone() }
+    } else {
+        s.server.clone()
     }
 }
 

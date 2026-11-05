@@ -44,7 +44,7 @@ e informe na política de privacidade do serviço.
 | Pasta | O que é |
 |---|---|
 | `apps/elo` | App desktop (egui/wgpu) |
-| `apps/elo-server` | Servidor de rendezvous e retransmissão (tokio) |
+| `apps/elo-server` | Servidor de rendezvous e retransmissão (tokio): biblioteca embutida no app e binário avulso |
 | `crates/proto` | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
 | `crates/core` | Captura de tela, injeção de entrada, cliente e sessões |
 | `crates/ui-kit` | Design system Stringari (o mesmo do Traço) |
@@ -56,22 +56,70 @@ de fluxo (até 2 quadros sem confirmação), então a sessão se adapta a links 
 ## Rodando
 
 ```sh
-# servidor (testes locais)
+cargo run -p elo --release
+```
+
+**O servidor já vem junto.** Ao abrir, o Elo sobe o servidor dentro do próprio
+app (porta `21116`, TLS com certificado autoassinado guardado na pasta de
+configuração, em `servidor/`) e conecta nele. Não precisa de terminal. Ao
+fechar o app, o servidor para.
+
+Para os outros computadores usarem esse servidor: em **Configurações → Servidor**
+deste computador aparecem o endereço (`IP:21116`) e a impressão digital do
+certificado. Nos outros, desligue **"Rodar o servidor neste computador"** e
+preencha endereço, TLS e impressão digital. A porta precisa estar liberada no
+firewall (no Windows, aceite o aviso do firewall na primeira abertura).
+
+Desligando a opção, o app conecta em qualquer outro servidor (o padrão é
+`elo.stringari.com.br:21116`, com TLS e certificado público).
+
+### Pela internet com Cloudflare Tunnel
+
+O servidor também aceita **WebSocket** na mesma porta, então funciona atrás do
+Cloudflare Tunnel sem instalar nada nos outros computadores.
+
+1. No túnel, crie um *Public Hostname* (ex.: `elo.seudominio.com`), tipo
+   **HTTP**, URL `localhost:21116`. Em YAML:
+
+   ```yaml
+   ingress:
+     - hostname: elo.seudominio.com
+       service: http://localhost:21116
+     - service: http_status:404
+   ```
+
+   Sem TLS, o servidor só aceita conexões vindas do próprio computador (o
+   `cloudflared`); o TLS fica com o Cloudflare. Se preferir `https://localhost:21116`,
+   ligue `noTLSVerify` (certificado autoassinado).
+2. No Elo deste computador, em **Configurações → Servidor**, preencha
+   **Endereço público** com `wss://elo.seudominio.com`. Para não deixar a porta
+   aberta na rede local, desligue **"Aceitar conexões diretas da rede"**.
+3. Nos outros computadores: desligue **"Rodar o servidor neste computador"** e
+   use o endereço `wss://elo.seudominio.com`, com a impressão digital vazia.
+
+O servidor usa o IP real do cliente (`CF-Connecting-IP`) nos limites de
+tentativas e nos registros, e manda ping a cada 30 s para o Cloudflare não
+fechar conexões paradas. Atenção: toda a sessão (tela inclusive) passa pelo
+Cloudflare; uso pesado de banda pode esbarrar nos termos do plano gratuito.
+
+### Servidor avulso (opcional)
+
+O mesmo servidor também roda sozinho, para hospedar em uma máquina dedicada:
+
+```sh
+# testes locais
 cargo run -p elo-server -- --listen 127.0.0.1:21116 --data ./dados --no-tls
 
 # produção: certificado público
 elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --cert fullchain.pem --key privkey.pem
-
-# app
-cargo run -p elo --release
 ```
 
-O app aponta por padrão para `elo.stringari.com.br:21116` com TLS. Troque em
-**Configurações → Servidor**. Para servidor com certificado autoassinado
-(`--self-signed`), cole a impressão digital que o servidor imprime ao iniciar.
+Com `--self-signed` (padrão sem `--cert`), cole nos apps a impressão digital que
+o servidor imprime ao iniciar.
 
 `ELO_CONFIG_DIR` muda a pasta de configuração (útil para rodar duas instâncias
-na mesma máquina).
+na mesma máquina: na segunda, desligue o servidor local e aponte para
+`127.0.0.1:21116` com a impressão digital da primeira).
 
 ## Limitações (leia antes de vender)
 

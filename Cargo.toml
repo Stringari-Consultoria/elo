@@ -7,12 +7,13 @@ default-members = ["apps/elo"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 stringari-ui = { path = "crates/ui-kit" }
 elo-proto = { path = "crates/proto" }
 elo-core = { path = "crates/core" }
+elo-server = { path = "apps/elo-server" }
 eframe = { version = "0.37", default-features = false }
 egui = { version = "0.37", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -28,6 +29,7 @@ chacha20poly1305 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 jpeg-encoder = "0.7"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

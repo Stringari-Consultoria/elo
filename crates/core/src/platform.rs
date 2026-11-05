@@ -226,7 +226,7 @@ mod x11 {
             }
             // BGRX → RGBA.
             let mut rgba = vec![0u8; (w * h * 4) as usize];
-            for (d, s) in rgba.chunks_exact_mut(4).zip(px.chunks_exact(4)) {
+            for (d, s) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(px.as_chunks::<4>().0) {
                 d[0] = s[2];
                 d[1] = s[1];
                 d[2] = s[0];

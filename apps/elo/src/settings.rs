@@ -14,11 +14,48 @@ pub struct Recent {
     pub when: u64,
 }
 
+/// Servidor embutido: sobe junto com o app e os outros computadores conectam
+/// nele (IP deste computador + porta + impressão digital).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalServer {
+    pub enabled: bool,
+    pub port: u16,
+    /// Aceitar conexões diretas da rede (falso = só deste computador, por
+    /// exemplo atrás do Cloudflare Tunnel).
+    pub lan: bool,
+    /// Endereço pelo qual os outros chegam aqui (ex.: "wss://elo.dominio.com"
+    /// do Cloudflare Tunnel). Vazio = IP da rede local.
+    pub public: String,
+}
+
+impl Default for LocalServer {
+    fn default() -> Self {
+        Self { enabled: true, port: elo_proto::DEFAULT_PORT, lan: true, public: String::new() }
+    }
+}
+
+impl LocalServer {
+    /// Mudanças que exigem reiniciar o servidor.
+    pub fn same_bind(&self, o: &LocalServer) -> bool {
+        (self.enabled, self.port, self.lan) == (o.enabled, o.port, o.lan)
+    }
+
+    /// Endereço público via WebSocket (dispensa a impressão digital).
+    pub fn public_ws(&self) -> Option<&str> {
+        let p = self.public.trim();
+        (p.starts_with("wss://") || p.starts_with("ws://")).then_some(p)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Segredo do dispositivo (o servidor guarda só o hash e devolve o mesmo ID).
     pub token: [u8; 32],
+    /// Servidor local ligado: conecta nele e ignora `server`.
+    pub local_server: LocalServer,
+    /// Servidor externo (usado quando o local está desligado).
     pub server: ServerCfg,
     pub device_name: String,
     pub dark: bool,
@@ -39,6 +76,7 @@ impl Default for Settings {
         let downloads = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join("Elo"))).unwrap_or_else(|| std::env::temp_dir().join("Elo"));
         Self {
             token: rand::random(),
+            local_server: LocalServer::default(),
             server: ServerCfg::default(),
             device_name: elo_core::platform::computer_name(),
             dark: false,
@@ -58,6 +96,11 @@ pub fn config_dir() -> PathBuf {
         return PathBuf::from(d);
     }
     directories::ProjectDirs::from("br.com", "Stringari", "Elo").map(|d| d.config_dir().to_path_buf()).unwrap_or_else(|| std::env::temp_dir().join("elo"))
+}
+
+/// Dados do servidor local (IDs, sessões, certificado autoassinado).
+pub fn server_data_dir() -> PathBuf {
+    config_dir().join("servidor")
 }
 
 impl Settings {

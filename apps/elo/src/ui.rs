@@ -88,6 +88,8 @@ impl eframe::App for EloApp {
         }
         let _ = self.control.tx.send(elo_core::client::Command::Quit);
         self.settings.save();
+        // Para o servidor local (derruba as conexões dos outros computadores).
+        self.local.server = None;
     }
 }
 
@@ -154,7 +156,17 @@ impl EloApp {
             theme::dot(ui, c, 8.0);
             ui.label(RichText::new(t).size(11.5).color(p.text2));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(format!("{} {}", self.settings.server.address, if self.settings.server.tls { "· TLS" } else { "· sem TLS" })).font(theme::mono(11.0)).color(p.muted));
+                if self.settings.local_server.enabled {
+                    let (t, c) = match &self.local.error {
+                        Some(_) => ("servidor local com erro".to_string(), p.danger),
+                        None => (format!("servidor local · {}", self.local.started.public_ws().map(str::to_string).unwrap_or_else(|| if self.local.started.lan { format!("{} · TLS", self.local.lan_address()) } else { "só este computador".into() })), p.muted),
+                    };
+                    ui.label(RichText::new(t).font(theme::mono(11.0)).color(c)).on_hover_text(self.local.error.clone().unwrap_or_else(|| "Servidor rodando neste computador. Outros computadores conectam neste endereço (Configurações → Servidor).".into()));
+                } else {
+                    let a = self.settings.server.address.trim();
+                    let tls = if a.starts_with("wss://") { "" } else if a.starts_with("ws://") || !self.settings.server.tls { " · sem TLS" } else { " · TLS" };
+                    ui.label(RichText::new(format!("{a}{tls}")).font(theme::mono(11.0)).color(p.muted));
+                }
                 icons::icon(ui, Icon::Lock, 11.0, p.muted).on_hover_text("Sessões cifradas ponta a ponta (SPAKE2 + ChaCha20-Poly1305). O servidor não tem a chave.");
             });
         });
@@ -597,11 +609,61 @@ impl EloApp {
             ui.add_space(8.0);
             ui.separator();
             ui.label(RichText::new("Servidor").font(theme::semibold(13.0)).color(p.text));
-            theme::field_label(ui, "Endereço (host:porta)");
-            ui.add(egui::TextEdit::singleline(&mut self.settings.server.address).font(theme::mono(12.0)).desired_width(f32::INFINITY));
-            ui.checkbox(&mut self.settings.server.tls, "TLS (recomendado)");
-            theme::field_label(ui, "Impressão digital do certificado (servidor próprio autoassinado)");
-            ui.add(egui::TextEdit::singleline(&mut self.settings.server.pin).font(theme::mono(11.0)).hint_text("vazio = certificado público (Let's Encrypt etc.)").desired_width(f32::INFINITY));
+            ui.checkbox(&mut self.settings.local_server.enabled, "Rodar o servidor neste computador");
+            if self.settings.local_server.enabled {
+                let ls = &mut self.settings.local_server;
+                ui.horizontal(|ui| {
+                    theme::field_label(ui, "Porta");
+                    ui.add(egui::DragValue::new(&mut ls.port).range(1024..=65535).speed(0.0));
+                });
+                ui.checkbox(&mut ls.lan, "Aceitar conexões diretas da rede").on_hover_text("Desligado, só aceita conexões deste computador: use com o Cloudflare Tunnel (o cloudflared roda aqui) para não deixar a porta aberta na rede.");
+                theme::field_label(ui, "Endereço público (opcional)");
+                ui.add(egui::TextEdit::singleline(&mut ls.public).font(theme::mono(12.0)).hint_text("wss://elo.seudominio.com (Cloudflare Tunnel)").desired_width(f32::INFINITY));
+                if !ls.public.trim().is_empty() && ls.public_ws().is_none() {
+                    ui.label(RichText::new("Comece com wss:// (o túnel do Cloudflare fala WebSocket).").size(11.5).color(p.danger));
+                }
+                if ls.same_bind(&self.local.started) {
+                    if let Some(e) = &self.local.error {
+                        ui.label(RichText::new(format!("Não foi possível iniciar: {e}")).size(11.5).color(p.danger));
+                    }
+                    ui.label(RichText::new("Nos outros computadores, desligue \"Rodar o servidor\" e use:").size(11.5).color(p.muted));
+                    let mut rows: Vec<(&str, String)> = Vec::new();
+                    if let Some(w) = ls.public_ws() {
+                        rows.push(("pela internet (sem impressão digital)", w.to_string()));
+                    }
+                    if ls.lan {
+                        rows.push(("na rede local (TLS ligado)", self.local.lan_address()));
+                        if !self.local.fingerprint.is_empty() {
+                            rows.push(("impressão digital (só na rede local)", self.local.fingerprint.clone()));
+                        }
+                    }
+                    if rows.is_empty() {
+                        ui.label(RichText::new("Só este computador consegue conectar. Preencha o endereço público do túnel ou ligue as conexões da rede.").size(11.5).color(p.warning));
+                    }
+                    for (what, v) in rows {
+                        ui.label(RichText::new(what).size(11.0).color(p.muted));
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Label::new(RichText::new(&v).font(theme::mono(11.0)).color(p.text2)).wrap());
+                            if ui.small_button("Copiar").clicked() {
+                                copy(ui, &v);
+                            }
+                        });
+                    }
+                } else {
+                    ui.label(RichText::new("O servidor reinicia ao salvar (sessões em andamento caem).").size(11.5).color(p.muted));
+                }
+            } else {
+                theme::field_label(ui, "Endereço");
+                ui.add(egui::TextEdit::singleline(&mut self.settings.server.address).font(theme::mono(12.0)).hint_text("host:porta ou wss://dominio (Cloudflare Tunnel)").desired_width(f32::INFINITY));
+                let ws = self.settings.server.address.trim().starts_with("wss://") || self.settings.server.address.trim().starts_with("ws://");
+                if ws {
+                    ui.label(RichText::new("WebSocket: o TLS é o do endereço (wss://). Deixe a impressão digital vazia para Cloudflare.").size(11.5).color(p.muted));
+                } else {
+                    ui.checkbox(&mut self.settings.server.tls, "TLS (recomendado)");
+                }
+                theme::field_label(ui, "Impressão digital do certificado (servidor próprio autoassinado)");
+                ui.add(egui::TextEdit::singleline(&mut self.settings.server.pin).font(theme::mono(11.0)).hint_text("vazio = certificado público (Let's Encrypt, Cloudflare etc.)").desired_width(f32::INFINITY));
+            }
             ui.add_space(6.0);
             ui.label(RichText::new("O servidor registra só metadados (IDs, nomes dos computadores, horários e volume). Telas, teclas, arquivos e chat são cifrados ponta a ponta com uma chave que só os dois computadores têm.").size(11.5).color(p.muted));
             ui.add_space(12.0);

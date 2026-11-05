@@ -16,6 +16,7 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 rustls = { workspace = true }
 webpki-roots = "1"
+tungstenite = { workspace = true }
 arboard = { version = "3", default-features = false }
 image = { workspace = true }
 

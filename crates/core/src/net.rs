@@ -1,5 +1,6 @@
-//! Conexão com o servidor (TCP, com TLS por padrão) e leitura de quadros sem
-//! bloquear (para alternar envio e recebimento na mesma thread).
+//! Conexão com o servidor (TCP, com TLS por padrão, ou WebSocket para passar
+//! por proxies como o Cloudflare Tunnel) e leitura de quadros sem bloquear
+//! (para alternar envio e recebimento na mesma thread).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -11,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServerCfg {
-    /// "host:porta"
+    /// "host:porta", ou "wss://dominio[/caminho]" (WebSocket, ex.: Cloudflare Tunnel).
     pub address: String,
     pub tls: bool,
     /// Impressão digital SHA-256 (hex) de certificado autoassinado; vazio = cadeia pública.
@@ -27,6 +28,37 @@ impl Default for ServerCfg {
 pub enum Conn {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+    Ws(Box<Ws>),
+}
+
+/// WebSocket como fluxo de bytes: cada `flush` vira mensagens binárias (de
+/// até 64 KB); as mensagens recebidas são lidas em sequência.
+pub struct Ws {
+    ws: tungstenite::WebSocket<Conn>,
+    rd: Vec<u8>,
+    pos: usize,
+    wr: Vec<u8>,
+}
+
+const WS_CHUNK: usize = 64 * 1024;
+
+impl Ws {
+    fn send_chunks(&mut self, all: bool) -> std::io::Result<()> {
+        while self.wr.len() >= WS_CHUNK || (all && !self.wr.is_empty()) {
+            let n = self.wr.len().min(WS_CHUNK);
+            let chunk: Vec<u8> = self.wr.drain(..n).collect();
+            self.ws.write(tungstenite::Message::binary(chunk)).map_err(ws_err)?;
+        }
+        Ok(())
+    }
+}
+
+fn ws_err(e: tungstenite::Error) -> std::io::Error {
+    match e {
+        tungstenite::Error::Io(e) => e,
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => std::io::Error::new(ErrorKind::ConnectionAborted, "conexão encerrada"),
+        e => std::io::Error::other(e.to_string()),
+    }
 }
 
 impl Conn {
@@ -34,6 +66,7 @@ impl Conn {
         match self {
             Conn::Plain(s) => s,
             Conn::Tls(t) => t.get_ref(),
+            Conn::Ws(w) => w.ws.get_ref().tcp(),
         }
     }
 
@@ -47,6 +80,26 @@ impl Read for Conn {
         match self {
             Conn::Plain(s) => s.read(buf),
             Conn::Tls(t) => t.read(buf),
+            Conn::Ws(w) => loop {
+                if w.pos < w.rd.len() {
+                    let n = buf.len().min(w.rd.len() - w.pos);
+                    buf[..n].copy_from_slice(&w.rd[w.pos..w.pos + n]);
+                    w.pos += n;
+                    return Ok(n);
+                }
+                // Timeouts (WouldBlock/TimedOut) voltam como erro e podem ser
+                // repetidos: o tungstenite guarda o que já leu.
+                match w.ws.read() {
+                    Ok(tungstenite::Message::Binary(b)) => {
+                        w.rd = b.into();
+                        w.pos = 0;
+                    }
+                    Ok(tungstenite::Message::Close(_)) => return Ok(0),
+                    Ok(_) => {}
+                    Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => return Ok(0),
+                    Err(e) => return Err(ws_err(e)),
+                }
+            },
         }
     }
 }
@@ -56,12 +109,21 @@ impl Write for Conn {
         match self {
             Conn::Plain(s) => s.write(buf),
             Conn::Tls(t) => t.write(buf),
+            Conn::Ws(w) => {
+                w.wr.extend_from_slice(buf);
+                w.send_chunks(false)?;
+                Ok(buf.len())
+            }
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             Conn::Plain(s) => s.flush(),
             Conn::Tls(t) => t.flush(),
+            Conn::Ws(w) => {
+                w.send_chunks(true)?;
+                w.ws.flush().map_err(ws_err)
+            }
         }
     }
 }
@@ -95,7 +157,30 @@ fn hex(s: &str) -> Option<Vec<u8>> {
 }
 
 pub fn connect(cfg: &ServerCfg) -> Result<Conn, String> {
-    let addr = if cfg.address.contains(':') { cfg.address.clone() } else { format!("{}:{}", cfg.address, elo_proto::DEFAULT_PORT) };
+    let address = cfg.address.trim();
+    let ws = address.strip_prefix("wss://").map(|r| (true, r)).or_else(|| address.strip_prefix("ws://").map(|r| (false, r)));
+    let Some((secure, rest)) = ws else {
+        let addr = if address.contains(':') { address.to_string() } else { format!("{address}:{}", elo_proto::DEFAULT_PORT) };
+        return transport(&addr, cfg.tls, &cfg.pin);
+    };
+    // WebSocket: wss://host[:porta][/caminho]. Com wss o TLS é o do proxy
+    // (certificado público), a não ser que haja impressão digital.
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return Err(format!("endereço inválido: {address}"));
+    }
+    let has_port = authority.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) && !authority.ends_with(']');
+    let addr = if has_port { authority.to_string() } else { format!("{authority}:{}", if secure { 443 } else { 80 }) };
+    let conn = transport(&addr, secure, &cfg.pin)?;
+    match tungstenite::client::client(address, conn) {
+        Ok((ws, _)) => Ok(Conn::Ws(Box::new(Ws { ws, rd: Vec::new(), pos: 0, wr: Vec::new() }))),
+        Err(tungstenite::HandshakeError::Failure(e)) => Err(format!("WebSocket com {address}: {e}")),
+        Err(tungstenite::HandshakeError::Interrupted(_)) => Err(format!("WebSocket com {address}: tempo esgotado")),
+    }
+}
+
+/// TCP (e TLS, se pedido) até "host:porta".
+fn transport(addr: &str, tls: bool, pin: &str) -> Result<Conn, String> {
     let tcp = {
         use std::net::ToSocketAddrs;
         let addrs: Vec<_> = addr.to_socket_addrs().map_err(|e| format!("servidor {addr}: {e}"))?.collect();
@@ -113,19 +198,21 @@ pub fn connect(cfg: &ServerCfg) -> Result<Conn, String> {
         ok.ok_or_else(|| format!("não foi possível conectar a {addr}: {last}"))?
     };
     let _ = tcp.set_nodelay(true);
-    if !cfg.tls {
+    // Aperto de mão (TLS e WebSocket) com prazo; depois cada uso define o seu.
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(15)));
+    if !tls {
         return Ok(Conn::Plain(tcp));
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
-    let config = match hex(&cfg.pin) {
+    let config = match hex(pin) {
         Some(fp) => builder.dangerous().with_custom_certificate_verifier(Arc::new(Pinned(fp, provider))).with_no_client_auth(),
         None => {
             let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
             builder.with_root_certificates(roots).with_no_client_auth()
         }
     };
-    let host = addr.rsplit_once(':').map(|x| x.0).unwrap_or(&addr).trim_matches(['[', ']']).to_string();
+    let host = addr.rsplit_once(':').map(|x| x.0).unwrap_or(addr).trim_matches(['[', ']']).to_string();
     let name = ServerName::try_from(host.clone()).unwrap_or_else(|_| ServerName::try_from("elo".to_string()).expect("nome"));
     let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
     let mut s = rustls::StreamOwned::new(conn, tcp);
