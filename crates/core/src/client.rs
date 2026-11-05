@@ -34,6 +34,21 @@ pub struct Control {
     pub rx: Receiver<Event>,
 }
 
+/// Testa um servidor: conecta, apresenta-se e devolve o ID que ele atribui a
+/// este dispositivo (igual ao atual = é o mesmo servidor). Bloqueia até 15 s.
+pub fn probe(cfg: &ServerCfg, token: &[u8; 32], name: &str) -> Result<String, String> {
+    let mut c = connect(cfg)?;
+    let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION };
+    write_frame(&mut c, &postcard::to_stdvec(&hello).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    c.set_read_timeout(Some(Duration::from_secs(10)));
+    let f = elo_proto::frame::read_frame(&mut c).map_err(|e| format!("sem resposta do servidor: {e}"))?;
+    match postcard::from_bytes::<FromServer>(&f) {
+        Ok(FromServer::Welcome { id }) => Ok(id),
+        Ok(FromServer::Error { message, .. }) => Err(message),
+        _ => Err("resposta inesperada (não parece um servidor do Elo)".into()),
+    }
+}
+
 /// Inicia a thread de controle.
 pub fn start(cfg: ServerCfg, token: [u8; 32], name: String) -> Control {
     let (ctx, crx) = channel::<Command>();

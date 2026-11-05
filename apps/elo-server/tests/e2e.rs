@@ -190,6 +190,9 @@ fn websocket_like_cloudflare_tunnel() {
     let viewer = client::start(ws.clone(), [7u8; 32], "Visualizador".into());
     let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
     let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador (WebSocket) offline") };
+    // O botão "Testar" das configurações: pelo WebSocket, o mesmo servidor devolve o mesmo ID.
+    assert_eq!(client::probe(&ws, &[7u8; 32], "Visualizador").unwrap(), viewer_id);
+    assert!(client::probe(&ServerCfg { address: "ws://127.0.0.1:9".into(), tls: false, pin: String::new() }, &[7u8; 32], "x").is_err());
     if std::env::var("DISPLAY").is_err() {
         eprintln!("sem DISPLAY: sessão pulada");
         return;

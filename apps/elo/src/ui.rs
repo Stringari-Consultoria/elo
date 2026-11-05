@@ -579,10 +579,17 @@ impl EloApp {
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
         let mut close = false;
+        let mut test = false;
+        self.poll_probe();
+        if self.probe.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let max_h = (ctx.content_rect().height() - 150.0).max(240.0);
         egui::Modal::new(egui::Id::unique("settings")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(22))).show(ctx, |ui| {
             ui.set_width(480.0);
             ui.label(RichText::new("Configurações").font(theme::semibold(17.0)).color(p.text));
             ui.add_space(8.0);
+            egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
             theme::field_label(ui, "Nome deste computador");
             ui.add(egui::TextEdit::singleline(&mut self.settings.device_name).desired_width(f32::INFINITY));
             ui.add_space(6.0);
@@ -611,17 +618,33 @@ impl EloApp {
             ui.label(RichText::new("Servidor").font(theme::semibold(13.0)).color(p.text));
             ui.checkbox(&mut self.settings.local_server.enabled, "Rodar o servidor neste computador");
             if self.settings.local_server.enabled {
+                let probing = self.probe.is_some();
+                let probe_result = self.probe_result.clone();
                 let ls = &mut self.settings.local_server;
                 ui.horizontal(|ui| {
                     theme::field_label(ui, "Porta");
                     ui.add(egui::DragValue::new(&mut ls.port).range(1024..=65535).speed(0.0));
                 });
-                ui.checkbox(&mut ls.lan, "Aceitar conexões diretas da rede").on_hover_text("Desligado, só aceita conexões deste computador: use com o Cloudflare Tunnel (o cloudflared roda aqui) para não deixar a porta aberta na rede.");
+                ui.checkbox(&mut ls.lan, "Aceitar conexões diretas da rede").on_hover_text("Desligado, só aceita conexões deste computador (ex.: cloudflared instalado aqui), sem deixar a porta aberta na rede. Com o cloudflared no Docker, deixe ligado.");
                 theme::field_label(ui, "Endereço público (opcional)");
-                ui.add(egui::TextEdit::singleline(&mut ls.public).font(theme::mono(12.0)).hint_text("wss://elo.seudominio.com (Cloudflare Tunnel)").desired_width(f32::INFINITY));
+                ui.horizontal(|ui| {
+                    let w = ui.available_width() - 70.0;
+                    ui.add(egui::TextEdit::singleline(&mut ls.public).font(theme::mono(12.0)).hint_text("wss://elo.seudominio.com (Cloudflare Tunnel)").desired_width(w));
+                    let can = ls.public_ws().is_some() && !probing;
+                    if ui.add_enabled(can, egui::Button::new(if probing { "Testando…" } else { "Testar" })).on_hover_text("Conecta pelo endereço público e confere se ele chega a este servidor.").clicked() {
+                        test = true;
+                    }
+                });
                 if !ls.public.trim().is_empty() && ls.public_ws().is_none() {
                     ui.label(RichText::new("Comece com wss:// (o túnel do Cloudflare fala WebSocket).").size(11.5).color(p.danger));
                 }
+                if let Some((ok, msg)) = &probe_result {
+                    ui.horizontal(|ui| {
+                        icons::icon(ui, if *ok { Icon::Check } else { Icon::Alert }, 13.0, if *ok { p.success } else { p.danger });
+                        ui.add(egui::Label::new(RichText::new(msg).size(11.5).color(if *ok { p.success } else { p.danger })).wrap());
+                    });
+                }
+                cloudflare_help(ui, &p, ls.port);
                 if ls.same_bind(&self.local.started) {
                     if let Some(e) = &self.local.error {
                         ui.label(RichText::new(format!("Não foi possível iniciar: {e}")).size(11.5).color(p.danger));
@@ -666,6 +689,7 @@ impl EloApp {
             }
             ui.add_space(6.0);
             ui.label(RichText::new("O servidor registra só metadados (IDs, nomes dos computadores, horários e volume). Telas, teclas, arquivos e chat são cifrados ponta a ponta com uma chave que só os dois computadores têm.").size(11.5).color(p.muted));
+            });
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if theme::primary(ui, None, "Salvar", None).clicked() {
@@ -684,6 +708,9 @@ impl EloApp {
                 }
             });
         });
+        if test {
+            self.test_public();
+        }
         if close {
             self.show_settings = false;
         }
@@ -707,6 +734,66 @@ impl EloApp {
             }
         });
     }
+}
+
+/// Passo a passo do Cloudflare Tunnel (recolhível), com os valores para copiar.
+fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
+    egui::CollapsingHeader::new(RichText::new("Como publicar pela internet (Cloudflare Tunnel)").size(12.5).color(p.text2)).id_salt("cloudflare").show(ui, |ui| {
+        let text = |ui: &mut egui::Ui, t: &str| {
+            ui.add(egui::Label::new(RichText::new(t).size(11.5).color(p.text2)).wrap());
+        };
+        let value = |ui: &mut egui::Ui, label: &str, v: &str| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(label).size(11.5).color(p.muted));
+                ui.label(RichText::new(v).font(theme::mono(11.5)).color(p.text));
+                if ui.small_button("Copiar").clicked() {
+                    copy(ui, v);
+                }
+            });
+        };
+        text(ui, "1. No painel da Cloudflare (Zero Trust → Networks → Tunnels), abra o túnel e adicione uma rota do tipo Published application.");
+        text(ui, "2. Subdomínio e domínio à sua escolha (ex.: elo.seudominio.com). Path: vazio.");
+        text(ui, "3. Service, se o cloudflared roda direto neste computador:");
+        value(ui, "   Type HTTP · URL", &format!("localhost:{port}"));
+        text(ui, "   Se o cloudflared roda no Docker, \"localhost\" é o contêiner. Use Type HTTPS com o IP do gateway da rede do contêiner e, em Additional application settings → TLS, ligue No TLS Verify. Deixe \"Aceitar conexões diretas da rede\" ligado.");
+        let gws = docker_gateways();
+        if (1..=3).contains(&gws.len()) {
+            for g in &gws {
+                value(ui, "   Type HTTPS · URL", &format!("{g}:{port}"));
+            }
+            text(ui, "   (gateways das redes Docker deste computador: use o da rede do contêiner do cloudflared)");
+        } else {
+            if !gws.is_empty() {
+                text(ui, &format!("   Gateways das redes Docker deste computador: {}.", gws.join(", ")));
+            }
+            text(ui, &format!("   Para saber o da rede do cloudflared: docker inspect <contêiner> e procure \"Gateway\". A URL fica <gateway>:{port}."));
+        }
+        text(ui, "4. Preencha o Endereço público acima com wss:// e o seu endereço, e clique em Testar.");
+        text(ui, "5. Nos outros computadores: desligue \"Rodar o servidor neste computador\" e use o mesmo wss://, com a impressão digital vazia.");
+    });
+}
+
+/// Gateways das redes Docker (Linux): o computador visto de dentro dos
+/// contêineres. Lê as rotas das interfaces docker0/br-*; o gateway é o
+/// primeiro endereço da rede.
+fn docker_gateways() -> Vec<String> {
+    let Ok(t) = std::fs::read_to_string("/proc/net/route") else { return Vec::new() };
+    let mut v: Vec<String> = t
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split_whitespace().collect();
+            let (iface, dest, mask) = (*c.first()?, *c.get(1)?, *c.get(7)?);
+            if !(iface == "docker0" || iface.starts_with("br-")) || mask == "00000000" {
+                return None;
+            }
+            let d = u32::from_str_radix(dest, 16).ok()?.to_le_bytes();
+            Some(std::net::Ipv4Addr::new(d[0], d[1], d[2], d[3].wrapping_add(1)).to_string())
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 fn chat_panel(ui: &mut egui::Ui, chat: &mut Vec<ChatLine>, input: &mut String, transfers: &[elo_core::session::Transfer], mut send: impl FnMut(String)) {

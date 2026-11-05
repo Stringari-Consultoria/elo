@@ -153,6 +153,10 @@ pub struct EloApp {
     pub show_settings: bool,
     pub new_permanent: String,
     pub local: Local,
+    /// Teste do endereço público em andamento.
+    pub probe: Option<Receiver<Result<String, String>>>,
+    /// Resultado do último teste: (deu certo, mensagem).
+    pub probe_result: Option<(bool, String)>,
 }
 
 impl EloApp {
@@ -181,6 +185,8 @@ impl EloApp {
             show_settings: false,
             new_permanent: String::new(),
             local,
+            probe: None,
+            probe_result: None,
         };
         if let Some(e) = local_error {
             app.error(format!("Servidor local: {e}"));
@@ -236,6 +242,32 @@ impl EloApp {
 
     /// Aplica as configurações de servidor: reinicia o local se mudou e
     /// reconecta o cliente.
+    /// Testa o endereço público (wss://) numa thread: tem de chegar a este servidor.
+    pub fn test_public(&mut self) {
+        let Some(addr) = self.settings.local_server.public_ws().map(str::to_string) else { return };
+        let cfg = ServerCfg { address: addr, tls: true, pin: String::new() };
+        let (token, name) = (self.settings.token, self.settings.device_name.clone());
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(client::probe(&cfg, &token, &name));
+        });
+        self.probe = Some(rx);
+        self.probe_result = None;
+    }
+
+    /// Recolhe o resultado do teste, se já chegou.
+    pub fn poll_probe(&mut self) {
+        let Some(r) = self.probe.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.probe = None;
+        let mine = self.my_id().map(str::to_string);
+        self.probe_result = Some(match r {
+            Ok(id) if Some(&id) == mine.as_ref() => (true, "Funcionando: o endereço público chega a este servidor.".into()),
+            Ok(_) => (false, "O endereço responde, mas é outro servidor do Elo (o ID deste computador lá é diferente).".into()),
+            Err(e) if e.contains("502") || e.contains("530") => (false, format!("O Cloudflare não alcançou o Elo ({e}). Confira o Service da rota, nas instruções abaixo.")),
+            Err(e) => (false, format!("Não conectou: {e}")),
+        });
+    }
+
     pub fn reconnect_server(&mut self) {
         if !self.settings.local_server.same_bind(&self.local.started) {
             // Libera a porta antes de subir de novo.

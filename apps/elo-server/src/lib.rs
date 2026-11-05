@@ -299,6 +299,15 @@ async fn handle(state: Arc<State>, s: BoxStream, peer: SocketAddr) {
     }
 }
 
+/// Proxy em que se confia para informar o IP real do cliente: o próprio
+/// computador ou uma rede privada (ex.: cloudflared num contêiner Docker).
+fn trusted_proxy(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local(),
+        std::net::IpAddr::V6(v) => v.is_loopback() || v.is_unique_local() || v.to_ipv4_mapped().is_some_and(|m| m.is_loopback() || m.is_private()),
+    }
+}
+
 /// IP real do cliente atrás do proxy (só confiável quando o proxy é local).
 fn forwarded_ip(req: &tokio_tungstenite::tungstenite::handshake::server::Request) -> Option<std::net::IpAddr> {
     let h = req.headers();
@@ -315,7 +324,7 @@ async fn websocket(state: Arc<State>, s: tokio::io::BufReader<BoxStream>, peer: 
     use tokio_tungstenite::tungstenite::Message;
     let mut real = peer;
     let cb = |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
-        if peer.ip().is_loopback()
+        if trusted_proxy(peer.ip())
             && let Some(ip) = forwarded_ip(req)
         {
             real = SocketAddr::new(ip, 0);
