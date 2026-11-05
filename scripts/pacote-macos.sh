@@ -2,6 +2,9 @@
 # Gera dist/Elo-<versão>-macos.dmg com o Elo.app (universal: Apple Silicon e
 # Intel). Só roda no macOS (usa lipo, sips, iconutil, codesign e hdiutil).
 #
+# A janela do .dmg (fundo com seta, posições dos ícones) é montada com o
+# dmgbuild (instalado num venv temporário se faltar): packaging/macos/dmg.py.
+#
 # Variáveis opcionais:
 #   UNIVERSAL=0                 só a arquitetura desta máquina (mais rápido)
 #   ASSINATURA="Developer ID Application: Nome (TIME)"
@@ -10,6 +13,7 @@
 #                               botão direito na primeira vez)
 #   NOTARIZAR=perfil            notariza com `xcrun notarytool` usando um perfil
 #                               salvo com `notarytool store-credentials`
+#   NOTARIZAR_KEYCHAIN=arquivo  keychain do perfil, se não for o padrão (CI)
 set -euo pipefail
 
 [[ "$(uname)" == Darwin ]] || { echo "pacote-macos.sh só roda no macOS (use o workflow de release do GitHub)."; exit 1; }
@@ -64,16 +68,29 @@ else
 fi
 
 # ---- .dmg ----
-ln -s /Applications "$TMP/dmg/Aplicativos"
+# Janela com fundo e posições (dmgbuild, sem depender do Finder). Se não der
+# para instalar o dmgbuild, gera um .dmg simples com hdiutil.
 mkdir -p "$DIST"
 DMG="$DIST/Elo-$VERSAO-macos.dmg"
 rm -f "$DMG"
-hdiutil create -volname "Elo $VERSAO" -srcfolder "$TMP/dmg" -ov -format UDZO "$DMG" >/dev/null
+DMGBUILD="$(command -v dmgbuild || true)"
+if [[ -z "$DMGBUILD" ]] && python3 -m venv "$TMP/venv" >/dev/null 2>&1 && "$TMP/venv/bin/pip" install -q dmgbuild >/dev/null 2>&1; then
+    DMGBUILD="$TMP/venv/bin/dmgbuild"
+fi
+if [[ -n "$DMGBUILD" ]]; then
+    "$DMGBUILD" -s "$RAIZ/packaging/macos/dmg.py" \
+        -D app="$APP" -D fundo="$RAIZ/packaging/macos/dmg-fundo.png" -D icone="$APP/Contents/Resources/Elo.icns" \
+        "Elo $VERSAO" "$DMG"
+else
+    echo "aviso: dmgbuild indisponível; gerando .dmg simples" >&2
+    ln -s /Applications "$TMP/dmg/Aplicativos"
+    hdiutil create -volname "Elo $VERSAO" -srcfolder "$TMP/dmg" -ov -format UDZO "$DMG" >/dev/null
+fi
 
 if [[ -n "${NOTARIZAR:-}" ]]; then
     [[ -n "${ASSINATURA:-}" ]] || { echo "NOTARIZAR exige ASSINATURA (Developer ID)."; exit 1; }
     codesign --force --timestamp --sign "$ASSINATURA" "$DMG"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARIZAR" --wait
+    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARIZAR" ${NOTARIZAR_KEYCHAIN:+--keychain "$NOTARIZAR_KEYCHAIN"} --wait
     xcrun stapler staple "$DMG"
 fi
 echo "Gerado: $DMG"

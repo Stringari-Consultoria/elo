@@ -20,8 +20,9 @@ pub struct ServerCfg {
 }
 
 impl Default for ServerCfg {
+    /// Sem servidor externo: o app usa o servidor embutido até alguém preencher.
     fn default() -> Self {
-        Self { address: format!("elo.stringari.com.br:{}", elo_proto::DEFAULT_PORT), tls: true, pin: String::new() }
+        Self { address: String::new(), tls: true, pin: String::new() }
     }
 }
 
@@ -158,6 +159,9 @@ fn hex(s: &str) -> Option<Vec<u8>> {
 
 pub fn connect(cfg: &ServerCfg) -> Result<Conn, String> {
     let address = cfg.address.trim();
+    if address.is_empty() {
+        return Err("nenhum servidor configurado: em Configurações → Servidor, ligue o servidor deste computador ou preencha o endereço".into());
+    }
     let ws = address.strip_prefix("wss://").map(|r| (true, r)).or_else(|| address.strip_prefix("ws://").map(|r| (false, r)));
     let Some((secure, rest)) = ws else {
         let addr = if address.contains(':') { address.to_string() } else { format!("{address}:{}", elo_proto::DEFAULT_PORT) };

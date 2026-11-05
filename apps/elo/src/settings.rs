@@ -108,7 +108,11 @@ impl Settings {
         let p = config_dir().join("elo.json");
         // Sempre regrava: campos novos (inclusive o token do dispositivo, que
         // define o ID) ficam persistidos já na primeira abertura.
-        let s = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Settings>(&b).ok()).unwrap_or_default();
+        let mut s = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Settings>(&b).ok()).unwrap_or_default();
+        // Padrão antigo, de um servidor que não existe: vira "sem servidor".
+        if s.server.address.trim() == "elo.stringari.com.br:21116" {
+            s.server.address.clear();
+        }
         s.save();
         s
     }

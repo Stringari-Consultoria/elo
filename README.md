@@ -55,10 +55,12 @@ Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Con
 **No Linux** a sessão precisa ser **X11**. No Ubuntu, escolha "Ubuntu no Xorg"
 na tela de login. Wayland ainda não é suportado.
 
-**No macOS**, os builds ainda não são assinados pela Apple. Na primeira vez,
-clique com o botão direito no Elo e escolha **Abrir**. Para ser acessado, o Elo
-precisa das permissões de **Gravação de Tela** e **Acessibilidade**, em Ajustes
-do Sistema → Privacidade e Segurança.
+**No macOS**, os builds ainda não são assinados nem notarizados pela Apple, e
+na primeira abertura aparece "a Apple não pôde verificar". Para liberar: tente
+abrir o Elo uma vez, vá em **Ajustes do Sistema → Privacidade e Segurança**,
+role até o aviso sobre o Elo e clique em **Abrir Mesmo Assim**. Para ser
+acessado, o Elo também precisa das permissões de **Gravação de Tela** e
+**Acessibilidade**, na mesma tela de ajustes.
 
 **No Windows**, os builds ainda não são assinados. Se o SmartScreen avisar,
 clique em **Mais informações → Executar assim mesmo**. Na primeira abertura, o
@@ -210,6 +212,20 @@ o X11 de `DISPLAY` e são puladas sem ele.
 `ELO_CONFIG_DIR` muda a pasta de configuração. Serve para rodar duas instâncias
 na mesma máquina: na segunda, desligue o servidor local e aponte para
 `127.0.0.1:21116` com a impressão digital da primeira.
+
+**Assinatura no macOS:** o workflow de release assina com Developer ID e
+notariza quando estes *secrets* estão configurados no repositório (exige o
+[Apple Developer Program](https://developer.apple.com/programs/)):
+
+| Secret | Conteúdo |
+|---|---|
+| `APPLE_CERT_P12` | Certificado *Developer ID Application* exportado em `.p12`, em base64 |
+| `APPLE_CERT_PASSWORD` | Senha do `.p12` |
+| `APPLE_SIGN_IDENTITY` | Nome do certificado, ex.: `Developer ID Application: Nome (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID` | Conta Apple e Team ID, para a notarização |
+| `APPLE_APP_PASSWORD` | Senha de app gerada em [account.apple.com](https://account.apple.com) |
+
+Sem eles, o app sai com assinatura ad hoc (e o aviso acima).
 
 **Releases:** ao enviar uma tag `v*`, o workflow
 [`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`

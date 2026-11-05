@@ -163,8 +163,11 @@ impl EloApp {
                     };
                     ui.label(RichText::new(t).font(theme::mono(11.0)).color(c)).on_hover_text(self.local.error.clone().unwrap_or_else(|| "Servidor rodando neste computador. Outros computadores conectam neste endereço (Configurações → Servidor).".into()));
                 } else {
-                    let a = self.settings.server.address.trim();
-                    let tls = if a.starts_with("wss://") { "" } else if a.starts_with("ws://") || !self.settings.server.tls { " · sem TLS" } else { " · TLS" };
+                    let a = match self.settings.server.address.trim() {
+                        "" => "sem servidor configurado",
+                        a => a,
+                    };
+                    let tls = if self.settings.server.address.trim().is_empty() || a.starts_with("wss://") { "" } else if a.starts_with("ws://") || !self.settings.server.tls { " · sem TLS" } else { " · TLS" };
                     ui.label(RichText::new(format!("{a}{tls}")).font(theme::mono(11.0)).color(p.muted));
                 }
                 icons::icon(ui, Icon::Lock, 11.0, p.muted).on_hover_text("Sessões cifradas ponta a ponta (SPAKE2 + ChaCha20-Poly1305). O servidor não tem a chave.");
