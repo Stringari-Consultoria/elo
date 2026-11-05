@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
+mod onboarding;
 mod settings;
 mod ui;
 
@@ -10,5 +12,7 @@ fn main() -> eframe::Result {
         viewport = viewport.with_icon(icon);
     }
     let options = eframe::NativeOptions { renderer: eframe::Renderer::Wgpu, viewport, ..Default::default() };
-    eframe::run_native("Elo", options, Box::new(|cc| Ok(Box::new(app::EloApp::new(cc)))))
+    // Aberto pelo início automático: começa minimizado.
+    let background = std::env::args().any(|a| a == autostart::ARG);
+    eframe::run_native("Elo", options, Box::new(move |cc| Ok(Box::new(app::EloApp::new(cc, background)))))
 }

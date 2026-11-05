@@ -6,6 +6,29 @@ use elo_core::net::ServerCfg;
 use elo_proto::msg::Permissions;
 use serde::{Deserialize, Serialize};
 
+/// Computador salvo, com um nome escolhido por quem salvou.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Favorite {
+    pub id: String,
+    /// Nome dado aqui (vazio = usa o nome do computador).
+    pub alias: String,
+    /// Nome que o próprio computador informa.
+    pub name: String,
+    pub os: String,
+}
+
+impl Favorite {
+    pub fn label(&self) -> String {
+        if !self.alias.trim().is_empty() {
+            self.alias.trim().to_string()
+        } else if !self.name.is_empty() {
+            self.name.clone()
+        } else {
+            elo_proto::ctrl::pretty_id(&self.id)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recent {
     pub id: String,
@@ -65,10 +88,13 @@ pub struct Settings {
     pub default_permissions: Permissions,
     pub downloads: PathBuf,
     pub recent: Vec<Recent>,
+    pub favorites: Vec<Favorite>,
     /// 0 = velocidade, 1 = equilibrado, 2 = qualidade
     pub quality: usize,
     /// Ao conectar sem senha, pedir aceite (sempre verdadeiro; mantido para o futuro).
     pub allow_requests: bool,
+    /// Já passou pelas boas-vindas (escolha do servidor na primeira abertura).
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
@@ -85,8 +111,10 @@ impl Default for Settings {
             default_permissions: Permissions::default(),
             downloads,
             recent: Vec::new(),
+            favorites: Vec::new(),
             quality: 1,
             allow_requests: true,
+            onboarded: false,
         }
     }
 }
@@ -132,7 +160,31 @@ impl Settings {
         }
     }
 
+    pub fn favorite(&self, id: &str) -> Option<&Favorite> {
+        self.favorites.iter().find(|f| f.id == id)
+    }
+
+    /// Salva ou tira dos favoritos. Devolve se ficou salvo.
+    pub fn toggle_favorite(&mut self, id: &str, name: &str, os: &str) -> bool {
+        if self.favorite(id).is_some() {
+            self.favorites.retain(|f| f.id != id);
+            false
+        } else {
+            self.favorites.push(Favorite { id: id.into(), alias: String::new(), name: name.into(), os: os.into() });
+            true
+        }
+    }
+
     pub fn remember(&mut self, id: &str, name: &str, os: &str) {
+        // Mantém o nome e o sistema dos favoritos atualizados.
+        if let Some(f) = self.favorites.iter_mut().find(|f| f.id == id) {
+            if !name.is_empty() {
+                f.name = name.into();
+            }
+            if !os.is_empty() {
+                f.os = os.into();
+            }
+        }
         self.recent.retain(|r| r.id != id);
         let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         self.recent.insert(0, Recent { id: id.into(), name: name.into(), os: os.into(), when });

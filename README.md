@@ -37,6 +37,8 @@ sessão**, nem o próprio servidor.
 - **Acesso não assistido** com senha fixa.
 - **Permissões revogáveis** durante a sessão (controle, área de transferência, arquivos).
 - **Servidor embutido**: o app já sobe o servidor ao abrir, sem configurar nada.
+- **Assistente na primeira abertura**: escolha entre ser o servidor ou conectar a um, com teste.
+- **Favoritos** com nome personalizado, **tela cheia** e **iniciar com o computador**.
 - **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
 - **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
 
@@ -81,6 +83,13 @@ Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
 **Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
 configurações e ligue a opção na tela inicial. A conexão então entra sem
 ninguém do outro lado.
+
+**Favoritos:** na sessão, clique na estrela. Na tela inicial, os favoritos
+podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
+
+**Iniciar com o computador:** ligue em Configurações (ou no assistente). O Elo
+abre minimizado ao entrar no sistema, e o computador continua acessível depois
+de reiniciar.
 
 ## Servidor
 

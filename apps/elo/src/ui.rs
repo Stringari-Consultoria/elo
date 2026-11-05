@@ -13,7 +13,7 @@ fn card(p: &Palette) -> egui::Frame {
     egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(20))
 }
 
-fn copy(ui: &egui::Ui, t: &str) {
+pub(crate) fn copy(ui: &egui::Ui, t: &str) {
     ui.ctx().copy_text(t.to_string());
 }
 
@@ -32,15 +32,27 @@ fn human_bytes(b: u64) -> String {
 impl eframe::App for EloApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if std::mem::take(&mut self.start_minimized) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.pump(&ctx);
         let p = pal(ui);
+        // Tela cheia só faz sentido numa sessão aberta.
+        let fs = self.fullscreen && self.active_tab > 0 && self.active_tab <= self.views.len();
+        if self.fullscreen && !fs {
+            self.set_fullscreen(&ctx, false);
+        }
         // Barra de título.
-        egui::Panel::top("top").exact_size(44.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin { left: 14, right: 12, ..Default::default() })).show(ui, |ui| self.top_bar(ui));
+        if !fs {
+            egui::Panel::top("top").exact_size(44.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin { left: 14, right: 12, ..Default::default() })).show(ui, |ui| self.top_bar(ui));
+        }
         // Faixa "sendo acessado".
         if self.hosts.iter().any(|h| h.started) {
             egui::Panel::top("hosting").frame(egui::Frame::new().fill(p.warning_bg).stroke(Stroke::new(1.0, p.warning)).inner_margin(Margin::symmetric(14, 8))).show(ui, |ui| self.host_banner(ui));
         }
-        egui::Panel::bottom("status").exact_size(26.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status_bar(ui));
+        if !fs {
+            egui::Panel::bottom("status").exact_size(26.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status_bar(ui));
+        }
         let tab = self.active_tab;
         if tab == 0 || tab > self.views.len() {
             self.active_tab = 0;
@@ -57,8 +69,23 @@ impl eframe::App for EloApp {
                 });
             }
             egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(24))).show(ui, |ui| self.remote_view(ui, idx));
+            match self.session_act.take() {
+                Some(SessAct::Fullscreen) => {
+                    let on = !self.fullscreen;
+                    self.set_fullscreen(&ctx, on);
+                }
+                Some(SessAct::Favorite) => {
+                    let v = &self.views[idx];
+                    let (id, name, os) = (v.target_id.clone(), v.target_name.clone(), v.os.clone());
+                    let on = self.settings.toggle_favorite(&id, &name, &os);
+                    self.settings.save();
+                    self.toast(if on { "Salvo nos favoritos. Dá para renomear na tela inicial." } else { "Removido dos favoritos." });
+                }
+                None => {}
+            }
         }
         self.dialogs(&ctx);
+        self.onboarding_ui(&ctx);
         self.toasts_ui(&ctx);
         // Sessões encerradas: avisa e fecha a aba.
         let mut closed = Vec::new();
@@ -117,7 +144,11 @@ impl EloApp {
             }
             let mut close = None;
             for (i, v) in self.views.iter().enumerate() {
-                let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+                let name = match self.settings.favorite(&v.target_id) {
+                    Some(f) => f.label(),
+                    None if v.target_name.is_empty() => pretty_id(&v.target_id),
+                    None => v.target_name.clone(),
+                };
                 let r = tab(ui, self.active_tab == i + 1, &format!("{name}  ×"));
                 if r.clicked() {
                     // Clique no "×" (fim da aba) encerra.
@@ -325,27 +356,106 @@ impl EloApp {
                         }
                     });
                     ui.add_space(14.0);
-                    if !self.settings.recent.is_empty() {
+                    // Favoritos e recentes: clique preenche o ID; clique duplo já conecta.
+                    let mut go: Option<(String, bool)> = None;
+                    let mut star: Option<(String, String, String)> = None;
+                    let mut start_rename: Option<String> = None;
+                    let mut renamed: Option<(String, String)> = None;
+                    let mut unfav: Option<String> = None;
+                    let row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+                        egui::Frame::new().fill(p.panel).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| add(ui));
+                        });
+                        ui.add_space(4.0);
+                    };
+                    let pick = |r: egui::Response, id: &str, go: &mut Option<(String, bool)>| {
+                        let r = r.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if r.double_clicked() {
+                            *go = Some((id.to_string(), true));
+                        } else if r.clicked() {
+                            *go = Some((id.to_string(), false));
+                        }
+                    };
+                    if !self.settings.favorites.is_empty() {
+                        ui.label(RichText::new("Favoritos").size(12.0).color(p.text2));
+                        for f in &self.settings.favorites {
+                            let renaming = &mut self.renaming;
+                            row(ui, &mut |ui| {
+                                icons::icon(ui, Icon::Star, 15.0, p.accent);
+                                match renaming.as_mut().filter(|(id, _)| *id == f.id) {
+                                    Some((_, text)) => {
+                                        let r = ui.add(egui::TextEdit::singleline(text).hint_text(f.name.as_str()).desired_width(ui.available_width() - 40.0));
+                                        r.request_focus();
+                                        if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                            renamed = Some((f.id.clone(), text.trim().to_string()));
+                                        }
+                                    }
+                                    None => {
+                                        let r = ui.vertical(|ui| {
+                                            ui.label(RichText::new(f.label()).size(12.5).color(p.text));
+                                            let sub = if f.alias.trim().is_empty() || f.name.is_empty() { format!("{} · {}", pretty_id(&f.id), f.os) } else { format!("{} · {} · {}", f.name, pretty_id(&f.id), f.os) };
+                                            ui.label(RichText::new(sub).font(theme::mono(11.0)).color(p.muted));
+                                        });
+                                        pick(r.response, &f.id, &mut go);
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            if theme::icon_button(ui, Icon::Close, "Tirar dos favoritos", false).clicked() {
+                                                unfav = Some(f.id.clone());
+                                            }
+                                            if theme::icon_button(ui, Icon::Edit, "Renomear", false).clicked() {
+                                                start_rename = Some(f.id.clone());
+                                            }
+                                        });
+                                    }
+                                }
+                            });
+                        }
+                        ui.add_space(6.0);
+                    }
+                    let recent: Vec<_> = self.settings.recent.iter().filter(|r| self.settings.favorite(&r.id).is_none()).take(6).collect();
+                    if !recent.is_empty() {
                         ui.label(RichText::new("Recentes").size(12.0).color(p.text2));
-                        let mut go = None;
-                        for r in self.settings.recent.iter().take(6) {
-                            let resp = egui::Frame::new().fill(p.panel).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    icons::icon(ui, Icon::Monitor, 15.0, p.text2);
-                                    ui.vertical(|ui| {
-                                        ui.label(RichText::new(if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }).size(12.5).color(p.text));
-                                        ui.label(RichText::new(format!("{} · {}", pretty_id(&r.id), r.os)).font(theme::mono(11.0)).color(p.muted));
-                                    });
+                        for r in recent {
+                            row(ui, &mut |ui| {
+                                icons::icon(ui, Icon::Monitor, 15.0, p.text2);
+                                let resp = ui.vertical(|ui| {
+                                    ui.label(RichText::new(if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }).size(12.5).color(p.text));
+                                    ui.label(RichText::new(format!("{} · {}", pretty_id(&r.id), r.os)).font(theme::mono(11.0)).color(p.muted));
+                                });
+                                pick(resp.response, &r.id, &mut go);
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if theme::icon_button(ui, Icon::Star, "Salvar nos favoritos", false).clicked() {
+                                        star = Some((r.id.clone(), r.name.clone(), r.os.clone()));
+                                    }
                                 });
                             });
-                            if resp.response.interact(Sense::click()).clicked() {
-                                go = Some(r.id.clone());
-                            }
-                            ui.add_space(4.0);
                         }
-                        if let Some(id) = go {
-                            self.target = pretty_id(&id);
+                    }
+                    if let Some(id) = start_rename {
+                        let cur = self.settings.favorite(&id).map(|f| f.alias.clone()).unwrap_or_default();
+                        self.renaming = Some((id, cur));
+                    }
+                    if let Some((id, alias)) = renamed {
+                        if let Some(f) = self.settings.favorites.iter_mut().find(|f| f.id == id) {
+                            f.alias = alias;
+                        }
+                        self.renaming = None;
+                        self.settings.save();
+                    }
+                    if let Some(id) = unfav {
+                        self.settings.favorites.retain(|f| f.id != id);
+                        self.settings.save();
+                    }
+                    if let Some((id, name, os)) = star {
+                        self.settings.toggle_favorite(&id, &name, &os);
+                        self.settings.save();
+                        self.renaming = Some((id, String::new()));
+                    }
+                    if let Some((id, now)) = go {
+                        self.target = pretty_id(&id);
+                        if now {
+                            let pw = self.password.clone();
+                            self.connect(id, pw);
                         }
                     }
                 });
@@ -358,6 +468,9 @@ impl EloApp {
     fn remote_view(&mut self, ui: &mut egui::Ui, idx: usize) {
         let p = pal(ui);
         let ctx = ui.ctx().clone();
+        let fav = self.settings.favorite(&self.views[idx].target_id).is_some();
+        let fs = self.fullscreen;
+        let act = &mut self.session_act;
         let v = &mut self.views[idx];
         // Barra da sessão.
         egui::Frame::new().fill(p.chrome).inner_margin(Margin::symmetric(10, 5)).show(ui, |ui| {
@@ -365,10 +478,10 @@ impl EloApp {
             if ui.available_width() >= 1060.0 {
                 ui.horizontal(|ui| {
                     session_info(ui, &p, v);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| session_controls(ui, v, idx));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| *act = session_controls(ui, v, idx, fav, fs).or(act.take()));
                 });
             } else {
-                ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| session_controls(ui, v, idx)));
+                ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| *act = session_controls(ui, v, idx, fav, fs).or(act.take())));
                 ui.horizontal(|ui| session_info(ui, &p, v));
             }
         });
@@ -417,9 +530,19 @@ impl EloApp {
         }
         // Entrada: só com o mouse sobre a tela remota (ou arrastando).
         let hovered = resp.hovered() || resp.dragged();
+        // Cursor remoto: a captura não inclui o cursor. Desenha a seta onde ele
+        // está, menos quando é só o nosso mouse (parado em cima ou se movendo).
+        let remote_cursor = v.remote.lock().unwrap_or_else(|e| e.into_inner()).cursor;
+        if let Some((cx, cy)) = remote_cursor {
+            let pos = rect.left_top() + Vec2::new(cx as f32 * scale, cy as f32 * scale);
+            let local = ctx.pointer_hover_pos().filter(|_| hovered);
+            let ours = local.is_some_and(|l| l.distance(pos) < 6.0 || v.last_move.elapsed() < std::time::Duration::from_millis(600));
+            if rect.contains(pos) && !ours {
+                paint_cursor(ui.painter(), pos);
+            }
+        }
         if hovered {
             resp.request_focus();
-            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
             let to_remote = |pos: egui::Pos2| (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32);
             let cmd = &v.handle.cmd;
             let send = |i: Input| {
@@ -430,6 +553,7 @@ impl EloApp {
                 match e {
                     egui::Event::PointerMoved(pos) => {
                         if rect.contains(pos) {
+                            v.last_move = std::time::Instant::now();
                             let (x, y) = to_remote(pos);
                             send(Input::MouseMove { x, y });
                         }
@@ -583,6 +707,9 @@ impl EloApp {
         let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
         let mut close = false;
         let mut test = false;
+        let mut save = false;
+        let mut wizard = false;
+        let mut renamed = false;
         self.poll_probe();
         if self.probe.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -595,6 +722,8 @@ impl EloApp {
             egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
             theme::field_label(ui, "Nome deste computador");
             ui.add(egui::TextEdit::singleline(&mut self.settings.device_name).desired_width(f32::INFINITY));
+            ui.add_space(6.0);
+            ui.checkbox(&mut self.autostart, "Iniciar o Elo junto com o computador").on_hover_text("Abre minimizado ao entrar no sistema, para continuar acessível depois de reiniciar.");
             ui.add_space(6.0);
             theme::field_label(ui, "Senha fixa (acesso não assistido)");
             ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent_password.is_empty() { "mínimo de 8 caracteres" } else { "•••••••• (digite para trocar)" }).desired_width(f32::INFINITY));
@@ -696,6 +825,8 @@ impl EloApp {
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if theme::primary(ui, None, "Salvar", None).clicked() {
+                    save = true;
+                    renamed = crate::settings::Settings::load().device_name != self.settings.device_name;
                     if self.new_permanent.len() >= 8 {
                         self.settings.permanent_password = std::mem::take(&mut self.new_permanent);
                         self.settings.unattended = true;
@@ -706,13 +837,37 @@ impl EloApp {
                 }
                 if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.settings = crate::settings::Settings::load();
+                    self.autostart = crate::autostart::enabled();
                     self.new_permanent.clear();
                     close = true;
                 }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    if theme::ghost(ui, None, "Assistente inicial").on_hover_text("Abre de novo as boas-vindas: nome, servidor e início automático.").clicked() {
+                        wizard = true;
+                    }
+                });
             });
         });
         if test {
             self.test_public();
+        }
+        if save {
+            if self.autostart != crate::autostart::enabled()
+                && let Err(e) = crate::autostart::set(self.autostart)
+            {
+                self.error(format!("Iniciar com o computador: {e}"));
+            }
+            self.autostart = crate::autostart::enabled();
+            // O nome só vai ao servidor ao conectar.
+            if renamed {
+                self.restart_control();
+            }
+        }
+        if wizard {
+            self.settings = crate::settings::Settings::load();
+            self.onboarding = Some(crate::onboarding::Onboarding::new(&self.settings, self.autostart));
+            self.probe_result = None;
+            close = true;
         }
         if close {
             self.show_settings = false;
@@ -740,7 +895,7 @@ impl EloApp {
 }
 
 /// Passo a passo do Cloudflare Tunnel (recolhível), com os valores para copiar.
-fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
+pub(crate) fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
     egui::CollapsingHeader::new(RichText::new("Como publicar pela internet (Cloudflare Tunnel)").size(12.5).color(p.text2)).id_salt("cloudflare").show(ui, |ui| {
         let text = |ui: &mut egui::Ui, t: &str| {
             ui.add(egui::Label::new(RichText::new(t).size(11.5).color(p.text2)).wrap());
@@ -840,9 +995,22 @@ fn session_info(ui: &mut egui::Ui, p: &Palette, v: &ViewSession) {
     ui.label(RichText::new(format!("{} min · {fps} qps · {}", v.started.elapsed().as_secs() / 60, human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed)))).size(11.5).color(p.muted)).on_hover_text("Duração · quadros por segundo · dados recebidos");
 }
 
-fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize) {
+/// Ação da barra da sessão que mexe no app (fora da sessão).
+pub enum SessAct {
+    Fullscreen,
+    Favorite,
+}
+
+fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fullscreen: bool) -> Option<SessAct> {
+    let mut act = None;
     if theme::danger_button(ui, "Encerrar").clicked() {
         v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if ui.selectable_label(fullscreen, if fullscreen { "Sair da tela cheia" } else { "Tela cheia" }).clicked() {
+        act = Some(SessAct::Fullscreen);
+    }
+    if theme::icon_button(ui, Icon::Star, if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" }, fav).clicked() {
+        act = Some(SessAct::Favorite);
     }
     if ui.selectable_label(v.chat_open, "Chat").clicked() {
         v.chat_open = !v.chat_open;
@@ -889,4 +1057,20 @@ fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize) {
         }
     }
     ui.checkbox(&mut v.fit, "Ajustar").on_hover_text("Ajustar a tela remota à janela (desligado = tamanho real)");
+    act
+}
+
+/// Seta do mouse (o cursor do computador remoto, que a captura não inclui).
+fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
+    let pts: Vec<egui::Pos2> = [(0.0, 0.0), (0.0, 17.0), (4.0, 13.0), (7.0, 20.0), (9.0, 19.0), (6.0, 12.0), (12.0, 12.0)].iter().map(|&(x, y)| tip + Vec2::new(x, y)).collect();
+    // Leque a partir da ponta: todos os vértices são visíveis dela.
+    let mut mesh = egui::Mesh::default();
+    for &q in &pts {
+        mesh.colored_vertex(q, Color32::WHITE);
+    }
+    for i in 1..pts.len() as u32 - 1 {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.0, Color32::BLACK)));
 }

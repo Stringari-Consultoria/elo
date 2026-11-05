@@ -108,6 +108,8 @@ pub struct ViewSession {
     pub quality: usize,
     pub mods: egui::Modifiers,
     pub started: Instant,
+    /// Último movimento do mouse local sobre a tela remota.
+    pub last_move: Instant,
 }
 
 /// Sessão em que este computador está sendo acessado.
@@ -153,15 +155,28 @@ pub struct EloApp {
     pub show_settings: bool,
     pub new_permanent: String,
     pub local: Local,
-    /// Teste do endereço público em andamento.
-    pub probe: Option<Receiver<Result<String, String>>>,
+    /// Teste de servidor em andamento; `true` = tem de ser este mesmo servidor.
+    pub probe: Option<(Receiver<Result<String, String>>, bool)>,
     /// Resultado do último teste: (deu certo, mensagem).
     pub probe_result: Option<(bool, String)>,
+    /// Boas-vindas (primeira abertura).
+    pub onboarding: Option<crate::onboarding::Onboarding>,
+    /// Iniciar com o computador (como está no sistema).
+    pub autostart: bool,
+    /// Aberto pelo início automático: minimiza no primeiro quadro.
+    pub start_minimized: bool,
+    /// Sessão em tela cheia (esconde as barras do Elo).
+    pub fullscreen: bool,
+    /// Favorito sendo renomeado: (ID, texto).
+    pub renaming: Option<(String, String)>,
+    /// Ação pedida na barra da sessão (aplicada depois de desenhar).
+    pub session_act: Option<crate::ui::SessAct>,
 }
 
 impl EloApp {
-    pub fn new(cc: &eframe::CreationContext) -> Self {
+    pub fn new(cc: &eframe::CreationContext, background: bool) -> Self {
         let settings = Settings::load();
+        crate::autostart::refresh();
         stringari_ui::theme::install_fonts(&cc.egui_ctx);
         stringari_ui::theme::apply(&cc.egui_ctx, settings.dark);
         // O servidor local sobe antes do cliente, que já conecta nele.
@@ -187,7 +202,16 @@ impl EloApp {
             local,
             probe: None,
             probe_result: None,
+            onboarding: None,
+            autostart: crate::autostart::enabled(),
+            start_minimized: background,
+            fullscreen: false,
+            renaming: None,
+            session_act: None,
         };
+        if !app.settings.onboarded {
+            app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
+        }
         if let Some(e) = local_error {
             app.error(format!("Servidor local: {e}"));
         }
@@ -242,30 +266,49 @@ impl EloApp {
 
     /// Aplica as configurações de servidor: reinicia o local se mudou e
     /// reconecta o cliente.
+    pub fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        self.fullscreen = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    }
+
     /// Testa o endereço público (wss://) numa thread: tem de chegar a este servidor.
     pub fn test_public(&mut self) {
         let Some(addr) = self.settings.local_server.public_ws().map(str::to_string) else { return };
-        let cfg = ServerCfg { address: addr, tls: true, pin: String::new() };
+        self.test_server(ServerCfg { address: addr, tls: true, pin: String::new() }, true);
+    }
+
+    /// Testa um servidor numa thread. `mine`: tem de ser este mesmo servidor
+    /// (endereço público); senão, basta responder (servidor de outra pessoa).
+    pub fn test_server(&mut self, cfg: ServerCfg, mine: bool) {
         let (token, name) = (self.settings.token, self.settings.device_name.clone());
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let _ = tx.send(client::probe(&cfg, &token, &name));
         });
-        self.probe = Some(rx);
+        self.probe = Some((rx, mine));
         self.probe_result = None;
     }
 
     /// Recolhe o resultado do teste, se já chegou.
     pub fn poll_probe(&mut self) {
-        let Some(r) = self.probe.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        let Some((r, same)) = self.probe.as_ref().and_then(|(rx, same)| rx.try_recv().ok().map(|r| (r, *same))) else { return };
         self.probe = None;
         let mine = self.my_id().map(str::to_string);
         self.probe_result = Some(match r {
+            Ok(id) if !same => (true, format!("Conectado. Neste servidor, este computador terá o ID {}.", elo_proto::ctrl::pretty_id(&id))),
             Ok(id) if Some(&id) == mine.as_ref() => (true, "Funcionando: o endereço público chega a este servidor.".into()),
             Ok(_) => (false, "O endereço responde, mas é outro servidor do Elo (o ID deste computador lá é diferente).".into()),
             Err(e) if e.contains("502") || e.contains("530") => (false, format!("O Cloudflare não alcançou o Elo ({e}). Confira o Service da rota, nas instruções abaixo.")),
             Err(e) => (false, format!("Não conectou: {e}")),
         });
+    }
+
+    /// Reinicia a conexão com o servidor (ex.: o nome do computador mudou,
+    /// e ele só é enviado ao conectar).
+    pub fn restart_control(&mut self) {
+        let _ = self.control.tx.send(Command::Quit);
+        self.control = client::start(self.server_cfg(), self.settings.token, self.settings.device_name.clone());
+        self.status = Status::Connecting;
     }
 
     pub fn reconnect_server(&mut self) {
@@ -342,6 +385,7 @@ impl EloApp {
                         quality: q,
                         mods: egui::Modifiers::NONE,
                         started: Instant::now(),
+                        last_move: Instant::now(),
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();

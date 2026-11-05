@@ -69,6 +69,7 @@ pub enum Icon {
     /// Marca do Traço: um traço que vira volume.
     Traco,
     Cursor,
+    Star,
     Eraser,
     Bucket,
     Pencil,
@@ -516,6 +517,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.closed(&[(12.0, 6.0), (20.0, 10.0), (20.0, 18.0), (12.0, 14.0)]);
             pen.line(&[(12.0, 14.0), (4.0, 18.0)]);
         }
+        Icon::Star => pen.closed(&[(12.00, 3.10), (14.41, 9.28), (21.04, 9.66), (15.90, 13.87), (17.58, 20.29), (12.00, 16.70), (6.42, 20.29), (8.10, 13.87), (2.96, 9.66), (9.59, 9.28)]),
         Icon::Cursor => pen.closed(&[(6.0, 3.5), (18.5, 13.5), (12.5, 14.5), (15.5, 20.5), (13.0, 21.5), (10.0, 15.5), (6.0, 19.5)]),
         Icon::Eraser => {
             pen.closed(&[(3.5, 15.0), (13.0, 5.5), (20.5, 13.0), (13.5, 20.0), (8.5, 20.0)]);
