@@ -31,10 +31,10 @@ fn icon() -> Option<tray_icon::Icon> {
 
 pub fn create(ctx: &egui::Context) -> Option<Tray> {
     let menu = Menu::new();
-    let id_item = MenuItem::new("Seu ID: —", false, None);
-    let open = MenuItem::new(format!("Abrir o {}", crate::variant::app_name()), true, None);
-    let copy = MenuItem::new("Copiar ID", true, None);
-    let quit = MenuItem::new(format!("Sair do {}", crate::variant::app_name()), true, None);
+    let id_item = MenuItem::new(t!("Seu ID: —"), false, None);
+    let open = MenuItem::new(t!("Abrir o {}", crate::variant::app_name()), true, None);
+    let copy = MenuItem::new(t!("Copiar ID"), true, None);
+    let quit = MenuItem::new(t!("Sair do {}", crate::variant::app_name()), true, None);
     menu.append_items(&[&id_item, &PredefinedMenuItem::separator(), &open, &copy, &PredefinedMenuItem::separator(), &quit]).ok()?;
     let icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(crate::variant::app_name()).with_icon(icon()?).build().ok()?;
 
@@ -65,7 +65,7 @@ impl Tray {
     /// Mostra o ID atual no menu.
     pub fn set_id(&mut self, id: Option<&str>) {
         let text = match id {
-            Some(id) => format!("Seu ID: {}", elo_proto::ctrl::pretty_id(id)),
+            Some(id) => t!("Seu ID: {}", elo_proto::ctrl::pretty_id(id)),
             None => "Seu ID: —".to_string(),
         };
         if text != self.shown_id {

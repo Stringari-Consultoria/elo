@@ -21,11 +21,12 @@ pub(crate) fn copy(ui: &egui::Ui, t: &str) {
 fn human_bytes(b: u64) -> String {
     let b = b as f64;
     if b > 1e9 {
-        format!("{:.1} GB", b / 1e9)
+        t!("{} GB", format!("{:.1}", b / 1e9))
     } else if b > 1e6 {
-        format!("{:.1} MB", b / 1e6)
+        t!("{} MB", format!("{:.1}", b / 1e6)
+    )
     } else {
-        format!("{:.0} KB", b / 1e3)
+        t!("{} KB", format!("{:.0}", b / 1e3))
     }
     .replace('.', ",")
 }
@@ -104,11 +105,11 @@ impl eframe::App for EloApp {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 1.0;
-                            ui.label(RichText::new("Mensagens").font(theme::semibold(14.0)).color(m.label));
-                            ui.label(RichText::new(format!("com {who}")).size(11.5).color(m.label2));
+                            ui.label(RichText::new(t!("Mensagens")).font(theme::semibold(14.0)).color(m.label));
+                            ui.label(RichText::new(t!("com {}", who)).size(11.5).color(m.label2));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if mac::round_icon(ui, &m, Icon::Close, "Fechar", 26.0, true).clicked() {
+                            if mac::round_icon(ui, &m, Icon::Close, t!("Fechar"), 26.0, true).clicked() {
                                 v.chat_open = false;
                             }
                         });
@@ -156,11 +157,11 @@ impl eframe::App for EloApp {
                     let now = std::time::Instant::now();
                     self.reconnects.retain(|x| x.id != v.target_id);
                     self.reconnects.push(crate::app::Reconnect { id: v.target_id.clone(), name: name.clone(), password: v.password.clone(), next_try: now + std::time::Duration::from_secs(20), until: now + std::time::Duration::from_secs(360) });
-                    closed.push((i, format!("{name} está reiniciando. O Elo reconecta sozinho quando ele voltar.")));
+                    closed.push((i, t!("{} está reiniciando. O Elo reconecta sozinho quando ele voltar.", name)));
                 } else if r.starts_with("senha incorreta") && v.password == self.settings.saved_password(&v.target_id).unwrap_or_default() {
-                    closed.push((i, format!("{name}: a senha salva no favorito não foi aceita. Se a senha fixa de lá mudou, atualize no lápis do cartão do favorito.")));
+                    closed.push((i, t!("{}: a senha salva no favorito não foi aceita. Se a senha fixa de lá mudou, atualize no lápis do cartão do favorito.", name)));
                 } else {
-                    closed.push((i, format!("{name}: {r}")));
+                    closed.push((i, t!("{}: {}", name, r)));
                 }
             }
         }
@@ -205,23 +206,23 @@ impl EloApp {
                     .stroke(Stroke::new(1.0, if on { p.border_strong } else { Color32::TRANSPARENT }))
                     .corner_radius(CornerRadius::same(7))
                     .inner_margin(Margin::symmetric(12, 5))
-                    .show(ui, |ui| ui.label(RichText::new(text).size(12.5).color(if on { p.text } else { p.text2 })))
+                    .show(ui, |ui| { ui.label(RichText::new(text).size(12.5).color(if on { p.text } else { p.text2 }))})
                     .response
                     .interact(Sense::click())
             };
-            if tab(ui, self.active_tab == 0 && !self.clients_open, "Início").clicked() {
+            if tab(ui, self.active_tab == 0 && !self.clients_open, t!("Início")).clicked() {
                 self.active_tab = 0;
                 self.clients_open = false;
             }
             // Técnico logado: empresas, computadores e pedidos de ajuda.
             if let Some(o) = &self.overview {
                 let waiting = o.requests.iter().filter(|r| r.taken_by.is_none()).count();
-                let text = if waiting > 0 { format!("Clientes ({waiting})") } else { "Clientes".to_string() };
+                let text = if waiting > 0 { t!("Clientes ({})", waiting) } else { t!("Clientes").to_string() };
                 let r = tab(ui, self.active_tab == 0 && self.clients_open, &text);
                 if waiting > 0 {
                     ui.painter().circle_filled(r.rect.right_top() + Vec2::new(-3.0, 3.0), 4.0, p.danger);
                 }
-                if r.on_hover_text("Empresas atendidas, computadores e pedidos de ajuda").clicked() {
+                if r.on_hover_text(t!("Empresas atendidas, computadores e pedidos de ajuda")).clicked() {
                     self.active_tab = 0;
                     self.clients_open = true;
                 }
@@ -233,7 +234,7 @@ impl EloApp {
                     None if v.target_name.is_empty() => pretty_id(&v.target_id),
                     None => v.target_name.clone(),
                 };
-                let r = tab(ui, self.active_tab == i + 1, &format!("{name}  ×"));
+                let r = tab(ui, self.active_tab == i + 1, &t!("{}  ×", name));
                 if r.clicked() {
                     // Clique no "×" (fim da aba) encerra.
                     if ui.input(|i| i.pointer.interact_pos()).is_some_and(|pos| pos.x > r.rect.right() - 22.0) {
@@ -247,11 +248,11 @@ impl EloApp {
                 self.views[i].handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if theme::icon_button(ui, Icon::Gear, "Configurações", false).clicked() {
+                if theme::icon_button(ui, Icon::Gear, t!("Configurações"), false).clicked() {
                     self.show_settings = true;
                 }
                 let icon = if self.settings.dark { Icon::Sun } else { Icon::Moon };
-                if theme::icon_button(ui, icon, "Tema claro/escuro", false).clicked() {
+                if theme::icon_button(ui, icon, t!("Tema claro/escuro"), false).clicked() {
                     self.settings.dark = !self.settings.dark;
                     theme::apply(ui.ctx(), self.settings.dark);
                     self.settings.save();
@@ -264,28 +265,28 @@ impl EloApp {
         let p = pal(ui);
         ui.horizontal_centered(|ui| {
             let (c, t) = match &self.status {
-                Status::Online(_) => (p.success, "Pronto para conexões".to_string()),
-                Status::Connecting => (p.warning, "Conectando ao servidor…".to_string()),
-                Status::Offline(r) => (p.danger, format!("Sem conexão: {r}")),
+                Status::Online(_) => (p.success, t!("Pronto para conexões").to_string()),
+                Status::Connecting => (p.warning, t!("Conectando ao servidor…").to_string()),
+                Status::Offline(r) => (p.danger, t!("Sem conexão: {}", r)),
             };
             theme::dot(ui, c, 8.0);
             ui.label(RichText::new(t).size(11.5).color(p.text2));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if self.settings.local_server.enabled {
                     let (t, c) = match &self.local.error {
-                        Some(_) => ("servidor local com erro".to_string(), p.danger),
-                        None => (format!("servidor local · {}", self.local.started.public_ws().map(str::to_string).unwrap_or_else(|| if self.local.started.lan { format!("{} · TLS", self.local.lan_address()) } else { "só este computador".into() })), p.muted),
+                        Some(_) => (t!("servidor local com erro").to_string(), p.danger),
+                        None => (t!("servidor local · {}", self.local.started.public_ws().map(str::to_string).unwrap_or_else(|| if self.local.started.lan { format!("{} · TLS", self.local.lan_address()) } else { "só este computador".into() })), p.muted),
                     };
-                    ui.label(RichText::new(t).font(theme::mono(11.0)).color(c)).on_hover_text(self.local.error.clone().unwrap_or_else(|| "Servidor rodando neste computador. Outros computadores conectam neste endereço (Configurações → Servidor).".into()));
+                    ui.label(RichText::new(t).font(theme::mono(11.0)).color(c)).on_hover_text(self.local.error.clone().unwrap_or_else(|| t!("Servidor rodando neste computador. Outros computadores conectam neste endereço (Configurações → Servidor).").into()));
                 } else {
                     let a = match self.settings.server.address.trim() {
                         "" => "sem servidor configurado",
                         a => a,
                     };
-                    let tls = if self.settings.server.address.trim().is_empty() || a.starts_with("wss://") { "" } else if a.starts_with("ws://") || !self.settings.server.tls { " · sem TLS" } else { " · TLS" };
+                    let tls = if self.settings.server.address.trim().is_empty() || a.starts_with("wss://") { "" } else if a.starts_with("ws://") || !self.settings.server.tls { t!(" · sem TLS") } else { t!(" · TLS") };
                     ui.label(RichText::new(format!("{a}{tls}")).font(theme::mono(11.0)).color(p.muted));
                 }
-                icons::icon(ui, Icon::Lock, 11.0, p.muted).on_hover_text("Sessões cifradas ponta a ponta (SPAKE2 + ChaCha20-Poly1305). O servidor não tem a chave.");
+                icons::icon(ui, Icon::Lock, 11.0, p.muted).on_hover_text(t!("Sessões cifradas ponta a ponta (SPAKE2 + ChaCha20-Poly1305). O servidor não tem a chave."));
             });
         });
     }
@@ -325,19 +326,19 @@ impl EloApp {
                         let text_w = (ui.available_width() - right_w).max(120.0);
                         ui.allocate_ui_with_layout(Vec2::new(text_w, 38.0), Layout::top_down(Align::Min), |ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.add(egui::Label::new(RichText::new(format!("{} está acessando este computador", h.from_name)).font(theme::semibold(13.5)).color(p.text)).truncate());
+                            ui.add(egui::Label::new(RichText::new(t!("{} está acessando este computador", h.from_name)).font(theme::semibold(13.5)).color(p.text)).truncate());
                             let mins = h.since.elapsed().as_secs() / 60;
-                            let how = if h.with_password { "entrou com a senha" } else { "você aceitou" };
-                            let when = if mins == 0 { "agora".to_string() } else { format!("{mins} min") };
-                            ui.add(egui::Label::new(RichText::new(format!("ID {} · código {} · {how} · {when}", pretty_id(&h.from_id), h.sas)).size(11.5).color(p.text2)).truncate())
-                                .on_hover_text("Peça para a outra pessoa confirmar o código: se for igual nos dois lados, ninguém está no meio.");
+                            let how = if h.with_password { t!("entrou com a senha") } else { t!("você aceitou") };
+                            let when = if mins == 0 { "agora".to_string() } else { t!("{} min", mins) };
+                            ui.add(egui::Label::new(RichText::new(t!("ID {} · código {} · {} · {}", pretty_id(&h.from_id), h.sas, how, when)).size(11.5).color(p.text2)).truncate())
+                                .on_hover_text(t!("Peça para a outra pessoa confirmar o código: se for igual nos dois lados, ninguém está no meio."));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if mac::button(ui, &m, "Encerrar", Kind::Destructive, None, true).on_hover_text("Desconecta quem está acessando").clicked() {
+                            if mac::button(ui, &m, t!("Encerrar"), Kind::Destructive, None, true).on_hover_text(t!("Desconecta quem está acessando")).clicked() {
                                 stop = Some(i);
                             }
                             ui.add_space(6.0);
-                            let chat_tip = if h.chat.is_empty() { "Chat".to_string() } else { format!("Chat ({} mensagens)", h.chat.len()) };
+                            let chat_tip = if h.chat.is_empty() { t!("Chat").to_string() } else { t!("Chat ({} mensagens)", h.chat.len()) };
                             let c = mac::round_icon(ui, &m, Icon::Comment, &chat_tip, 30.0, true);
                             if h.chat_open {
                                 ui.painter().circle_stroke(c.rect.center(), 15.0, Stroke::new(1.5, m.accent));
@@ -350,7 +351,7 @@ impl EloApp {
                             if c.clicked() {
                                 h.chat_open = !h.chat_open;
                             }
-                            if mac::round_icon(ui, &m, Icon::Upload, "Enviar um arquivo para quem está acessando", 30.0, true).clicked()
+                            if mac::round_icon(ui, &m, Icon::Upload, t!("Enviar um arquivo para quem está acessando"), 30.0, true).clicked()
                                 && let Some(f) = rfd::FileDialog::new().pick_file()
                             {
                                 let _ = h.handle.cmd.send(Cmd::SendFile(f));
@@ -360,12 +361,12 @@ impl EloApp {
                             ui.painter().rect_filled(d, CornerRadius::ZERO, m.sep);
                             ui.add_space(4.0);
                             // O que a pessoa pode fazer: clique liga/desliga.
-                            if perm_chip(ui, &m, Icon::Speaker, "Som", h.audio, compact).clicked() {
+                            if perm_chip(ui, &m, Icon::Speaker, t!("Som"), h.audio, compact).clicked() {
                                 h.audio = !h.audio;
                                 let _ = h.handle.cmd.send(Cmd::Audio(h.audio));
                             }
                             let mut pm = h.permissions;
-                            for (icon, label, on) in [(Icon::Folder, "Arquivos", &mut pm.files), (Icon::Copy, "Copiar/colar", &mut pm.clipboard), (Icon::Cursor, "Controle", &mut pm.control)] {
+                            for (icon, label, on) in [(Icon::Folder, t!("Arquivos"), &mut pm.files), (Icon::Copy, t!("Copiar/colar"), &mut pm.clipboard), (Icon::Cursor, t!("Controle"), &mut pm.control)] {
                                 if perm_chip(ui, &m, icon, label, *on, compact).clicked() {
                                     *on = !*on;
                                 }
@@ -421,9 +422,9 @@ impl EloApp {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             let left = r.until.saturating_duration_since(std::time::Instant::now()).as_secs();
-                            ui.label(RichText::new(format!("{} está reiniciando. Reconectando quando voltar… ({}:{:02})", r.name, left / 60, left % 60)).size(13.0).color(p.text));
+                            ui.label(RichText::new(t!("{} está reiniciando. Reconectando quando voltar… ({}:{})", r.name, left / 60, format!("{:02}", left % 60))).size(13.0).color(p.text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if theme::secondary(ui, None, "Cancelar").clicked() {
+                                if theme::secondary(ui, None, t!("Cancelar")).clicked() {
                                     cancel = Some(r.id.clone());
                                 }
                             });
@@ -438,8 +439,8 @@ impl EloApp {
                 // Cabeçalho.
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Acesso remoto").font(theme::semibold(22.0)).color(p.text));
-                        ui.label(RichText::new("Passe seu ID para receber ajuda, ou digite o ID de outro computador para acessá-lo.").size(13.0).color(p.text2));
+                        ui.label(RichText::new(t!("Acesso remoto")).font(theme::semibold(22.0)).color(p.text));
+                        ui.label(RichText::new(t!("Passe seu ID para receber ajuda, ou digite o ID de outro computador para acessá-lo.")).size(13.0).color(p.text2));
                     });
                 });
                 ui.add_space(18.0);
@@ -463,7 +464,7 @@ impl EloApp {
                 self.computers(ui, &p);
                 ui.add_space(22.0);
                 ui.horizontal(|ui| {
-                    let text = "O conteúdo das sessões é cifrado ponta a ponta. O servidor vê só IDs, nomes dos computadores, horários e volume de dados.";
+                    let text = t!("O conteúdo das sessões é cifrado ponta a ponta. O servidor vê só IDs, nomes dos computadores, horários e volume de dados.");
                     let tw = ui.painter().layout_no_wrap(text.into(), egui::FontId::proportional(11.5), p.muted).size().x + 20.0;
                     ui.add_space(((w - tw) / 2.0).max(0.0));
                     icons::icon(ui, Icon::Lock, 12.0, p.muted);
@@ -482,15 +483,15 @@ impl EloApp {
         let mut restart = false;
         let mut download = false;
         let (text, action): (String, Option<&str>) = match &self.updater.state {
-            State::Available { manifest, asset: Some(_) } if !self.settings.auto_update => (format!("Nova versão do Elo disponível: {}.", manifest.version), Some("Atualizar")),
-            State::Available { manifest, asset: None } => (format!("Nova versão do Elo disponível: {}.", manifest.version), Some("Baixar no GitHub")),
+            State::Available { manifest, asset: Some(_) } if !self.settings.auto_update => (t!("Nova versão do Elo disponível: {}.", manifest.version), Some(t!("Atualizar")),),
+            State::Available { manifest, asset: None } => (t!("Nova versão do Elo disponível: {}.", manifest.version), Some(t!("Baixar no GitHub")),),
             State::Downloading { version, done, total } => {
                 let pct = done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*total).max(1) as f32 * 100.0;
-                (format!("Baixando a versão {version}… {pct:.0}%"), None)
+                (t!("Baixando a versão {}… {}%", version, format!("{:.0}", pct)), None)
             }
             State::Ready { version, .. } => (
-                format!("A versão {version} está pronta.{}", if self.views.is_empty() && self.hosts.is_empty() { "" } else { " Instala ao fim das sessões, ou agora (as sessões caem)." }),
-                Some("Reiniciar e atualizar"),
+                t!("A versão {} está pronta.{}", version, if self.views.is_empty() && self.hosts.is_empty() { "" } else { t!(" Instala ao fim das sessões, ou agora (as sessões caem).") }),
+                Some(t!("Reiniciar e atualizar")),
             ),
             _ => return false,
         };
@@ -504,7 +505,7 @@ impl EloApp {
                         if theme::primary(ui, None, a, None).clicked() {
                             match &self.updater.state {
                                 State::Ready { .. } => restart = true,
-                                State::Available { asset: None, .. } => open_url(crate::update::RELEASES),
+                                State::Available { asset: None, .. } => { open_url(crate::update::RELEASES)}
                                 _ => download = true,
                             }
                         }
@@ -526,12 +527,12 @@ impl EloApp {
         let r = egui::Frame::new().fill(p.accent).corner_radius(CornerRadius::same(16)).inner_margin(Margin::same(22)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SEU ID").font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
+                ui.label(RichText::new(t!("SEU ID")).font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (t, c) = match &self.status {
-                        Status::Online(_) => ("Online", Color32::from_rgb(120, 240, 170)),
-                        Status::Connecting => ("Conectando", Color32::from_rgb(255, 214, 120)),
-                        Status::Offline(_) => ("Sem conexão", Color32::from_rgb(255, 160, 160)),
+                        Status::Online(_) => (t!("Online"), Color32::from_rgb(120, 240, 170)),
+                        Status::Connecting => (t!("Conectando"), Color32::from_rgb(255, 214, 120)),
+                        Status::Offline(_) => (t!("Sem conexão"), Color32::from_rgb(255, 160, 160)),
                     };
                     egui::Frame::new().fill(Color32::from_white_alpha(38)).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(9, 3)).show(ui, |ui| {
                         // Dentro do layout da direita para a esquerda: o primeiro fica à direita.
@@ -549,47 +550,47 @@ impl EloApp {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(pretty_id(&id)).font(theme::mono(40.0)).color(white));
                         ui.add_space(4.0);
-                        if light_button(ui, Icon::Copy, "Copiar ID").clicked() {
+                        if light_button(ui, Icon::Copy, t!("Copiar ID")).clicked() {
                             copy(ui, &pretty_id(&id));
-                            self.toast("ID copiado");
+                            self.toast(t!("ID copiado"));
                         }
                     });
                 }
                 Status::Connecting => {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().color(white).size(22.0));
-                        ui.label(RichText::new("obtendo ID…").size(16.0).color(soft));
+                        ui.label(RichText::new(t!("obtendo ID…")).size(16.0).color(soft));
                     });
                     ui.add_space(14.0);
                 }
                 Status::Offline(r) => {
                     ui.label(RichText::new("— — —").font(theme::mono(40.0)).color(Color32::from_white_alpha(120)));
-                    ui.add(egui::Label::new(RichText::new(format!("Sem conexão com o servidor: {r}")).size(12.0).color(white)).wrap());
+                    ui.add(egui::Label::new(RichText::new(t!("Sem conexão com o servidor: {}", r)).size(12.0).color(white)).wrap());
                 }
             }
             ui.add_space(14.0);
-            ui.label(RichText::new("SENHA TEMPORÁRIA").font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
+            ui.label(RichText::new(t!("SENHA TEMPORÁRIA")).font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
             ui.add_space(4.0);
             egui::Frame::new().fill(Color32::from_black_alpha(46)).corner_radius(CornerRadius::same(10)).inner_margin(Margin { left: 14, right: 6, top: 4, bottom: 4 }).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let shown = if self.show_temp { self.temp_password.clone() } else { "••••••••".into() };
                     ui.label(RichText::new(shown).font(theme::mono(19.0)).color(white));
                     ui.add_space(10.0);
-                    if light_button(ui, Icon::Eye, if self.show_temp { "Ocultar" } else { "Mostrar" }).clicked() {
+                    if light_button(ui, Icon::Eye, if self.show_temp { t!("Ocultar") } else { t!("Mostrar") }).clicked() {
                         self.show_temp = !self.show_temp;
                     }
-                    if light_button(ui, Icon::Copy, "Copiar senha").clicked() {
+                    if light_button(ui, Icon::Copy, t!("Copiar senha")).clicked() {
                         copy(ui, &self.temp_password);
-                        self.toast("Senha copiada");
+                        self.toast(t!("Senha copiada"));
                     }
-                    if light_button(ui, Icon::Refresh, "Gerar nova senha").clicked() {
+                    if light_button(ui, Icon::Refresh, t!("Gerar nova senha")).clicked() {
                         self.temp_password = elo_core::temp_password();
-                        self.toast("Nova senha temporária gerada (a anterior deixa de valer)");
+                        self.toast(t!("Nova senha temporária gerada (a anterior deixa de valer)"));
                     }
                 });
             });
             ui.add_space(10.0);
-            ui.add(egui::Label::new(RichText::new("Passe o ID e a senha para quem vai ajudar. Sem a senha, cada pedido precisa do seu aceite.").size(12.0).color(soft)).wrap());
+            ui.add(egui::Label::new(RichText::new(t!("Passe o ID e a senha para quem vai ajudar. Sem a senha, cada pedido precisa do seu aceite.")).size(12.0).color(soft)).wrap());
         });
         // Anéis decorativos à direita (longe dos cantos arredondados).
         let rect = r.response.rect;
@@ -606,14 +607,14 @@ impl EloApp {
             ui.horizontal(|ui| {
                 let mut un = self.settings.unattended;
                 ui.vertical(|ui| {
-                    ui.label(RichText::new("Acesso não assistido").font(theme::semibold(13.5)).color(p.text));
-                    ui.label(RichText::new(if self.settings.unattended { "Ligado: a senha fixa entra sem ninguém aqui." } else { "Entrar com uma senha fixa, sem ninguém aqui." }).size(12.0).color(p.text2));
+                    ui.label(RichText::new(t!("Acesso não assistido")).font(theme::semibold(13.5)).color(p.text));
+                    ui.label(RichText::new(if self.settings.unattended { t!("Ligado: a senha fixa entra sem ninguém aqui.") } else { t!("Entrar com uma senha fixa, sem ninguém aqui.") }).size(12.0).color(p.text2));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if theme::switch(ui, &mut un, "").changed() {
                         if un && self.settings.permanent_password.len() < 8 {
                             self.show_settings = true;
-                            self.toast("Defina uma senha fixa (8+ caracteres) nas configurações");
+                            self.toast(t!("Defina uma senha fixa (8+ caracteres) nas configurações"));
                         } else {
                             self.settings.unattended = un;
                             self.settings.save();
@@ -629,10 +630,10 @@ impl EloApp {
         card(p).corner_radius(CornerRadius::same(16)).inner_margin(Margin::same(22)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(min_h - 44.0);
-            ui.label(RichText::new("Acessar outro computador").font(theme::semibold(16.0)).color(p.text));
-            ui.label(RichText::new("Digite o ID que a outra pessoa passou.").size(12.5).color(p.text2));
+            ui.label(RichText::new(t!("Acessar outro computador")).font(theme::semibold(16.0)).color(p.text));
+            ui.label(RichText::new(t!("Digite o ID que a outra pessoa passou.")).size(12.5).color(p.text2));
             ui.add_space(16.0);
-            theme::field_label(ui, "ID do computador");
+            theme::field_label(ui, t!("ID do computador"));
             let out = egui::TextEdit::singleline(&mut self.target)
                 .hint_text(RichText::new("123 456 789").font(theme::mono(28.0)).color(theme::alpha(p.muted, 0.6)))
                 .font(theme::mono(28.0))
@@ -654,14 +655,14 @@ impl EloApp {
                 }
             }
             ui.add_space(10.0);
-            theme::field_label(ui, "Senha (opcional)");
+            theme::field_label(ui, t!("Senha (opcional)"));
             let saved = self.settings.saved_password(&elo_proto::ctrl::clean_id(&self.target)).is_some();
-            let hint = if saved { "usando a senha salva no favorito" } else { "vazio = pedir permissão na tela" };
+            let hint = if saved { t!("usando a senha salva no favorito") } else { t!("vazio = pedir permissão na tela") };
             let r2 = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).font(egui::FontId::proportional(14.5)).margin(Margin::symmetric(16, 6)).min_size(Vec2::new(0.0, 44.0)).align(Align2::LEFT_CENTER).desired_width(f32::INFINITY));
             let enter = (r.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.add_space(16.0);
             let busy = self.pending_connect.is_some();
-            let b = big_button(ui, p, if busy { "Conectando…" } else { "Conectar" }, !busy);
+            let b = big_button(ui, p, if busy { t!("Conectando…") } else { t!("Conectar") }, !busy);
             if (b.clicked() || enter) && !busy {
                 let (t, pw) = (self.target.clone(), self.password.clone());
                 self.connect(t, pw);
@@ -671,21 +672,21 @@ impl EloApp {
 
     /// Favoritos e recentes em cartões. Clique preenche o ID; clique duplo conecta.
     fn computers(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        let favs: Vec<(String, String, String, String, bool)> = self.settings.favorites.iter().map(|f| (f.id.clone(), f.label(), if f.alias.trim().is_empty() || f.name.is_empty() { String::new() } else { f.name.clone() }, f.os.clone(), true)).collect();
+        let favs: Vec<(String, String, String, String, bool)> = self.settings.favorites.iter().map(|f| { (f.id.clone(), f.label(), if f.alias.trim().is_empty() || f.name.is_empty() { String::new() } else { f.name.clone() }, f.os.clone(), true)}).collect();
         let recent: Vec<(String, String, String, String, bool)> = self
             .settings
             .recent
             .iter()
             .filter(|r| self.settings.favorite(&r.id).is_none())
             .take(6)
-            .map(|r| (r.id.clone(), if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }, String::new(), r.os.clone(), false))
+            .map(|r| { (r.id.clone(), if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }, String::new(), r.os.clone(), false)})
             .collect();
         if favs.is_empty() && recent.is_empty() {
             return;
         }
         let mut out = TileOut::default();
         let cols = if ui.available_width() > 780.0 { 3 } else { 2 };
-        for (title, list) in [("Favoritos", favs), ("Recentes", recent)] {
+        for (title, list) in [(t!("Favoritos"), favs), (t!("Recentes"), recent)] {
             if list.is_empty() {
                 continue;
             }
@@ -708,7 +709,7 @@ impl EloApp {
             if matches!(self.status, Status::Online(_)) {
                 let _ = self.control.tx.send(elo_core::client::Command::Wake { target: id });
             } else {
-                self.error("Sem conexão com o servidor do Elo.");
+                self.error(t!("Sem conexão com o servidor do Elo."));
             }
         }
         if let Some(id) = out.start_rename
@@ -753,17 +754,17 @@ impl EloApp {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
                     mac::icon_tile(ui.painter(), r, Icon::Refresh, m.orange);
                     ui.add_space(10.0);
-                    ui.label(RichText::new(format!("Reiniciar {name}?")).font(theme::semibold(15.0)).color(m.label));
+                    ui.label(RichText::new(t!("Reiniciar {}?", name)).font(theme::semibold(15.0)).color(m.label));
                     ui.add_space(4.0);
-                    ui.add(egui::Label::new(RichText::new("A sessão cai e o Elo reconecta sozinho por até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa abrir o Elo junto com o sistema e ter o acesso não assistido ligado.").size(12.0).color(m.label2)).halign(Align::Center).wrap());
+                    ui.add(egui::Label::new(RichText::new(t!("A sessão cai e o Elo reconecta sozinho por até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa abrir o Elo junto com o sistema e ter o acesso não assistido ligado.")).size(12.0).color(m.label2)).halign(Align::Center).wrap());
                 });
                 ui.add_space(18.0);
                 ui.columns(2, |c| {
                     let w = Vec2::new(c[0].available_width(), 30.0);
-                    if mac::button(&mut c[0], &m, "Cancelar", Kind::Secondary, Some(w), true).clicked() || c[0].input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if mac::button(&mut c[0], &m, t!("Cancelar"), Kind::Secondary, Some(w), true).clicked() || c[0].input(|i| i.key_pressed(egui::Key::Escape)) {
                         close = true;
                     }
-                    if mac::button(&mut c[1], &m, "Reiniciar", Kind::Destructive, Some(w), true).clicked() {
+                    if mac::button(&mut c[1], &m, t!("Reiniciar"), Kind::Destructive, Some(w), true).clicked() {
                         let _ = v.handle.cmd.send(Cmd::Restart);
                         close = true;
                     }
@@ -792,7 +793,7 @@ impl EloApp {
                         ui.label(RichText::new(name).font(theme::semibold(16.0)).color(m.label));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            let text = if v.waiting { "Esperando o outro lado aceitar" } else { "Conectando…" };
+                            let text = if v.waiting { t!("Esperando o outro lado aceitar") } else { t!("Conectando…") };
                             let tw = ui.painter().layout_no_wrap(text.into(), egui::FontId::proportional(13.0), m.label2).size().x + 22.0;
                             ui.add_space(((ui.available_width() - tw) / 2.0).max(0.0));
                             ui.add(egui::Spinner::new().size(14.0).color(m.label2));
@@ -802,15 +803,15 @@ impl EloApp {
                             ui.add_space(14.0);
                             egui::Frame::new().fill(Color32::from_white_alpha(14)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(18, 8)).show(ui, |ui| {
                                 ui.vertical_centered(|ui| {
-                                    ui.label(RichText::new("Código de verificação").size(11.0).color(m.label2));
+                                    ui.label(RichText::new(t!("Código de verificação")).size(11.0).color(m.label2));
                                     ui.label(RichText::new(&v.sas).font(theme::mono(24.0)).color(m.label));
                                 });
                             });
                             ui.add_space(6.0);
-                            ui.add(egui::Label::new(RichText::new("Confira se é o mesmo código na tela de quem vai aceitar.").size(11.5).color(m.label2)).halign(Align::Center).wrap());
+                            ui.add(egui::Label::new(RichText::new(t!("Confira se é o mesmo código na tela de quem vai aceitar.")).size(11.5).color(m.label2)).halign(Align::Center).wrap());
                         }
                         ui.add_space(18.0);
-                        if mac::button(ui, &m, "Cancelar", Kind::Secondary, Some(Vec2::new(140.0, 30.0)), true).clicked() {
+                        if mac::button(ui, &m, t!("Cancelar"), Kind::Secondary, Some(Vec2::new(140.0, 30.0)), true).clicked() {
                             v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     });
@@ -832,7 +833,7 @@ impl EloApp {
             drop(r);
             match &mut v.texture {
                 Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                None => v.texture = Some(ctx.load_texture(format!("remota-{idx}"), img, egui::TextureOptions::LINEAR)),
+                None => { v.texture = Some(ctx.load_texture(format!("remota-{idx}"), img, egui::TextureOptions::LINEAR))}
             }
             v.tex_version = version;
         }
@@ -850,7 +851,7 @@ impl EloApp {
             egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), rect.size())).corner_radius(CornerRadius::same(radius)).paint_at(ui, rect);
         }
         if !v.permissions.control {
-            ui.painter().text(rect.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, "Somente visualização (o outro lado desativou o controle)", egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
+            ui.painter().text(rect.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, t!("Somente visualização (o outro lado desativou o controle)"), egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
         }
         // Entrada: só com o mouse sobre a tela remota (ou arrastando).
         let hovered = resp.hovered() || resp.dragged();
@@ -860,7 +861,7 @@ impl EloApp {
         if let Some((cx, cy)) = remote_cursor {
             let pos = rect.left_top() + Vec2::new(cx as f32 * scale, cy as f32 * scale);
             let local = ctx.pointer_hover_pos().filter(|_| hovered);
-            let ours = local.is_some_and(|l| l.distance(pos) < 6.0 || v.last_move.elapsed() < std::time::Duration::from_millis(600));
+            let ours = local.is_some_and(|l| { l.distance(pos) < 6.0 || v.last_move.elapsed() < std::time::Duration::from_millis(600)});
             if rect.contains(pos) && !ours {
                 paint_cursor(ui.painter(), pos);
             }
@@ -869,7 +870,7 @@ impl EloApp {
         let focused = ctx.input(|i| i.focused);
         if hovered && focused {
             resp.request_focus();
-            let to_remote = |pos: egui::Pos2| (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32);
+            let to_remote = |pos: egui::Pos2| { (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32)};
             let cmd = &v.handle.cmd;
             let send = |i: Input| {
                 let _ = cmd.send(Cmd::Input(i));
@@ -1005,27 +1006,27 @@ impl EloApp {
                 ui.set_width(420.0);
                 ui.horizontal(|ui| {
                     icons::icon(ui, Icon::Shield, 20.0, p.warning);
-                    ui.label(RichText::new("Pedido de acesso").font(theme::semibold(17.0)).color(p.text));
+                    ui.label(RichText::new(t!("Pedido de acesso")).font(theme::semibold(17.0)).color(p.text));
                 });
                 ui.add_space(8.0);
-                ui.add(egui::Label::new(RichText::new(format!("{} (ID {}) quer acessar este computador.", a.from_name, pretty_id(&a.from_id))).size(13.5).color(p.text)).wrap());
+                ui.add(egui::Label::new(RichText::new(t!("{} (ID {}) quer acessar este computador.", a.from_name, pretty_id(&a.from_id))).size(13.5).color(p.text)).wrap());
                 ui.add_space(6.0);
-                ui.label(RichText::new(format!("Código de verificação: {}", a.sas)).font(theme::mono(15.0)).color(p.text));
-                ui.label(RichText::new("Confirme com a pessoa que o código aparece igual na tela dela. Só aceite se você conhece quem está pedindo.").size(11.5).color(p.text2));
+                ui.label(RichText::new(t!("Código de verificação: {}", a.sas)).font(theme::mono(15.0)).color(p.text));
+                ui.label(RichText::new(t!("Confirme com a pessoa que o código aparece igual na tela dela. Só aceite se você conhece quem está pedindo.")).size(11.5).color(p.text2));
                 ui.add_space(10.0);
-                ui.label(RichText::new("Permitir").size(12.0).color(p.muted));
-                ui.checkbox(&mut a.permissions.control, "Controlar mouse e teclado");
-                ui.checkbox(&mut a.permissions.clipboard, "Área de transferência");
-                ui.checkbox(&mut a.permissions.files, "Transferir arquivos");
+                ui.label(RichText::new(t!("Permitir")).size(12.0).color(p.muted));
+                ui.checkbox(&mut a.permissions.control, t!("Controlar mouse e teclado"));
+                ui.checkbox(&mut a.permissions.clipboard, t!("Área de transferência"));
+                ui.checkbox(&mut a.permissions.files, t!("Transferir arquivos"));
                 ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::primary(ui, None, "Aceitar", None).clicked() {
+                    if theme::primary(ui, None, t!("Aceitar"), None).clicked() {
                         decision = Some(true);
                     }
-                    if theme::secondary(ui, None, "Recusar").clicked() {
+                    if theme::secondary(ui, None, t!("Recusar")).clicked() {
                         decision = Some(false);
                     }
-                    ui.label(RichText::new(format!("{remaining} s")).size(11.5).color(p.muted));
+                    ui.label(RichText::new(t!("{} s", remaining)).size(11.5).color(p.muted));
                 });
             });
             if remaining == 0 {
@@ -1051,7 +1052,7 @@ impl EloApp {
     /// Editar favorito: nome dado aqui e senha do acesso não assistido de lá.
     fn fav_editor(&mut self, ctx: &egui::Context) {
         let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
-        let Some(e) = self.renaming.as_mut() else { return };
+        let Some(e) = self.renaming.as_mut() else { return ; };
         let Some(f) = self.settings.favorite(&e.id) else {
             self.renaming = None;
             return;
@@ -1062,30 +1063,30 @@ impl EloApp {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
                 icons::icon(ui, Icon::Star, 18.0, p.warning);
-                ui.label(RichText::new(if e.new { "Salvo nos favoritos" } else { "Editar favorito" }).font(theme::semibold(16.0)).color(p.text));
+                ui.label(RichText::new(if e.new { t!("Salvo nos favoritos") } else { t!("Editar favorito") }).font(theme::semibold(16.0)).color(p.text));
             });
             ui.label(RichText::new(reported).font(theme::mono(12.0)).color(p.muted));
             ui.add_space(12.0);
-            theme::field_label(ui, "Nome");
-            let r = ui.add(egui::TextEdit::singleline(&mut e.alias).hint_text(if f.name.is_empty() { "Nome para este computador".to_string() } else { f.name.clone() }).desired_width(f32::INFINITY));
+            theme::field_label(ui, t!("Nome"));
+            let r = ui.add(egui::TextEdit::singleline(&mut e.alias).hint_text(if f.name.is_empty() { t!("Nome para este computador").to_string() } else { f.name.clone() }).desired_width(f32::INFINITY));
             if e.new && r.ctx.memory(|m| m.focused().is_none()) {
                 r.request_focus();
             }
             ui.add_space(8.0);
-            theme::field_label(ui, "Senha do acesso não assistido");
+            theme::field_label(ui, t!("Senha do acesso não assistido"));
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut e.password).password(!e.show).hint_text("vazio = pedir permissão na tela").desired_width(ui.available_width() - 70.0));
-                if ui.selectable_label(e.show, if e.show { "Ocultar" } else { "Mostrar" }).clicked() {
+                ui.add(egui::TextEdit::singleline(&mut e.password).password(!e.show).hint_text(t!("vazio = pedir permissão na tela")).desired_width(ui.available_width() - 70.0));
+                if ui.selectable_label(e.show, if e.show { t!("Ocultar") } else { t!("Mostrar") }).clicked() {
                     e.show = !e.show;
                 }
             });
-            ui.add(egui::Label::new(RichText::new("A senha fixa configurada no outro computador. Com ela salva, o Elo conecta direto, sem ninguém precisar aceitar lá. Fica guardada só neste computador.").size(11.5).color(p.text2)).wrap());
+            ui.add(egui::Label::new(RichText::new(t!("A senha fixa configurada no outro computador. Com ela salva, o Elo conecta direto, sem ninguém precisar aceitar lá. Fica guardada só neste computador.")).size(11.5).color(p.text2)).wrap());
             ui.add_space(14.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if theme::primary(ui, None, "Salvar", None).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if theme::primary(ui, None, t!("Salvar"), None).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     save = true;
                 }
-                if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if theme::secondary(ui, None, t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     close = true;
                 }
             });
@@ -1117,29 +1118,29 @@ impl EloApp {
         let ago = |t: u64| -> String {
             let d = now.saturating_sub(t);
             match d {
-                0..60 => "agora".into(),
-                60..3600 => format!("há {} min", d / 60),
-                3600..86_400 => format!("há {} h", d / 3600),
-                _ => format!("há {} dias", d / 86_400),
+                0..60 => t!("agora").into(),
+                60..3600 => t!("há {} min", d / 60),
+                3600..86_400 => t!("há {} h", d / 3600),
+                _ => t!("há {} dias", d / 86_400),
             }
         };
-        let dur = |s: u64| -> String { if s < 60 { format!("{s} s") } else if s < 3600 { format!("{} min", s / 60) } else { format!("{} h {:02} min", s / 3600, (s % 3600) / 60) } };
-        let who = |name: &str, id: &str| if name.is_empty() { pretty_id(id) } else { format!("{name} ({})", pretty_id(id)) };
+        let dur = |s: u64| -> String { if s < 60 { t!("{} s", s) } else if s < 3600 { t!("{} min", s / 60) } else { t!("{} h {} min", s / 3600, format!("{:02}", (s % 3600) / 60)) } };
+        let who = |name: &str, id: &str| { if name.is_empty() { pretty_id(id) } else { t!("{} ({})", name, pretty_id(id)) } };
         let max_h = (ctx.content_rect().height() - 160.0).max(240.0);
         egui::Modal::new(egui::Id::unique("painel")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(22))).show(ctx, |ui| {
             ui.set_width(640.0);
             ui.horizontal(|ui| {
                 icons::icon(ui, Icon::Globe, 18.0, p.accent);
-                ui.label(RichText::new("Painel do servidor").font(theme::semibold(17.0)).color(p.text));
+                ui.label(RichText::new(t!("Painel do servidor")).font(theme::semibold(17.0)).color(p.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::icon_button(ui, Icon::Close, "Fechar", false).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if theme::icon_button(ui, Icon::Close, t!("Fechar"), false).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         close = true;
                     }
                 });
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                for (n, label) in [(st.online.len(), "online agora"), (st.active.len(), "sessões em andamento"), (st.recent.len(), "no histórico recente")] {
+                for (n, label) in [(st.online.len(), t!("online agora")), (st.active.len(), t!("sessões em andamento")), (st.recent.len(), t!("no histórico recente"))] {
                     egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
                         ui.vertical(|ui| {
                             ui.label(RichText::new(n.to_string()).font(theme::semibold(20.0)).color(p.text));
@@ -1150,9 +1151,9 @@ impl EloApp {
             });
             ui.add_space(12.0);
             egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-                ui.label(RichText::new("Online agora").font(theme::semibold(13.5)).color(p.text));
+                ui.label(RichText::new(t!("Online agora")).font(theme::semibold(13.5)).color(p.text));
                 egui::Grid::new("online").num_columns(4).spacing([18.0, 6.0]).striped(true).show(ui, |ui| {
-                    for h in ["Computador", "Sistema", "IP", "Conectado"] {
+                    for h in [t!("Computador"), t!("Sistema"), "IP", t!("Conectado")] {
                         ui.label(RichText::new(h).size(11.5).color(p.muted));
                     }
                     ui.end_row();
@@ -1165,20 +1166,20 @@ impl EloApp {
                     }
                 });
                 ui.add_space(14.0);
-                ui.label(RichText::new("Sessões em andamento").font(theme::semibold(13.5)).color(p.text));
+                ui.label(RichText::new(t!("Sessões em andamento")).font(theme::semibold(13.5)).color(p.text));
                 if st.active.is_empty() {
-                    ui.label(RichText::new("Nenhuma agora.").size(12.0).color(p.muted));
+                    ui.label(RichText::new(t!("Nenhuma agora.")).size(12.0).color(p.muted));
                 }
                 for x in &st.active {
-                    ui.label(RichText::new(format!("{} acessando {} · começou {}", who(&x.viewer_name, &x.viewer_id), who(&x.host_name, &x.host_id), ago(x.start))).size(12.5).color(p.text));
+                    ui.label(RichText::new(t!("{} acessando {} · começou {}", who(&x.viewer_name, &x.viewer_id), who(&x.host_name, &x.host_id), ago(x.start))).size(12.5).color(p.text));
                 }
                 ui.add_space(14.0);
-                ui.label(RichText::new("Histórico").font(theme::semibold(13.5)).color(p.text));
+                ui.label(RichText::new(t!("Histórico")).font(theme::semibold(13.5)).color(p.text));
                 if st.recent.is_empty() {
-                    ui.label(RichText::new("Nenhuma sessão registrada.").size(12.0).color(p.muted));
+                    ui.label(RichText::new(t!("Nenhuma sessão registrada.")).size(12.0).color(p.muted));
                 }
                 egui::Grid::new("historico").num_columns(4).spacing([18.0, 6.0]).striped(true).show(ui, |ui| {
-                    for h in ["Quem acessou", "Computador acessado", "Quando", "Duração · volume"] {
+                    for h in [t!("Quem acessou"), t!("Computador acessado"), t!("Quando"), t!("Duração · volume")] {
                         ui.label(RichText::new(h).size(11.5).color(p.muted));
                     }
                     ui.end_row();
@@ -1192,7 +1193,7 @@ impl EloApp {
                 });
             });
             ui.add_space(10.0);
-            ui.label(RichText::new(if st.retention_days == 0 { "O histórico é guardado para sempre. Defina um prazo nas configurações (LGPD).".to_string() } else { format!("O histórico é apagado depois de {} dias. Nomes aparecem para quem se conectou desde que o servidor abriu.", st.retention_days) }).size(11.5).color(p.muted));
+            ui.label(RichText::new(if st.retention_days == 0 { t!("O histórico é guardado para sempre. Defina um prazo nas configurações (LGPD).").to_string() } else { t!("O histórico é apagado depois de {} dias. Nomes aparecem para quem se conectou desde que o servidor abriu.", st.retention_days) }).size(11.5).color(p.muted));
         });
         if close {
             self.panel = None;
@@ -1216,37 +1217,55 @@ impl EloApp {
         let max_h = (ctx.content_rect().height() - 150.0).max(240.0);
         egui::Modal::new(egui::Id::unique("settings")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(22))).show(ctx, |ui| {
             ui.set_width(480.0);
-            ui.label(RichText::new("Configurações").font(theme::semibold(17.0)).color(p.text));
+            ui.label(RichText::new(t!("Configurações")).font(theme::semibold(17.0)).color(p.text));
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
-            theme::field_label(ui, "Nome deste computador");
+            theme::field_label(ui, t!("Idioma"));
+            let langs = [("auto", t!("Automático (o do sistema)")), ("pt", "Português"), ("en", "English")];
+            let current = langs.iter().find(|(k, _)| *k == self.settings.language).map(|(_, n)| *n).unwrap_or(langs[0].1);
+            let mut lang = self.settings.language.clone();
+            egui::ComboBox::from_id_salt("idioma").selected_text(current).width(ui.available_width()).show_ui(ui, |ui| {
+                for (k, n) in langs {
+                    ui.selectable_value(&mut lang, k.to_string(), n);
+                }
+            });
+            if lang != self.settings.language {
+                // Vale na hora (e fica salvo mesmo se cancelar o resto).
+                self.settings.language = lang;
+                crate::i18n::set(&self.settings.language);
+                let mut disk = crate::settings::Settings::load();
+                disk.language = self.settings.language.clone();
+                disk.save();
+            }
+            ui.add_space(6.0);
+            theme::field_label(ui, t!("Nome deste computador"));
             ui.add(egui::TextEdit::singleline(&mut self.settings.device_name).desired_width(f32::INFINITY));
             ui.add_space(6.0);
-            ui.checkbox(&mut self.autostart, "Iniciar o Elo junto com o computador").on_hover_text("Abre na bandeja ao entrar no sistema, para continuar acessível depois de reiniciar.");
+            ui.checkbox(&mut self.autostart, t!("Iniciar o Elo junto com o computador")).on_hover_text(t!("Abre na bandeja ao entrar no sistema, para continuar acessível depois de reiniciar."));
             ui.add_enabled_ui(self.tray.is_some(), |ui| {
-                ui.checkbox(&mut self.settings.close_to_tray, "Ao fechar a janela, continuar rodando na bandeja")
-                    .on_hover_text("O Elo fica perto do relógio e continua aceitando conexões. Para sair, use \"Sair do Elo\" no menu do ícone.")
-                    .on_disabled_hover_text("A bandeja do sistema não está disponível (no GNOME, precisa da extensão AppIndicator).");
+                ui.checkbox(&mut self.settings.close_to_tray, t!("Ao fechar a janela, continuar rodando na bandeja"))
+                    .on_hover_text(t!("O Elo fica perto do relógio e continua aceitando conexões. Para sair, use \"Sair do Elo\" no menu do ícone."))
+                    .on_disabled_hover_text(t!("A bandeja do sistema não está disponível (no GNOME, precisa da extensão AppIndicator)."));
             });
             let client = self.client_mode();
             if !client {
                 ui.add_space(6.0);
-                theme::field_label(ui, "Senha fixa (acesso não assistido)");
-                ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent_password.is_empty() { "mínimo de 8 caracteres" } else { "•••••••• (digite para trocar)" }).desired_width(f32::INFINITY));
+                theme::field_label(ui, t!("Senha fixa (acesso não assistido)"));
+                ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent_password.is_empty() { t!("mínimo de 8 caracteres") } else { t!("•••••••• (digite para trocar)") }).desired_width(f32::INFINITY));
                 if !self.new_permanent.is_empty() && self.new_permanent.len() < 8 {
-                    ui.label(RichText::new("Use pelo menos 8 caracteres.").size(11.5).color(p.danger));
+                    ui.label(RichText::new(t!("Use pelo menos 8 caracteres.")).size(11.5).color(p.danger));
                 }
             }
             ui.add_space(6.0);
-            ui.label(RichText::new("Permissões padrão para quem acessa").size(12.0).color(p.muted));
-            ui.checkbox(&mut self.settings.default_permissions.control, "Controlar mouse e teclado");
-            ui.checkbox(&mut self.settings.default_permissions.clipboard, "Área de transferência");
-            ui.checkbox(&mut self.settings.default_permissions.files, "Transferir arquivos");
+            ui.label(RichText::new(t!("Permissões padrão para quem acessa")).size(12.0).color(p.muted));
+            ui.checkbox(&mut self.settings.default_permissions.control, t!("Controlar mouse e teclado"));
+            ui.checkbox(&mut self.settings.default_permissions.clipboard, t!("Área de transferência"));
+            ui.checkbox(&mut self.settings.default_permissions.files, t!("Transferir arquivos"));
             ui.add_space(6.0);
-            theme::field_label(ui, "Arquivos recebidos em");
+            theme::field_label(ui, t!("Arquivos recebidos em"));
             ui.horizontal(|ui| {
                 ui.label(RichText::new(self.settings.downloads.display().to_string()).font(theme::mono(11.5)).color(p.text2));
-                if ui.small_button("Escolher…").clicked()
+                if ui.small_button(t!("Escolher…")).clicked()
                     && let Some(d) = rfd::FileDialog::new().pick_folder()
                 {
                     self.settings.downloads = d;
@@ -1254,11 +1273,11 @@ impl EloApp {
             });
             ui.add_space(8.0);
             ui.separator();
-            ui.label(RichText::new("Atualizações").font(theme::semibold(13.0)).color(p.text));
+            ui.label(RichText::new(t!("Atualizações")).font(theme::semibold(13.0)).color(p.text));
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("Versão instalada: {}", crate::update::CURRENT)).size(12.5).color(p.text2));
+                ui.label(RichText::new(t!("Versão instalada: {}", crate::update::CURRENT)).size(12.5).color(p.text2));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add_enabled(!self.updater.busy(), egui::Button::new("Verificar agora")).clicked() {
+                    if ui.add_enabled(!self.updater.busy(), egui::Button::new(t!("Verificar agora"))).clicked() {
                         self.updater.check_now();
                     }
                 });
@@ -1270,58 +1289,58 @@ impl EloApp {
                     State::Checking => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(RichText::new("Verificando…").size(12.0).color(p.text2));
+                            ui.label(RichText::new(t!("Verificando…")).size(12.0).color(p.text2));
                         });
                     }
                     State::UpToDate => {
-                        ui.label(RichText::new("Você está na versão mais recente.").size(12.0).color(p.success));
+                        ui.label(RichText::new(t!("Você está na versão mais recente.")).size(12.0).color(p.success));
                     }
                     State::Available { manifest, asset } => {
                         let v = manifest.version.clone();
                         let has = asset.is_some();
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Versão {v} disponível.")).size(12.0).color(p.accent_text));
+                            ui.label(RichText::new(t!("Versão {} disponível.", v)).size(12.0).color(p.accent_text));
                             if has {
-                                if ui.small_button("Baixar e instalar").clicked() {
+                                if ui.small_button(t!("Baixar e instalar")).clicked() {
                                     update_go = true;
                                 }
-                            } else if ui.small_button("Abrir página de download").clicked() {
+                            } else if ui.small_button(t!("Abrir página de download")).clicked() {
                                 open_url(crate::update::RELEASES);
                             }
                         });
                     }
                     State::Downloading { version, done, total } => {
                         let f = done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*total).max(1) as f32;
-                        ui.label(RichText::new(format!("Baixando a versão {version}…")).size(12.0).color(p.text2));
+                        ui.label(RichText::new(t!("Baixando a versão {}…", version)).size(12.0).color(p.text2));
                         ui.add(egui::ProgressBar::new(f).desired_height(5.0));
                     }
                     State::Ready { version, .. } => {
                         let v = version.clone();
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Versão {v} pronta para instalar.")).size(12.0).color(p.success));
-                            if ui.small_button("Reiniciar e atualizar").clicked() {
+                            ui.label(RichText::new(t!("Versão {} pronta para instalar.", v)).size(12.0).color(p.success));
+                            if ui.small_button(t!("Reiniciar e atualizar")).clicked() {
                                 update_restart = true;
                             }
                         });
                     }
                     State::Failed(e) => {
-                        ui.add(egui::Label::new(RichText::new(format!("Não foi possível atualizar: {e}")).size(12.0).color(p.danger)).wrap());
+                        ui.add(egui::Label::new(RichText::new(t!("Não foi possível atualizar: {}", e)).size(12.0).color(p.danger)).wrap());
                     }
                 }
             }
-            ui.checkbox(&mut self.settings.auto_update, "Atualizar automaticamente").on_hover_text("Baixa sozinho e instala quando não há sessão em andamento. O Elo reabre em seguida.");
+            ui.checkbox(&mut self.settings.auto_update, t!("Atualizar automaticamente")).on_hover_text(t!("Baixa sozinho e instala quando não há sessão em andamento. O Elo reabre em seguida."));
             if let crate::update::Install::Manual(why) = &self.updater.install {
-                ui.add(egui::Label::new(RichText::new(format!("Este Elo não se atualiza sozinho: {why}.")).size(11.5).color(p.muted)).wrap());
+                ui.add(egui::Label::new(RichText::new(t!("Este Elo não se atualiza sozinho: {}.", why)).size(11.5).color(p.muted)).wrap());
             }
             ui.add_space(8.0);
             ui.separator();
             if client {
-                ui.label(RichText::new("Empresa").font(theme::semibold(13.0)).color(p.text));
-                let name = self.settings.company.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "nenhuma ainda".into());
-                ui.label(RichText::new(format!("Este computador é atendido como {name}. Só os técnicos da empresa conseguem pedir acesso, e você sempre aceita na tela.")).size(12.0).color(p.text2));
-                egui::CollapsingHeader::new(RichText::new("Usar outro código de convite").size(12.0).color(p.text2)).id_salt("outro-convite").show(ui, |ui| {
+                ui.label(RichText::new(t!("Empresa")).font(theme::semibold(13.0)).color(p.text));
+                let name = self.settings.company.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| t!("nenhuma ainda").into());
+                ui.label(RichText::new(t!("Este computador é atendido como {}. Só os técnicos da empresa conseguem pedir acesso, e você sempre aceita na tela.", name)).size(12.0).color(p.text2));
+                egui::CollapsingHeader::new(RichText::new(t!("Usar outro código de convite")).size(12.0).color(p.text2)).id_salt("outro-convite").show(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut self.invite_input).desired_rows(2).font(theme::mono(11.5)).hint_text("ELO1-…").desired_width(f32::INFINITY));
-                    if ui.add_enabled(elo_proto::ctrl::Invite::decode(&self.invite_input).is_some(), egui::Button::new("Usar este código")).clicked() {
+                    if ui.add_enabled(elo_proto::ctrl::Invite::decode(&self.invite_input).is_some(), egui::Button::new(t!("Usar este código"))).clicked() {
                         let text = std::mem::take(&mut self.invite_input);
                         if let Err(e) = self.join_invite(&text) {
                             self.error(e);
@@ -1332,37 +1351,37 @@ impl EloApp {
             self.tech_section(ui, &p);
             ui.add_space(8.0);
             ui.separator();
-            ui.label(RichText::new("Servidor").font(theme::semibold(13.0)).color(p.text));
-            ui.checkbox(&mut self.settings.local_server.enabled, "Rodar o servidor neste computador");
+            ui.label(RichText::new(t!("Servidor")).font(theme::semibold(13.0)).color(p.text));
+            ui.checkbox(&mut self.settings.local_server.enabled, t!("Rodar o servidor neste computador"));
             if self.settings.local_server.enabled {
                 let probing = self.probe.is_some();
                 let probe_result = self.probe_result.clone();
                 let local_running = self.local.server.is_some();
                 let ls = &mut self.settings.local_server;
                 ui.horizontal(|ui| {
-                    theme::field_label(ui, "Porta");
+                    theme::field_label(ui, t!("Porta"));
                     ui.add(egui::DragValue::new(&mut ls.port).range(1024..=65535).speed(0.0));
                     ui.add_space(12.0);
-                    theme::field_label(ui, "Histórico");
-                    ui.add(egui::DragValue::new(&mut ls.retention_days).range(0..=3650).suffix(" dias").speed(1.0)).on_hover_text("Por quantos dias o servidor guarda o histórico de sessões (quem acessou quem, quando e quanto). 0 = para sempre. Esses dados são pessoais (LGPD).");
+                    theme::field_label(ui, t!("Histórico"));
+                    ui.add(egui::DragValue::new(&mut ls.retention_days).range(0..=3650).suffix(t!(" dias")).speed(1.0)).on_hover_text(t!("Por quantos dias o servidor guarda o histórico de sessões (quem acessou quem, quando e quanto). 0 = para sempre. Esses dados são pessoais (LGPD)."));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add_enabled(local_running, egui::Button::new("Painel do servidor")).on_hover_text("Quem está online, sessões em andamento e histórico").clicked() {
+                        if ui.add_enabled(local_running, egui::Button::new(t!("Painel do servidor"))).on_hover_text(t!("Quem está online, sessões em andamento e histórico")).clicked() {
                             open_panel = true;
                         }
                     });
                 });
-                ui.checkbox(&mut ls.lan, "Aceitar conexões diretas da rede").on_hover_text("Desligado, só aceita conexões deste computador (ex.: cloudflared instalado aqui), sem deixar a porta aberta na rede. Com o cloudflared no Docker, deixe ligado.");
-                theme::field_label(ui, "Endereço público (opcional)");
+                ui.checkbox(&mut ls.lan, t!("Aceitar conexões diretas da rede")).on_hover_text(t!("Desligado, só aceita conexões deste computador (ex.: cloudflared instalado aqui), sem deixar a porta aberta na rede. Com o cloudflared no Docker, deixe ligado."));
+                theme::field_label(ui, t!("Endereço público (opcional)"));
                 ui.horizontal(|ui| {
                     let w = ui.available_width() - 70.0;
                     ui.add(egui::TextEdit::singleline(&mut ls.public).font(theme::mono(12.0)).hint_text("wss://elo.seudominio.com (Cloudflare Tunnel)").desired_width(w));
                     let can = ls.public_ws().is_some() && !probing;
-                    if ui.add_enabled(can, egui::Button::new(if probing { "Testando…" } else { "Testar" })).on_hover_text("Conecta pelo endereço público e confere se ele chega a este servidor.").clicked() {
+                    if ui.add_enabled(can, egui::Button::new(if probing { t!("Testando…") } else { t!("Testar") })).on_hover_text(t!("Conecta pelo endereço público e confere se ele chega a este servidor.")).clicked() {
                         test = true;
                     }
                 });
                 if !ls.public.trim().is_empty() && ls.public_ws().is_none() {
-                    ui.label(RichText::new("Comece com wss:// (o túnel do Cloudflare fala WebSocket).").size(11.5).color(p.danger));
+                    ui.label(RichText::new(t!("Comece com wss:// (o túnel do Cloudflare fala WebSocket).")).size(11.5).color(p.danger));
                 }
                 if let Some((ok, msg)) = &probe_result {
                     ui.horizontal(|ui| {
@@ -1373,53 +1392,53 @@ impl EloApp {
                 cloudflare_help(ui, &p, ls.port);
                 if ls.same_bind(&self.local.started) {
                     if let Some(e) = &self.local.error {
-                        ui.label(RichText::new(format!("Não foi possível iniciar: {e}")).size(11.5).color(p.danger));
+                        ui.label(RichText::new(t!("Não foi possível iniciar: {}", e)).size(11.5).color(p.danger));
                     }
-                    ui.label(RichText::new("Nos outros computadores, desligue \"Rodar o servidor\" e use:").size(11.5).color(p.muted));
+                    ui.label(RichText::new(t!("Nos outros computadores, desligue \"Rodar o servidor\" e use:")).size(11.5).color(p.muted));
                     let mut rows: Vec<(&str, String)> = Vec::new();
                     if let Some(w) = ls.public_ws() {
-                        rows.push(("pela internet (sem impressão digital)", w.to_string()));
+                        rows.push((t!("pela internet (sem impressão digital)"), w.to_string()));
                     }
                     if ls.lan {
-                        rows.push(("na rede local (TLS ligado)", self.local.lan_address()));
+                        rows.push((t!("na rede local (TLS ligado)"), self.local.lan_address()));
                         if !self.local.fingerprint.is_empty() {
-                            rows.push(("impressão digital (só na rede local)", self.local.fingerprint.clone()));
+                            rows.push((t!("impressão digital (só na rede local)"), self.local.fingerprint.clone()));
                         }
                     }
                     if rows.is_empty() {
-                        ui.label(RichText::new("Só este computador consegue conectar. Preencha o endereço público do túnel ou ligue as conexões da rede.").size(11.5).color(p.warning));
+                        ui.label(RichText::new(t!("Só este computador consegue conectar. Preencha o endereço público do túnel ou ligue as conexões da rede.")).size(11.5).color(p.warning));
                     }
                     for (what, v) in rows {
                         ui.label(RichText::new(what).size(11.0).color(p.muted));
                         ui.horizontal(|ui| {
                             ui.add(egui::Label::new(RichText::new(&v).font(theme::mono(11.0)).color(p.text2)).wrap());
-                            if ui.small_button("Copiar").clicked() {
+                            if ui.small_button(t!("Copiar")).clicked() {
                                 copy(ui, &v);
                             }
                         });
                     }
                 } else {
-                    ui.label(RichText::new("O servidor reinicia ao salvar (sessões em andamento caem).").size(11.5).color(p.muted));
+                    ui.label(RichText::new(t!("O servidor reinicia ao salvar (sessões em andamento caem).")).size(11.5).color(p.muted));
                 }
             } else {
-                theme::field_label(ui, "Endereço");
-                ui.add(egui::TextEdit::singleline(&mut self.settings.server.address).font(theme::mono(12.0)).hint_text("host:porta ou wss://dominio (Cloudflare Tunnel)").desired_width(f32::INFINITY));
+                theme::field_label(ui, t!("Endereço"));
+                ui.add(egui::TextEdit::singleline(&mut self.settings.server.address).font(theme::mono(12.0)).hint_text(t!("host:porta ou wss://dominio (Cloudflare Tunnel)")).desired_width(f32::INFINITY));
                 let ws = self.settings.server.address.trim().starts_with("wss://") || self.settings.server.address.trim().starts_with("ws://");
                 if ws {
-                    ui.label(RichText::new("WebSocket: o TLS é o do endereço (wss://). Deixe a impressão digital vazia para Cloudflare.").size(11.5).color(p.muted));
+                    ui.label(RichText::new(t!("WebSocket: o TLS é o do endereço (wss://). Deixe a impressão digital vazia para Cloudflare.")).size(11.5).color(p.muted));
                 } else {
-                    ui.checkbox(&mut self.settings.server.tls, "TLS (recomendado)");
+                    ui.checkbox(&mut self.settings.server.tls, t!("TLS (recomendado)"));
                 }
-                theme::field_label(ui, "Impressão digital do certificado (servidor próprio autoassinado)");
-                ui.add(egui::TextEdit::singleline(&mut self.settings.server.pin).font(theme::mono(11.0)).hint_text("vazio = certificado público (Let's Encrypt, Cloudflare etc.)").desired_width(f32::INFINITY));
+                theme::field_label(ui, t!("Impressão digital do certificado (servidor próprio autoassinado)"));
+                ui.add(egui::TextEdit::singleline(&mut self.settings.server.pin).font(theme::mono(11.0)).hint_text(t!("vazio = certificado público (Let's Encrypt, Cloudflare etc.)")).desired_width(f32::INFINITY));
             }
             }
             ui.add_space(6.0);
-            ui.label(RichText::new("O servidor registra só metadados (IDs, nomes dos computadores, horários e volume). Telas, teclas, arquivos e chat são cifrados ponta a ponta com uma chave que só os dois computadores têm.").size(11.5).color(p.muted));
+            ui.label(RichText::new(t!("O servidor registra só metadados (IDs, nomes dos computadores, horários e volume). Telas, teclas, arquivos e chat são cifrados ponta a ponta com uma chave que só os dois computadores têm.")).size(11.5).color(p.muted));
             });
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if theme::primary(ui, None, "Salvar", None).clicked() {
+                if theme::primary(ui, None, t!("Salvar"), None).clicked() {
                     save = true;
                     renamed = crate::settings::Settings::load().device_name != self.settings.device_name;
                     if self.new_permanent.len() >= 8 {
@@ -1430,14 +1449,14 @@ impl EloApp {
                     self.reconnect_server();
                     close = true;
                 }
-                if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if theme::secondary(ui, None, t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.settings = crate::settings::Settings::load();
                     self.autostart = crate::autostart::enabled();
                     self.new_permanent.clear();
                     close = true;
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    if !self.client_mode() && theme::ghost(ui, None, "Assistente inicial").on_hover_text("Abre de novo as boas-vindas: nome, servidor e início automático.").clicked() {
+                    if !self.client_mode() && theme::ghost(ui, None, t!("Assistente inicial")).on_hover_text(t!("Abre de novo as boas-vindas: nome, servidor e início automático.")).clicked() {
                         wizard = true;
                     }
                 });
@@ -1450,7 +1469,7 @@ impl EloApp {
             if self.autostart != crate::autostart::enabled()
                 && let Err(e) = crate::autostart::set(self.autostart)
             {
-                self.error(format!("Iniciar com o computador: {e}"));
+                self.error(t!("Iniciar com o computador: {}", e));
             }
             self.autostart = crate::autostart::enabled();
             // O nome só vai ao servidor ao conectar.
@@ -1501,7 +1520,7 @@ impl EloApp {
 
 /// Passo a passo do Cloudflare Tunnel (recolhível), com os valores para copiar.
 pub(crate) fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
-    egui::CollapsingHeader::new(RichText::new("Como publicar pela internet (Cloudflare Tunnel)").size(12.5).color(p.text2)).id_salt("cloudflare").show(ui, |ui| {
+    egui::CollapsingHeader::new(RichText::new(t!("Como publicar pela internet (Cloudflare Tunnel)")).size(12.5).color(p.text2)).id_salt("cloudflare").show(ui, |ui| {
         let text = |ui: &mut egui::Ui, t: &str| {
             ui.add(egui::Label::new(RichText::new(t).size(11.5).color(p.text2)).wrap());
         };
@@ -1509,30 +1528,30 @@ pub(crate) fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(label).size(11.5).color(p.muted));
                 ui.label(RichText::new(v).font(theme::mono(11.5)).color(p.text));
-                if ui.small_button("Copiar").clicked() {
+                if ui.small_button(t!("Copiar")).clicked() {
                     copy(ui, v);
                 }
             });
         };
-        text(ui, "1. No painel da Cloudflare (Zero Trust → Networks → Tunnels), abra o túnel e adicione uma rota do tipo Published application.");
-        text(ui, "2. Subdomínio e domínio à sua escolha (ex.: elo.seudominio.com). Path: vazio.");
-        text(ui, "3. Service, se o cloudflared roda direto neste computador:");
-        value(ui, "   Type HTTP · URL", &format!("localhost:{port}"));
-        text(ui, "   Se o cloudflared roda no Docker, \"localhost\" é o contêiner. Use Type HTTPS com o IP do gateway da rede do contêiner e, em Additional application settings → TLS, ligue No TLS Verify. Deixe \"Aceitar conexões diretas da rede\" ligado.");
+        text(ui, t!("1. No painel da Cloudflare (Zero Trust → Networks → Tunnels), abra o túnel e adicione uma rota do tipo Published application."));
+        text(ui, t!("2. Subdomínio e domínio à sua escolha (ex.: elo.seudominio.com). Path: vazio."));
+        text(ui, t!("3. Service, se o cloudflared roda direto neste computador:"));
+        value(ui, t!("   Type HTTP · URL"), &format!("localhost:{port}"));
+        text(ui, t!("   Se o cloudflared roda no Docker, \"localhost\" é o contêiner. Use Type HTTPS com o IP do gateway da rede do contêiner e, em Additional application settings → TLS, ligue No TLS Verify. Deixe \"Aceitar conexões diretas da rede\" ligado."));
         let gws = docker_gateways();
         if (1..=3).contains(&gws.len()) {
             for g in &gws {
-                value(ui, "   Type HTTPS · URL", &format!("{g}:{port}"));
+                value(ui, t!("   Type HTTPS · URL"), &format!("{g}:{port}"));
             }
-            text(ui, "   (gateways das redes Docker deste computador: use o da rede do contêiner do cloudflared)");
+            text(ui, t!("   (gateways das redes Docker deste computador: use o da rede do contêiner do cloudflared)"));
         } else {
             if !gws.is_empty() {
-                text(ui, &format!("   Gateways das redes Docker deste computador: {}.", gws.join(", ")));
+                text(ui, &t!("   Gateways das redes Docker deste computador: {}.", gws.join(", ")));
             }
-            text(ui, &format!("   Para saber o da rede do cloudflared: docker inspect <contêiner> e procure \"Gateway\". A URL fica <gateway>:{port}."));
+            text(ui, &t!("   Para saber o da rede do cloudflared: docker inspect <contêiner> e procure \"Gateway\". A URL fica <gateway>:{}.", port));
         }
-        text(ui, "4. Preencha o Endereço público acima com wss:// e o seu endereço, e clique em Testar.");
-        text(ui, "5. Nos outros computadores: desligue \"Rodar o servidor neste computador\" e use o mesmo wss://, com a impressão digital vazia.");
+        text(ui, t!("4. Preencha o Endereço público acima com wss:// e o seu endereço, e clique em Testar."));
+        text(ui, t!("5. Nos outros computadores: desligue \"Rodar o servidor neste computador\" e use o mesmo wss://, com a impressão digital vazia."));
     });
 }
 
@@ -1540,7 +1559,7 @@ pub(crate) fn cloudflare_help(ui: &mut egui::Ui, p: &Palette, port: u16) {
 /// contêineres. Lê as rotas das interfaces docker0/br-*; o gateway é o
 /// primeiro endereço da rede.
 fn docker_gateways() -> Vec<String> {
-    let Ok(t) = std::fs::read_to_string("/proc/net/route") else { return Vec::new() };
+    let Ok(t) = std::fs::read_to_string("/proc/net/route") else { return Vec::new() ; };
     let mut v: Vec<String> = t
         .lines()
         .skip(1)
@@ -1593,12 +1612,12 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(RichText::new("Arquivos").font(theme::semibold(14.0)).color(m.label));
+            ui.label(RichText::new(t!("Arquivos")).font(theme::semibold(14.0)).color(m.label));
             let who = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
-            ui.label(RichText::new(format!("em {who}")).size(11.5).color(m.label2));
+            ui.label(RichText::new(t!("em {}", who)).size(11.5).color(m.label2));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if mac::round_icon(ui, m, Icon::Close, "Fechar", 26.0, true).clicked() {
+            if mac::round_icon(ui, m, Icon::Close, t!("Fechar"), 26.0, true).clicked() {
                 v.files.open = false;
             }
         });
@@ -1612,13 +1631,13 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
     let mut editing = ui.ctx().data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if mac::round_icon(ui, m, Icon::ArrowUp, "Pasta de cima", 28.0, parent.is_some()).clicked() {
+        if mac::round_icon(ui, m, Icon::ArrowUp, t!("Pasta de cima"), 28.0, parent.is_some()).clicked() {
             go = parent.clone();
         }
-        if mac::round_icon(ui, m, Icon::Home, "Pasta pessoal", 28.0, true).clicked() {
+        if mac::round_icon(ui, m, Icon::Home, t!("Pasta pessoal"), 28.0, true).clicked() {
             go = Some(String::new());
         }
-        if mac::round_icon(ui, m, Icon::Refresh, "Atualizar", 28.0, true).clicked() {
+        if mac::round_icon(ui, m, Icon::Refresh, t!("Atualizar"), 28.0, true).clicked() {
             go = Some(current.clone());
         }
         ui.add_space(6.0);
@@ -1652,7 +1671,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
             }
             let font = egui::FontId::proportional(12.5);
             let chev = 14.0;
-            let ws: Vec<f32> = crumbs.iter().map(|(n, _)| ui.painter().layout_no_wrap(n.clone(), font.clone(), m.label).size().x + 8.0).collect();
+            let ws: Vec<f32> = crumbs.iter().map(|(n, _)| { ui.painter().layout_no_wrap(n.clone(), font.clone(), m.label).size().x + 8.0}).collect();
             let room = bar.width() - 16.0;
             let mut first = 0;
             while first + 1 < crumbs.len() && ws[first..].iter().sum::<f32>() + chev * (crumbs.len() - first) as f32 + 20.0 > room {
@@ -1680,7 +1699,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
                 }
                 x += ws[i];
             }
-            if resp.on_hover_text("Clique duplo para digitar um caminho").double_clicked() {
+            if resp.on_hover_text(t!("Clique duplo para digitar um caminho")).double_clicked() {
                 f.path = current.clone();
                 editing = true;
             }
@@ -1701,9 +1720,9 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
         let (size_x, date_x) = (w - 96.0, w - 6.0);
         let (hdr, _) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::hover());
         let hf = theme::medium(11.0);
-        ui.painter().text(egui::pos2(hdr.left() + 30.0, hdr.center().y), Align2::LEFT_CENTER, "Nome", hf.clone(), m.label2);
-        ui.painter().text(egui::pos2(hdr.left() + size_x, hdr.center().y), Align2::RIGHT_CENTER, "Tamanho", hf.clone(), m.label2);
-        ui.painter().text(egui::pos2(hdr.left() + date_x, hdr.center().y), Align2::RIGHT_CENTER, "Modificado", hf, m.label2);
+        ui.painter().text(egui::pos2(hdr.left() + 30.0, hdr.center().y), Align2::LEFT_CENTER, t!("Nome"), hf.clone(), m.label2);
+        ui.painter().text(egui::pos2(hdr.left() + size_x, hdr.center().y), Align2::RIGHT_CENTER, t!("Tamanho"), hf.clone(), m.label2);
+        ui.painter().text(egui::pos2(hdr.left() + date_x, hdr.center().y), Align2::RIGHT_CENTER, t!("Modificado"), hf, m.label2);
         ui.painter().line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, m.sep));
         egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -1753,25 +1772,25 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
             }
             if shown == 0 && l.error.is_none() {
                 ui.add_space(24.0);
-                ui.vertical_centered(|ui| ui.label(RichText::new("Pasta vazia").size(12.5).color(m.label3)));
+                ui.vertical_centered(|ui| { ui.label(RichText::new(t!("Pasta vazia")).size(12.5).color(m.label3))});
             }
         });
     });
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         let n = f.selected.len();
-        let hid = ui.selectable_label(f.hidden, RichText::new("Mostrar ocultos").size(12.0).color(m.label2)).on_hover_text("Arquivos e pastas que começam com ponto");
+        let hid = ui.selectable_label(f.hidden, RichText::new(t!("Mostrar ocultos")).size(12.0).color(m.label2)).on_hover_text(t!("Arquivos e pastas que começam com ponto"));
         if hid.clicked() {
             f.hidden = !f.hidden;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let label = if n > 1 { format!("Baixar {n}") } else { "Baixar".to_string() };
-            if mac::button(ui, m, &label, Kind::Primary, None, n > 0).on_disabled_hover_text("Selecione arquivos (clique). Clique duplo baixa direto.").clicked() {
+            let label = if n > 1 { t!("Baixar {}", n) } else { t!("Baixar").to_string() };
+            if mac::button(ui, m, &label, Kind::Primary, None, n > 0).on_disabled_hover_text(t!("Selecione arquivos (clique). Clique duplo baixa direto.")).clicked() {
                 for name in f.selected.drain(..) {
                     let _ = cmd.send(Cmd::Download(remote_join(&current, &name)));
                 }
             }
-            if mac::button(ui, m, "Enviar…", Kind::Secondary, None, !current.is_empty()).on_hover_text("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.").clicked()
+            if mac::button(ui, m, t!("Enviar…"), Kind::Secondary, None, !current.is_empty()).on_hover_text(t!("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.")).clicked()
                 && let Some(list) = rfd::FileDialog::new().pick_files()
             {
                 for path in list {
@@ -1787,9 +1806,9 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
     // Transferências, como a lista de downloads.
     ui.add_space(16.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Transferências").font(theme::semibold(13.0)).color(m.label));
+        ui.label(RichText::new(t!("Transferências")).font(theme::semibold(13.0)).color(m.label));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if mac::round_icon(ui, m, Icon::FolderOpen, &format!("Abrir a pasta de recebidos ({})", downloads.display()), 26.0, true).clicked() {
+            if mac::round_icon(ui, m, Icon::FolderOpen, &t!("Abrir a pasta de recebidos ({})", downloads.display()), 26.0, true).clicked() {
                 let _ = std::fs::create_dir_all(downloads);
                 open_path(downloads);
             }
@@ -1798,7 +1817,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
     ui.add_space(6.0);
     egui::ScrollArea::vertical().id_salt("transferencias").auto_shrink([false, false]).show(ui, |ui| {
         if v.transfers.is_empty() {
-            ui.label(RichText::new("Nada ainda. O que você baixar vai para a pasta de recebidos.").size(11.5).color(m.label3));
+            ui.label(RichText::new(t!("Nada ainda. O que você baixar vai para a pasta de recebidos.")).size(11.5).color(m.label3));
         }
         for t in v.transfers.iter().rev().take(20) {
             let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
@@ -1813,7 +1832,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
             let g = ui.fonts_mut(|fo| fo.layout_job(job));
             p.galley(egui::pos2(x, rect.top() + 5.0), g, m.label);
             if t.finished {
-                p.text(egui::pos2(x, rect.bottom() - 9.0), Align2::LEFT_CENTER, format!("{} · {}", if t.incoming { "Recebido" } else { "Enviado" }, human_bytes(t.total)), egui::FontId::proportional(11.0), m.label2);
+                p.text(egui::pos2(x, rect.bottom() - 9.0), Align2::LEFT_CENTER, format!("{} · {}", if t.incoming { t!("Recebido") } else { t!("Enviado") }, human_bytes(t.total)), egui::FontId::proportional(11.0), m.label2);
             } else {
                 let bar = egui::Rect::from_min_size(egui::pos2(x, rect.bottom() - 12.0), Vec2::new((rect.right() - x - 54.0).max(20.0), 4.0));
                 p.rect_filled(bar, CornerRadius::same(2), m.hover);
@@ -1824,7 +1843,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
                 && let Some(path) = &t.path
             {
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)));
-                if mac::button(&mut child, m, "Abrir", Kind::Secondary, Some(Vec2::new(60.0, 24.0)), true).clicked() {
+                if mac::button(&mut child, m, t!("Abrir"), Kind::Secondary, Some(Vec2::new(60.0, 24.0)), true).clicked() {
                     open_path(path);
                 }
             }
@@ -1844,8 +1863,8 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                 mac::icon_tile(ui.painter(), r, Icon::Comment, m.green);
                 ui.add_space(8.0);
-                ui.label(RichText::new("Nenhuma mensagem").font(theme::semibold(13.0)).color(m.label));
-                ui.label(RichText::new("As mensagens são cifradas de ponta a ponta.").size(11.5).color(m.label2));
+                ui.label(RichText::new(t!("Nenhuma mensagem")).font(theme::semibold(13.0)).color(m.label));
+                ui.label(RichText::new(t!("As mensagens são cifradas de ponta a ponta.")).size(11.5).color(m.label2));
             });
         }
         let max_w = (ui.available_width() * 0.8).max(120.0);
@@ -1864,7 +1883,7 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
             let bubble = egui::Rect::from_min_size(egui::pos2(x, row.top()), size);
             ui.painter().rect_filled(bubble, CornerRadius::same((size.y / 2.0).min(17.0) as u8), fill);
             ui.painter().galley(bubble.min + Vec2::new(12.0, 7.0), g, color);
-            if resp.on_hover_text("Clique com o botão direito para copiar").secondary_clicked() {
+            if resp.on_hover_text(t!("Clique com o botão direito para copiar")).secondary_clicked() {
                 copy(ui, &l.text);
             }
         }
@@ -1874,8 +1893,8 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
         for t in transfers {
             let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
             ui.vertical_centered(|ui| {
-                let state = if t.finished { "concluído".into() } else { format!("{:.0}%", pct * 100.0) };
-                ui.label(RichText::new(format!("{} {} · {state}", if t.incoming { "Recebendo" } else { "Enviando" }, t.name)).size(11.0).color(m.label2));
+                let state = if t.finished { t!("concluído").into() } else { format!("{:.0}%", pct * 100.0) };
+                ui.label(RichText::new(t!("{} {} · {}", if t.incoming { t!("Recebendo") } else { t!("Enviando") }, t.name, state)).size(11.0).color(m.label2));
             });
             if !t.finished {
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 4.0), Sense::hover());
@@ -1893,7 +1912,7 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
     ui.painter().rect(field, CornerRadius::same(17), if m.dark { Color32::from_white_alpha(10) } else { Color32::WHITE }, Stroke::new(1.0, if m.dark { m.sep } else { Color32::from_black_alpha(30) }), egui::StrokeKind::Inside);
     let r = ui
         .scope_builder(egui::UiBuilder::new().max_rect(field.shrink2(Vec2::new(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
-            ui.add(egui::TextEdit::singleline(input).frame(egui::Frame::NONE).hint_text(RichText::new("Mensagem").color(m.label3)).text_color(m.label).desired_width(f32::INFINITY).min_size(Vec2::new(0.0, 34.0)).align(Align2::LEFT_CENTER))
+            ui.add(egui::TextEdit::singleline(input).frame(egui::Frame::NONE).hint_text(RichText::new(t!("Mensagem")).color(m.label3)).text_color(m.label).desired_width(f32::INFINITY).min_size(Vec2::new(0.0, 34.0)).align(Align2::LEFT_CENTER))
         })
         .inner;
     let has = !input.trim().is_empty();
@@ -1902,7 +1921,7 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
     ui.painter().circle_filled(b.center(), 16.0, if has { m.accent } else { m.hover });
     icons::paint(ui.painter(), b.shrink(8.0), Icon::Send, if has { Color32::WHITE } else { m.label3 });
     let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if (br.on_hover_text("Enviar").clicked() || enter) && has {
+    if (br.on_hover_text(t!("Enviar")).clicked() || enter) && has {
         let t = std::mem::take(input);
         chat.push(ChatLine { mine: true, text: t.clone() });
         send(t);
@@ -1931,7 +1950,7 @@ fn perm_chip(ui: &mut egui::Ui, m: &mac::Mac, icon: Icon, label: &str, on: bool,
     if !compact {
         p.text(egui::pos2(rect.left() + 30.0, rect.center().y), Align2::LEFT_CENTER, label, font, fg);
     }
-    let tip = if on { format!("{label}: liberado. Clique para bloquear.") } else { format!("{label}: bloqueado. Clique para liberar.") };
+    let tip = if on { t!("{}: liberado. Clique para bloquear.", label) } else { t!("{}: bloqueado. Clique para liberar.", label) };
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1947,13 +1966,13 @@ pub(crate) fn ago(when: u64) -> String {
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     match now.saturating_sub(when) {
-        0..60 => "agora".into(),
-        d @ 60..3600 => format!("há {} min", d / 60),
-        d @ 3600..86_400 => format!("há {} h", d / 3600),
-        86_400..172_800 => "ontem".into(),
-        d @ 172_800..5_184_000 => format!("há {} dias", d / 86_400),
-        d @ 5_184_000..63_072_000 => format!("há {} meses", d / 2_592_000),
-        d => format!("há {} anos", d / 31_536_000),
+        0..60 => t!("agora").into(),
+        d @ 60..3600 => t!("há {} min", d / 60),
+        d @ 3600..86_400 => t!("há {} h", d / 3600),
+        86_400..172_800 => t!("ontem").into(),
+        d @ 172_800..5_184_000 => t!("há {} dias", d / 86_400),
+        d @ 5_184_000..63_072_000 => t!("há {} meses", d / 2_592_000),
+        d => t!("há {} anos", d / 31_536_000),
     }
 }
 
@@ -2016,7 +2035,7 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     let text_left = rect.left() + 62.0;
     // Espaço para até três botões à direita (ligar, renomear, estrela).
     let text_w = (rect.right() - 108.0 - text_left).max(40.0);
-    let sub = if sub_name.is_empty() { format!("{} · {os}", pretty_id(id)) } else { format!("{sub_name} · {}", pretty_id(id)) };
+    let sub = if sub_name.is_empty() { t!("{} · {}", pretty_id(id), os) } else { t!("{} · {}", sub_name, pretty_id(id)) };
     let one_line = |t: &str, font: egui::FontId, color: Color32| {
         let mut job = egui::text::LayoutJob::simple_singleline(t.to_string(), font, color);
         job.wrap = egui::text::TextWrapping { max_width: text_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
@@ -2028,7 +2047,7 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     painter.galley(egui::pos2(text_left, rect.center().y + 3.0), g2, p.muted);
     // Ações à direita.
     let star = egui::Rect::from_center_size(egui::pos2(rect.right() - 24.0, rect.center().y), Vec2::splat(28.0));
-    let sr = ui.put(star, egui::Button::new("").frame(false)).on_hover_text(if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" });
+    let sr = ui.put(star, egui::Button::new("").frame(false)).on_hover_text(if fav { t!("Tirar dos favoritos") } else { t!("Salvar nos favoritos") });
     icons::paint(ui.painter(), star.shrink(6.0), Icon::Star, if fav { p.warning } else if sr.hovered() { p.text } else { p.muted });
     if sr.clicked() {
         out.star = Some(id.to_string());
@@ -2037,7 +2056,7 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     let mut x = rect.right() - 52.0;
     if hovered || sr.hovered() {
         let wr = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(28.0));
-        let w = ui.put(wr, egui::Button::new("").frame(false)).on_hover_text("Ligar este computador (Wake-on-LAN)");
+        let w = ui.put(wr, egui::Button::new("").frame(false)).on_hover_text(t!("Ligar este computador (Wake-on-LAN)"));
         icons::paint(ui.painter(), wr.shrink(7.0), Icon::Power, if w.hovered() { p.success } else { p.muted });
         if w.clicked() {
             out.wake = Some(id.to_string());
@@ -2046,7 +2065,7 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     }
     if fav && (hovered || sr.hovered()) {
         let edit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(28.0));
-        let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text("Editar nome e senha");
+        let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text(t!("Editar nome e senha"));
         icons::paint(ui.painter(), edit.shrink(7.0), Icon::Edit, if er.hovered() { p.text } else { p.muted });
         if er.clicked() {
             out.start_rename = Some(id.to_string());
@@ -2080,7 +2099,7 @@ const BAR_BAND: f32 = 68.0;
 /// Valor que desliza até o alvo (cúbica, desacelera no fim).
 fn ease_to(ctx: &egui::Context, id: egui::Id, target: f32, dur: f64) -> f32 {
     let now = ctx.input(|i| i.time);
-    let at = |(from, to, t0): (f32, f32, f64)| from + (to - from) * egui::emath::easing::cubic_out(((now - t0) / dur).clamp(0.0, 1.0) as f32);
+    let at = |(from, to, t0): (f32, f32, f64)| { from + (to - from) * egui::emath::easing::cubic_out(((now - t0) / dur).clamp(0.0, 1.0) as f32)};
     let st = match ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id)) {
         Some(st) if st.1 == target => st,
         Some(st) => (at(st), target, now),
@@ -2135,7 +2154,7 @@ fn glass_divider(ui: &mut egui::Ui) {
 fn glass_segments(ui: &mut egui::Ui, id: egui::Id, labels: &[String], tips: &[String], selected: usize, width: Option<f32>, h: f32) -> Option<usize> {
     let font = theme::semibold(12.5);
     let pad = 3.0;
-    let natural: Vec<f32> = labels.iter().map(|l| ui.painter().layout_no_wrap(l.clone(), font.clone(), GLASS_TEXT).size().x + 28.0).collect();
+    let natural: Vec<f32> = labels.iter().map(|l| { ui.painter().layout_no_wrap(l.clone(), font.clone(), GLASS_TEXT).size().x + 28.0}).collect();
     let ws: Vec<f32> = match width {
         Some(w) => vec![(w - 2.0 * pad) / labels.len() as f32; labels.len()],
         None => natural,
@@ -2291,7 +2310,7 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
     let now = ctx.input(|i| i.time);
     let bar_rect_id = egui::Id::unique(("barra-rect", idx));
     let last_rect = ctx.data(|d| d.get_temp::<egui::Rect>(bar_rect_id));
-    let near = ctx.pointer_hover_pos().is_some_and(|p| p.y < area.top() + 90.0 || last_rect.is_some_and(|r| r.expand(24.0).contains(p)));
+    let near = ctx.pointer_hover_pos().is_some_and(|p| { p.y < area.top() + 90.0 || last_rect.is_some_and(|r| r.expand(24.0).contains(p))});
     if near || menu_open || !fullscreen || ctx.data(|d| d.get_temp::<f64>(seen_id)).is_none() {
         ctx.data_mut(|d| d.insert_temp(seen_id, now));
     }
@@ -2333,7 +2352,7 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                             job.wrap = egui::text::TextWrapping { max_width: name_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                             let g1 = ui.fonts_mut(|f| f.layout_job(job));
                             let mins = v.started.elapsed().as_secs() / 60;
-                            let line2 = if !v.connected { "conectando…".to_string() } else if mins == 0 { format!("{} · agora", v.os) } else { format!("{} · {mins} min", v.os) };
+                            let line2 = if !v.connected { t!("conectando…").to_string() } else if mins == 0 { t!("{} · agora", v.os) } else { t!("{} · {} min", v.os, mins) };
                             let g2 = ui.painter().layout_no_wrap(line2, egui::FontId::proportional(11.0), GLASS_MUTED);
                             let w = 44.0 + g1.size().x.max(g2.size().x + 18.0) + 10.0;
                             let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::hover());
@@ -2356,15 +2375,15 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                             signal(p, egui::pos2(x, rect.center().y + 13.0), level, color);
                             p.galley(egui::pos2(x + 17.0, rect.center().y + 1.0), g2, GLASS_MUTED);
                             let data = human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed));
-                            let code = if v.sas.is_empty() { String::new() } else { format!("Código de verificação: {}\nConfira com quem está do outro lado: se for igual nas duas telas, a conexão não foi interceptada.\n\n", v.sas) };
-                            resp.on_hover_text(format!("{code}ID {} · {fps} quadros por segundo · {data} recebidos", pretty_id(&v.target_id)));
+                            let code = if v.sas.is_empty() { String::new() } else { t!("Código de verificação: {}\nConfira com quem está do outro lado: se for igual nas duas telas, a conexão não foi interceptada.\n\n", v.sas) };
+                            resp.on_hover_text(t!("{}ID {} · {} quadros por segundo · {} recebidos", code, pretty_id(&v.target_id), fps, data));
                             glass_divider(ui);
                         }
                         // Telas do outro computador.
                         if v.monitors.len() > 1 {
                             let n = v.monitors.len();
-                            let labels: Vec<String> = (1..=n).map(|k| if compact { k.to_string() } else { format!("Tela {k}") }).collect();
-                            let tips: Vec<String> = v.monitors.iter().map(|m| format!("{} · {}×{}{}", m.name, m.width, m.height, if m.primary { " · principal" } else { "" })).collect();
+                            let labels: Vec<String> = (1..=n).map(|k| if compact { k.to_string() } else { t!("Tela {}", k) }).collect();
+                            let tips: Vec<String> = v.monitors.iter().map(|m| t!("{} · {}×{}{}", m.name, m.width, m.height, if m.primary { t!(" · principal") } else { "" })).collect();
                             let cur = v.monitors.iter().position(|m| m.index == v.monitor).unwrap_or(0);
                             if let Some(i) = glass_segments(ui, egui::Id::unique(("telas", idx)), &labels, &tips, cur, None, 36.0) {
                                 v.monitor = v.monitors[i].index;
@@ -2374,22 +2393,22 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                         }
                         // Ações.
                         let (icon, tip) = if !v.audio_available {
-                            (Icon::SpeakerOff, "Sem som: o Elo do outro computador é de uma versão que ainda não manda som")
+                            (Icon::SpeakerOff, t!("Sem som: o Elo do outro computador é de uma versão que ainda não manda som"))
                         } else if v.audio_on {
-                            (Icon::Speaker, "Som ligado. Clique para desligar (o volume fica em Mais opções)")
+                            (Icon::Speaker, t!("Som ligado. Clique para desligar (o volume fica em Mais opções)"))
                         } else {
-                            (Icon::SpeakerOff, "Som desligado. Clique para ouvir")
+                            (Icon::SpeakerOff, t!("Som desligado. Clique para ouvir"))
                         };
                         if glass_icon(ui, icon, tip, false, v.audio_available, None).clicked() {
                             v.audio_on = !v.audio_on;
                             let _ = v.handle.cmd.send(Cmd::Audio(v.audio_on));
                         }
-                        if glass_icon(ui, Icon::Comment, "Chat", v.chat_open, true, None).clicked() {
+                        if glass_icon(ui, Icon::Comment, t!("Chat"), v.chat_open, true, None).clicked() {
                             v.chat_open = !v.chat_open;
                             v.files.open = false;
                         }
-                        let files = glass_icon(ui, Icon::Folder, "Arquivos: ver as pastas do outro computador, baixar e enviar (dá para arrastar arquivos para a janela)", v.files.open, v.permissions.files, None)
-                            .on_disabled_hover_text("O outro lado não liberou a transferência de arquivos");
+                        let files = glass_icon(ui, Icon::Folder, t!("Arquivos: ver as pastas do outro computador, baixar e enviar (dá para arrastar arquivos para a janela)"), v.files.open, v.permissions.files, None)
+                            .on_disabled_hover_text(t!("O outro lado não liberou a transferência de arquivos"));
                         if files.clicked() {
                             v.files.open = !v.files.open;
                             v.chat_open = false;
@@ -2398,17 +2417,17 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                                 let _ = v.handle.cmd.send(Cmd::ListDir(String::new()));
                             }
                         }
-                        if glass_icon(ui, Icon::Star, if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" }, false, true, fav.then_some(Color32::from_rgb(252, 200, 64))).clicked() {
+                        if glass_icon(ui, Icon::Star, if fav { t!("Tirar dos favoritos") } else { t!("Salvar nos favoritos") }, false, true, fav.then_some(Color32::from_rgb(252, 200, 64))).clicked() {
                             act = Some(SessAct::Favorite);
                         }
-                        if glass_icon(ui, if fullscreen { Icon::Shrink } else { Icon::Expand }, if fullscreen { "Sair da tela cheia" } else { "Tela cheia" }, fullscreen, true, None).clicked() {
+                        if glass_icon(ui, if fullscreen { Icon::Shrink } else { Icon::Expand }, if fullscreen { t!("Sair da tela cheia") } else { t!("Tela cheia") }, fullscreen, true, None).clicked() {
                             act = Some(SessAct::Fullscreen);
                         }
-                        let more = glass_icon(ui, Icon::More, "Mais opções", menu_open, true, None);
+                        let more = glass_icon(ui, Icon::More, t!("Mais opções"), menu_open, true, None);
                         more_menu(&more, more_id, v);
                         glass_divider(ui);
                         // Encerrar.
-                        let label = if compact { String::new() } else { "Encerrar".to_string() };
+                        let label = if compact { String::new() } else { t!("Encerrar").to_string() };
                         let g = ui.painter().layout_no_wrap(label, theme::semibold(13.0), Color32::WHITE);
                         let w = if compact { 36.0 } else { g.size().x + 50.0 };
                         let (rect, end) = ui.allocate_exact_size(Vec2::new(w, 36.0), Sense::click());
@@ -2422,7 +2441,7 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                         if !compact {
                             p.galley(egui::pos2(rect.left() + 35.0, rect.center().y - g.size().y / 2.0), g, Color32::WHITE);
                         }
-                        if end.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Encerrar a sessão").clicked() {
+                        if end.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Encerrar a sessão")).clicked() {
                             v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     });
@@ -2456,7 +2475,7 @@ fn cc_volume(ui: &mut egui::Ui, value: f32) -> Option<f32> {
     let knob = egui::pos2(kx, track.center().y);
     p.add(egui::Shadow { offset: [0, 1], blur: 5, spread: 0, color: Color32::from_black_alpha(120) }.as_shape(egui::Rect::from_center_size(knob, Vec2::splat(18.0)), CornerRadius::same(9)));
     p.circle_filled(knob, 9.0, Color32::WHITE);
-    resp.on_hover_text(format!("Volume: {:.0}%", v * 100.0)).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.on_hover_text(t!("Volume: {}%", format!("{:.0}", v * 100.0))).on_hover_cursor(egui::CursorIcon::PointingHand);
     pick
 }
 
@@ -2474,10 +2493,10 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
             ui.spacing_mut().item_spacing = Vec2::splat(8.0);
             let half = (ui.available_width() - 8.0) / 2.0;
             ui.horizontal(|ui| {
-                if cc_toggle(ui, half, Icon::Expand, "Ajustar à janela", if v.fit { "ligado" } else { "tamanho real" }, v.fit).on_hover_text("Desligado: tamanho real, com rolagem").clicked() {
+                if cc_toggle(ui, half, Icon::Expand, t!("Ajustar à janela"), if v.fit { t!("ligado") } else { t!("tamanho real") }, v.fit).on_hover_text(t!("Desligado: tamanho real, com rolagem")).clicked() {
                     v.fit = !v.fit;
                 }
-                if cc_toggle(ui, half, Icon::Copy, "Copiar e colar", if v.clipboard { "ligado" } else { "desligado" }, v.clipboard).on_hover_text("Área de transferência compartilhada entre os dois").clicked() {
+                if cc_toggle(ui, half, Icon::Copy, t!("Copiar e colar"), if v.clipboard { t!("ligado") } else { t!("desligado") }, v.clipboard).on_hover_text(t!("Área de transferência compartilhada entre os dois")).clicked() {
                     v.clipboard = !v.clipboard;
                     let _ = v.handle.cmd.send(Cmd::Clipboard(v.clipboard));
                 }
@@ -2485,11 +2504,11 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
             cc_module(ui, |ui| {
                 ui.horizontal(|ui| {
                     icons::icon(ui, Icon::Image, 14.0, GLASS_TEXT2);
-                    ui.label(RichText::new("Qualidade da imagem").font(theme::semibold(12.5)).color(GLASS_TEXT));
+                    ui.label(RichText::new(t!("Qualidade da imagem")).font(theme::semibold(12.5)).color(GLASS_TEXT));
                 });
                 ui.add_space(4.0);
-                let tips = ["Menos dados por quadro: melhor em rede lenta", "Bom para a maioria das conexões", "Imagem mais nítida, usa mais rede"];
-                if let Some(q) = cc_slider(ui, id.with("qualidade"), &["Fluida", "Equilibrada", "Nítida"], &tips, v.quality.min(2)) {
+                let tips = [t!("Menos dados por quadro: melhor em rede lenta"), t!("Bom para a maioria das conexões"), t!("Imagem mais nítida, usa mais rede"),];
+                if let Some(q) = cc_slider(ui, id.with("qualidade"), &[t!("Fluida"), t!("Equilibrada"), t!("Nítida")], &tips, v.quality.min(2)) {
                     v.quality = q;
                     let (jpeg, fps) = quality(q);
                     let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
@@ -2498,11 +2517,11 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
             cc_module(ui, |ui| {
                 ui.horizontal(|ui| {
                     icons::icon(ui, Icon::Speaker, 14.0, GLASS_TEXT2);
-                    ui.label(RichText::new("Som do outro computador").font(theme::semibold(12.5)).color(GLASS_TEXT));
+                    ui.label(RichText::new(t!("Som do outro computador")).font(theme::semibold(12.5)).color(GLASS_TEXT));
                 });
                 ui.add_space(4.0);
                 if !v.audio_available {
-                    ui.label(RichText::new("O Elo de lá ainda não manda som. Atualize-o.").size(11.5).color(GLASS_MUTED));
+                    ui.label(RichText::new(t!("O Elo de lá ainda não manda som. Atualize-o.")).size(11.5).color(GLASS_MUTED));
                     return;
                 }
                 ui.horizontal(|ui| {
@@ -2510,7 +2529,7 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 15.0, if on { GLASS_BLUE } else { Color32::from_white_alpha(30) });
                     icons::paint(ui.painter(), r.shrink(8.0), if on { Icon::Speaker } else { Icon::SpeakerOff }, Color32::WHITE);
-                    if resp.on_hover_text(if on { "Desligar o som" } else { "Ouvir o som" }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    if resp.on_hover_text(if on { t!("Desligar o som") } else { t!("Ouvir o som") }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         v.audio_on = !on;
                         let _ = v.handle.cmd.send(Cmd::Audio(v.audio_on));
                     }
@@ -2527,13 +2546,13 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
             cc_module(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let ctrl = v.permissions.control;
-                let denied = "O outro lado não liberou o controle";
-                if glass_row(ui, Icon::Key, "Enviar Ctrl+Alt+Del", ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
+                let denied = t!("O outro lado não liberou o controle");
+                if glass_row(ui, Icon::Key, t!("Enviar Ctrl+Alt+Del"), ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
                     let _ = v.handle.cmd.send(Cmd::SecureAttention);
                     egui::Popup::close_id(ui.ctx(), id);
                 }
-                if glass_row(ui, Icon::Refresh, "Reiniciar o computador…", ctrl, Color32::from_rgb(255, 128, 124))
-                    .on_hover_text("Reinicia o outro computador e reconecta quando ele voltar")
+                if glass_row(ui, Icon::Refresh, t!("Reiniciar o computador…"), ctrl, Color32::from_rgb(255, 128, 124))
+                    .on_hover_text(t!("Reinicia o outro computador e reconecta quando ele voltar"))
                     .on_disabled_hover_text(denied)
                     .clicked()
                 {

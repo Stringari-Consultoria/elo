@@ -65,7 +65,7 @@ pub struct Manifest {
 
 /// Versão `a` é mais nova que `b` (números separados por ponto).
 pub fn newer(a: &str, b: &str) -> bool {
-    let parse = |s: &str| s.trim_start_matches('v').split(['.', '-']).take(3).map(|x| x.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let parse = |s: &str| { s.trim_start_matches('v').split(['.', '-']).take(3).map(|x| x.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>()};
     parse(a) > parse(b)
 }
 
@@ -74,16 +74,16 @@ fn agent() -> ureq::Agent {
 }
 
 fn get_small(url: &str, limit: u64) -> Result<Vec<u8>, String> {
-    let mut r = agent().get(url).call().map_err(|e| format!("{url}: {e}"))?;
-    r.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))
+    let mut r = agent().get(url).call().map_err(|e| t!("{}: {}", url, e))?;
+    r.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| t!("{}: {}", url, e))
 }
 
 /// Confere a assinatura Ed25519 do manifesto.
 pub fn verify(msg: &[u8], sig: &[u8], key: &[u8; 32]) -> Result<(), String> {
     use ed25519_dalek::{Signature, VerifyingKey};
-    let key = VerifyingKey::from_bytes(key).map_err(|_| "chave de atualização inválida".to_string())?;
-    let sig: [u8; 64] = sig.try_into().map_err(|_| "assinatura do manifesto com tamanho errado".to_string())?;
-    key.verify_strict(msg, &Signature::from_bytes(&sig)).map_err(|_| "assinatura do manifesto não confere: atualização recusada".to_string())
+    let key = VerifyingKey::from_bytes(key).map_err(|_| t!("chave de atualização inválida").to_string())?;
+    let sig: [u8; 64] = sig.try_into().map_err(|_| t!("assinatura do manifesto com tamanho errado").to_string())?;
+    key.verify_strict(msg, &Signature::from_bytes(&sig)).map_err(|_| t!("assinatura do manifesto não confere: atualização recusada").to_string())
 }
 
 /// Baixa e valida o manifesto em `url` com a chave `key`.
@@ -91,7 +91,7 @@ pub fn fetch_manifest(url: &str, key: &[u8; 32]) -> Result<Manifest, String> {
     let body = get_small(url, 256 * 1024)?;
     let sig = get_small(&format!("{url}.sig"), 1024)?;
     verify(&body, &sig, key)?;
-    serde_json::from_slice(&body).map_err(|e| format!("manifesto inválido: {e}"))
+    serde_json::from_slice(&body).map_err(|e| t!("manifesto inválido: {}", e))
 }
 
 /// Como este Elo foi instalado (decide qual pacote baixar e como trocar).
@@ -131,9 +131,9 @@ fn exe_name() -> &'static str {
 
 pub fn detect() -> Install {
     if cfg!(debug_assertions) {
-        return Install::Manual("versão de desenvolvimento: atualize pelo código".into());
+        return Install::Manual(t!("versão de desenvolvimento: atualize pelo código").into());
     }
-    let Ok(exe) = std::env::current_exe() else { return Install::Manual("caminho do Elo desconhecido".into()) };
+    let Ok(exe) = std::env::current_exe() else { return Install::Manual(t!("caminho do Elo desconhecido").into()) ; };
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     if cfg!(target_os = "windows") {
@@ -143,13 +143,13 @@ pub fn detect() -> Install {
             let all_users = !local.is_some_and(|l| dir.starts_with(l));
             return Install::WindowsSetup { all_users };
         }
-        return Install::Manual("versão portátil: baixe a nova no GitHub".into());
+        return Install::Manual(t!("versão portátil: baixe a nova no GitHub").into());
     }
     if cfg!(target_os = "macos") {
         return match exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")) {
             Some(app) if !app.starts_with("/Volumes") => Install::MacApp(app.to_path_buf()),
-            Some(_) => Install::Manual("arraste o Elo para Aplicativos para receber atualizações".into()),
-            None => Install::Manual("fora do Elo.app: atualize manualmente".into()),
+            Some(_) => Install::Manual(t!("arraste o Elo para Aplicativos para receber atualizações").into()),
+            None => Install::Manual(t!("fora do Elo.app: atualize manualmente").into()),
         };
     }
     if dir.starts_with("/usr") {
@@ -161,7 +161,7 @@ pub fn detect() -> Install {
         let _ = std::fs::remove_file(&probe);
         Install::LinuxDir(dir)
     } else {
-        Install::Manual(format!("sem permissão para gravar em {}", dir.display()))
+        Install::Manual(t!("sem permissão para gravar em {}", dir.display()))
     }
 }
 
@@ -194,24 +194,24 @@ pub fn download(m: &Manifest, a: &Asset, progress: &Arc<AtomicU64>) -> Result<Pa
 
 pub fn download_to(url: &str, a: &Asset, dir: &Path, progress: &Arc<AtomicU64>) -> Result<PathBuf, String> {
     // Só o nome do arquivo (o manifesto é assinado, mas não custa).
-    let name = Path::new(&a.name).file_name().ok_or("nome de pacote inválido")?.to_owned();
+    let name = Path::new(&a.name).file_name().ok_or(t!("nome de pacote inválido"))?.to_owned();
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join(name);
     let part = path.with_extension("parte");
-    let r = agent().get(url).call().map_err(|e| format!("baixando {}: {e}", a.name))?;
+    let r = agent().get(url).call().map_err(|e| t!("baixando {}: {}", a.name, e))?;
     let mut body = r.into_body().into_reader();
     let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 128 * 1024];
     let mut total = 0u64;
     loop {
-        let n = body.read(&mut buf).map_err(|e| format!("baixando {}: {e}", a.name))?;
+        let n = body.read(&mut buf).map_err(|e| t!("baixando {}: {}", a.name, e))?;
         if n == 0 {
             break;
         }
         total += n as u64;
         if total > a.size {
-            return Err("o pacote veio maior que o anunciado: atualização recusada".into());
+            return Err(t!("o pacote veio maior que o anunciado: atualização recusada").into());
         }
         hash.update(&buf[..n]);
         f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
@@ -221,7 +221,7 @@ pub fn download_to(url: &str, a: &Asset, dir: &Path, progress: &Arc<AtomicU64>) 
     let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     if total != a.size || !got.eq_ignore_ascii_case(&a.sha256) {
         let _ = std::fs::remove_file(&part);
-        return Err("o pacote baixado não confere com o manifesto assinado: atualização recusada".into());
+        return Err(t!("o pacote baixado não confere com o manifesto assinado: atualização recusada").into());
     }
     std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
     Ok(path)
@@ -229,11 +229,11 @@ pub fn download_to(url: &str, a: &Asset, dir: &Path, progress: &Arc<AtomicU64>) 
 
 #[cfg(unix)]
 fn run(cmd: &mut Command) -> Result<(), String> {
-    let out = cmd.output().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
+    let out = cmd.output().map_err(|e| t!("{}: {}", format!("{:?}", cmd.get_program()), e))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!("{:?} falhou: {}", cmd.get_program(), String::from_utf8_lossy(&out.stderr).trim()))
+        Err(t!("{} falhou: {}", format!("{:?}", cmd.get_program()), String::from_utf8_lossy(&out.stderr).trim()))
     }
 }
 
@@ -246,7 +246,7 @@ fn sh_quote(p: &Path) -> String {
 /// Reabre o Elo depois que este processo sair (a porta do servidor fica livre).
 #[cfg(unix)]
 fn relaunch(cmd: &str) -> Result<(), String> {
-    Command::new("/bin/sh").arg("-c").arg(format!("sleep 2; {cmd}")).spawn().map(|_| ()).map_err(|e| e.to_string())
+    Command::new("/bin/sh").arg("-c").arg(format!("sleep 2; {}", cmd)).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Instala o pacote baixado. Em caso de sucesso, quem chamou deve encerrar o
@@ -262,7 +262,7 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
                 .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", if *all_users { "/ALLUSERS" } else { "/CURRENTUSER" }])
                 .spawn()
                 .map(|_| ())
-                .map_err(|e| format!("instalador: {e}"))
+                .map_err(|e| t!("instalador: {}", e))
         }
         #[cfg(target_os = "macos")]
         Install::MacApp(app) => {
@@ -277,14 +277,14 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
             // Troca: o processo atual continua com os arquivos antigos até sair.
             let old = app.with_extension("app.antigo");
             let _ = std::fs::remove_dir_all(&old);
-            std::fs::rename(app, &old).map_err(|e| format!("{}: {e}", app.display()))?;
+            std::fs::rename(app, &old).map_err(|e| t!("{}: {}", app.display(), e))?;
             if let Err(e) = std::fs::rename(&staging, app) {
                 let _ = std::fs::rename(&old, app);
                 return Err(e.to_string());
             }
             let _ = std::fs::remove_dir_all(&old);
             let args = if background { format!(" --args {}", crate::autostart::ARG) } else { String::new() };
-            relaunch(&format!("open -n {}{args}", sh_quote(app)))
+            relaunch(&format!("open -n {}{}", sh_quote(app), args))
         }
         #[cfg(target_os = "linux")]
         Install::LinuxDir(dir) => {
@@ -295,17 +295,17 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
             replace_binaries(&tmp, dir)?;
             let _ = std::fs::remove_dir_all(&tmp);
             let args = if background { format!(" {}", crate::autostart::ARG) } else { String::new() };
-            relaunch(&format!("exec {}{args}", sh_quote(&dir.join(exe_name()))))
+            relaunch(&format!("exec {}{}", sh_quote(&dir.join(exe_name())), args))
         }
         #[cfg(target_os = "linux")]
         Install::LinuxDeb => {
             // Pede a senha de administrador numa janela do sistema (polkit).
-            run(Command::new("pkexec").arg("apt-get").arg("install").arg("-y").arg(file)).map_err(|e| format!("{e}. Instale manualmente: {}", file.display()))?;
+            run(Command::new("pkexec").arg("apt-get").arg("install").arg("-y").arg(file)).map_err(|e| t!("{}. Instale manualmente: {}", e, file.display()))?;
             let args = if background { format!(" {}", crate::autostart::ARG) } else { String::new() };
-            relaunch(&format!("exec /usr/bin/{}{args}", exe_name()))
+            relaunch(&format!("exec /usr/bin/{}{}", exe_name(), args))
         }
         #[allow(unreachable_patterns)]
-        _ => Err("atualização automática não disponível neste sistema".into()),
+        _ => Err(t!("atualização automática não disponível neste sistema").into()),
     }
 }
 
@@ -315,7 +315,7 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
 pub fn replace_binaries(extracted: &Path, dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let main = exe_name();
-    let pkg = std::fs::read_dir(extracted).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join(main).is_file()).ok_or(format!("pacote sem o executável {main}"))?;
+    let pkg = std::fs::read_dir(extracted).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join(main).is_file()).ok_or(t!("pacote sem o executável {}", main))?;
     for b in [main, "elo-server"] {
         let src = pkg.join(b);
         if !src.is_file() {
@@ -326,9 +326,9 @@ pub fn replace_binaries(extracted: &Path, dir: &Path) -> Result<(), String> {
             continue;
         }
         let tmp = dir.join(format!(".{b}.novo"));
-        std::fs::copy(&src, &tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::copy(&src, &tmp).map_err(|e| t!("{}: {}", tmp.display(), e))?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        std::fs::rename(&tmp, &dst).map_err(|e| t!("{}: {}", dst.display(), e))?;
     }
     Ok(())
 }
@@ -387,7 +387,7 @@ impl Updater {
     }
 
     pub fn download_now(&mut self) {
-        let State::Available { manifest, asset: Some(asset) } = &self.state else { return };
+        let State::Available { manifest, asset: Some(asset) } = &self.state else { return ; };
         let (m, a) = (manifest.clone(), asset.clone());
         let done = Arc::new(AtomicU64::new(0));
         let d2 = done.clone();
@@ -407,7 +407,7 @@ impl Updater {
             self.rx = None;
             self.state = match m {
                 Msg::Checked(Ok(Check::UpToDate)) => State::UpToDate,
-                Msg::Checked(Ok(Check::Available(manifest, asset))) => State::Available { manifest, asset },
+                Msg::Checked(Ok(Check::Available(manifest, asset))) => { State::Available { manifest, asset }}
                 Msg::Checked(Err(e)) | Msg::Downloaded(_, Err(e)) => State::Failed(e),
                 Msg::Downloaded(version, Ok(file)) => State::Ready { version, file },
             };
@@ -425,7 +425,7 @@ impl Updater {
 
     /// Instala o pacote pronto. Em caso de sucesso, o app deve sair já.
     pub fn install_now(&mut self, background: bool) -> Result<(), String> {
-        let State::Ready { file, .. } = &self.state else { return Err("nenhuma atualização pronta".into()) };
+        let State::Ready { file, .. } = &self.state else { return Err(t!("nenhuma atualização pronta").into()) ; };
         let r = install(&self.install, file, background);
         if let Err(e) = &r {
             self.state = State::Failed(e.clone());

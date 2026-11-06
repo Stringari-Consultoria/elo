@@ -280,6 +280,7 @@ impl EloApp {
             settings.onboarded = true;
             settings.save();
         }
+        crate::i18n::set(&settings.language);
         let client_mode = crate::variant::client_build() || settings.company.is_some();
         crate::autostart::refresh();
         stringari_ui::theme::install_fonts(&cc.egui_ctx);
@@ -334,7 +335,7 @@ impl EloApp {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
         }
         if let Some(e) = local_error {
-            app.error(format!("Servidor local: {e}"));
+            app.error(t!("Servidor local: {}", crate::i18n::tr_dyn(&e)));
         }
         app
     }
@@ -357,15 +358,15 @@ impl EloApp {
     pub fn connect(&mut self, target: String, password: String) {
         let t = elo_proto::ctrl::clean_id(&target);
         if t.len() != 9 {
-            self.error("Digite um ID de 9 dígitos.");
+            self.error(t!("Digite um ID de 9 dígitos."));
             return;
         }
         if self.my_id() == Some(t.as_str()) {
-            self.error("Esse é o ID deste computador.");
+            self.error(t!("Esse é o ID deste computador."));
             return;
         }
         if !matches!(self.status, Status::Online(_)) {
-            self.error("Sem conexão com o servidor do Elo.");
+            self.error(t!("Sem conexão com o servidor do Elo."));
             return;
         }
         // Sem senha digitada: usa a salva no favorito.
@@ -381,7 +382,7 @@ impl EloApp {
 
     /// Liga este computador à empresa do convite (Elo Cliente).
     pub fn join_invite(&mut self, text: &str) -> Result<(), String> {
-        let inv = elo_proto::ctrl::Invite::decode(text).ok_or("código de convite inválido: confira se copiou inteiro (começa com ELO1-)")?;
+        let inv = elo_proto::ctrl::Invite::decode(text).ok_or(t!("código de convite inválido: confira se copiou inteiro (começa com ELO1-)"))?;
         self.settings.company = Some(CompanyCfg { invite: text.split_whitespace().collect(), name: inv.name });
         self.settings.onboarded = true;
         self.settings.tech = None;
@@ -428,7 +429,7 @@ impl EloApp {
     /// Arquivos arrastados para a janela durante uma sessão: envia para o
     /// outro computador (para a pasta aberta no gerenciador, se houver).
     pub fn drop_files(&mut self, ctx: &egui::Context, idx: usize, area: egui::Rect) {
-        let Some(v) = self.views.get_mut(idx) else { return };
+        let Some(v) = self.views.get_mut(idx) else { return ; };
         let (hovering, dropped) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.clone()));
         if hovering && v.connected {
             let p = if self.settings.dark { stringari_ui::theme::DARK } else { stringari_ui::theme::LIGHT };
@@ -438,11 +439,11 @@ impl EloApp {
             painter.rect_stroke(inner, egui::CornerRadius::same(16), egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
             let who = if v.target_name.is_empty() { elo_proto::ctrl::pretty_id(&v.target_id) } else { v.target_name.clone() };
             let text = if !v.permissions.files {
-                "O outro lado não liberou a transferência de arquivos".to_string()
+                t!("O outro lado não liberou a transferência de arquivos").to_string()
             } else if let Some(l) = v.files.listing.as_ref().filter(|_| v.files.open) {
-                format!("Solte para enviar para {who}\n{}", l.path)
+                t!("Solte para enviar para {}\n{}", who, l.path)
             } else {
-                format!("Solte para enviar para {who}")
+                t!("Solte para enviar para {}", who)
             };
             painter.text(inner.center(), egui::Align2::CENTER_CENTER, text, stringari_ui::theme::semibold(18.0), egui::Color32::WHITE);
         }
@@ -450,7 +451,7 @@ impl EloApp {
             return;
         }
         if !v.permissions.files {
-            self.error("O outro lado não liberou a transferência de arquivos.");
+            self.error(t!("O outro lado não liberou a transferência de arquivos."));
             return;
         }
         let dir = v.files.listing.as_ref().filter(|_| v.files.open).map(|l| l.path.clone());
@@ -487,7 +488,7 @@ impl EloApp {
                 self.local.server = None;
                 std::process::exit(0);
             }
-            Err(e) => self.error(format!("Atualização: {e}")),
+            Err(e) => self.error(t!("Atualização: {}", e)),
         }
     }
 
@@ -530,7 +531,7 @@ impl EloApp {
 
     /// Testa o endereço público (wss://) numa thread: tem de chegar a este servidor.
     pub fn test_public(&mut self) {
-        let Some(addr) = self.settings.local_server.public_ws().map(str::to_string) else { return };
+        let Some(addr) = self.settings.local_server.public_ws().map(str::to_string) else { return ; };
         self.test_server(ServerCfg { address: addr, tls: true, pin: String::new() }, true);
     }
 
@@ -548,15 +549,15 @@ impl EloApp {
 
     /// Recolhe o resultado do teste, se já chegou.
     pub fn poll_probe(&mut self) {
-        let Some((r, same)) = self.probe.as_ref().and_then(|(rx, same)| rx.try_recv().ok().map(|r| (r, *same))) else { return };
+        let Some((r, same)) = self.probe.as_ref().and_then(|(rx, same)| rx.try_recv().ok().map(|r| (r, *same))) else { return ; };
         self.probe = None;
         let mine = self.my_id().map(str::to_string);
         self.probe_result = Some(match r {
-            Ok(id) if !same => (true, format!("Conectado. Neste servidor, este computador terá o ID {}.", elo_proto::ctrl::pretty_id(&id))),
-            Ok(id) if Some(&id) == mine.as_ref() => (true, "Funcionando: o endereço público chega a este servidor.".into()),
-            Ok(_) => (false, "O endereço responde, mas é outro servidor do Elo (o ID deste computador lá é diferente).".into()),
-            Err(e) if e.contains("502") || e.contains("530") => (false, format!("O Cloudflare não alcançou o Elo ({e}). Confira o Service da rota, nas instruções abaixo.")),
-            Err(e) => (false, format!("Não conectou: {e}")),
+            Ok(id) if !same => (true, t!("Conectado. Neste servidor, este computador terá o ID {}.", elo_proto::ctrl::pretty_id(&id))),
+            Ok(id) if Some(&id) == mine.as_ref() => (true, t!("Funcionando: o endereço público chega a este servidor.").into()),
+            Ok(_) => (false, t!("O endereço responde, mas é outro servidor do Elo (o ID deste computador lá é diferente).").into()),
+            Err(e) if e.contains("502") || e.contains("530") => (false, t!("O Cloudflare não alcançou o Elo ({}). Confira o Service da rota, nas instruções abaixo.", e)),
+            Err(e) => (false, t!("Não conectou: {}", e)),
         });
     }
 
@@ -576,7 +577,7 @@ impl EloApp {
             self.local.server = None;
             self.local = Local::start(&self.settings.local_server);
             if let Some(e) = &self.local.error {
-                let e = format!("Servidor local: {e}");
+                let e = t!("Servidor local: {}", crate::i18n::tr_dyn(e));
                 self.error(e);
             }
         }
@@ -610,7 +611,7 @@ impl EloApp {
                     self.help = None;
                 }
                 Event::Offline { reason } => {
-                    self.status = Status::Offline(reason);
+                    self.status = Status::Offline(crate::i18n::tr_dyn(&reason));
                     self.help = None;
                 }
                 Event::Features(f) => self.features = f,
@@ -628,7 +629,7 @@ impl EloApp {
                     self.settings.save();
                     self.tech_form = TechForm::default();
                     if first {
-                        self.toast(format!("Você entrou como {name}. A aba Clientes mostra as empresas, os computadores e os pedidos de ajuda."));
+                        self.toast(t!("Você entrou como {}. A aba Clientes mostra as empresas, os computadores e os pedidos de ajuda.", name));
                     }
                 }
                 Event::NeedsSetup => {
@@ -653,13 +654,13 @@ impl EloApp {
                         self.overview = None;
                         self.clients_open = false;
                     }
-                    self.error(m);
+                    self.error(crate::i18n::tr_dyn(&m));
                 }
                 Event::HelpStatus { taken_by } => {
                     if let Some(n) = &taken_by
                         && self.help != Some(taken_by.clone())
                     {
-                        self.toast(format!("{n} vai atender você. Aceite quando o pedido de acesso aparecer."));
+                        self.toast(t!("{} vai atender você. Aceite quando o pedido de acesso aparecer.", n));
                         self.show_window(ctx);
                     }
                     self.help = Some(taken_by);
@@ -673,7 +674,7 @@ impl EloApp {
                         .filter(|r| !old.contains(&r.device) && r.taken_by.is_none())
                         .map(|r| {
                             let company = r.company.as_ref().and_then(|c| o.companies.iter().find(|x| x.id == *c)).map(|c| format!(" ({})", c.name)).unwrap_or_default();
-                            format!("{}{company} pediu ajuda{}", r.name, if r.message.is_empty() { String::new() } else { format!(": {}", r.message) })
+                            t!("{}{} pediu ajuda{}", r.name, company, if r.message.is_empty() { String::new() } else { format!(": {}", r.message) })
                         })
                         .collect();
                     if self.overview.is_some() && !fresh.is_empty() {
@@ -689,19 +690,19 @@ impl EloApp {
                     let retry = self.pending_connect.as_ref().is_some_and(|(t, _)| self.reconnects.iter().any(|r| &r.id == t));
                     self.pending_connect = None;
                     if !retry {
-                        self.error(m);
+                        self.error(crate::i18n::tr_dyn(&m));
                     }
                 }
                 Event::WakeSent { target, relays } => {
-                    let via = if relays == 0 { "pelo servidor".to_string() } else { format!("pelo servidor e por {relays} computador(es) da rede dele") };
-                    self.toast(format!("Pedido para ligar {} enviado {via}. Pode levar um minuto; o computador precisa ter o Wake-on-LAN ligado.", elo_proto::ctrl::pretty_id(&target)));
+                    let via = if relays == 0 { t!("pelo servidor").to_string() } else { t!("pelo servidor e por {} computador(es) da rede dele", relays) };
+                    self.toast(t!("Pedido para ligar {} enviado {}. Pode levar um minuto; o computador precisa ter o Wake-on-LAN ligado.", elo_proto::ctrl::pretty_id(&target), via));
                 }
                 Event::Declined => {
                     self.pending_connect = None;
-                    self.error("O outro computador recusou a conexão.");
+                    self.error(t!("O outro computador recusou a conexão."));
                 }
                 Event::SessionReady { session, secret, target_name, target_os } => {
-                    let Some((target_id, password)) = self.pending_connect.take() else { continue };
+                    let Some((target_id, password)) = self.pending_connect.take() else { continue ; };
                     // Reconexão que deu certo sai da fila.
                     self.reconnects.retain(|r| r.id != target_id);
                     let session_password = password.clone();
@@ -756,7 +757,7 @@ impl EloApp {
                 Event::Incoming { session, secret, from_id, from_name } => {
                     if elo_core::session::host_locked() {
                         let _ = self.control.tx.send(Command::Decline { session });
-                        self.error(format!("Conexão de {} bloqueada: muitas senhas erradas nos últimos minutos.", elo_proto::ctrl::pretty_id(&from_id)));
+                        self.error(t!("Conexão de {} bloqueada: muitas senhas erradas nos últimos minutos.", elo_proto::ctrl::pretty_id(&from_id)));
                         continue;
                     }
                     let (tx, rx) = channel();
@@ -790,11 +791,11 @@ impl EloApp {
                     }
                     HostEvent::File(t) => {
                         if t.finished && t.incoming {
-                            toasts.push((format!("Arquivo recebido: {}", t.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()), false));
+                            toasts.push((t!("Arquivo recebido: {}", t.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()), false));
                         }
                         upsert(&mut h.transfers, t);
                     }
-                    HostEvent::AuthFailed { from_id } => toasts.push((format!("Tentativa de acesso com senha errada de {}", elo_proto::ctrl::pretty_id(&from_id)), true)),
+                    HostEvent::AuthFailed { from_id } => toasts.push((t!("Tentativa de acesso com senha errada de {}", elo_proto::ctrl::pretty_id(&from_id)), true)),
                     HostEvent::Ended(r) => h.ended = Some(r),
                 }
             }
@@ -803,14 +804,14 @@ impl EloApp {
         if show {
             self.show_window(ctx);
         }
-        let ended: Vec<String> = self.hosts.iter().filter(|h| h.ended.is_some() && h.started).map(|h| format!("{} encerrou: {}", h.from_name, h.ended.clone().unwrap_or_default())).collect();
+        let ended: Vec<String> = self.hosts.iter().filter(|h| h.ended.is_some() && h.started).map(|h| { t!("{} encerrou: {}", h.from_name, h.ended.clone().unwrap_or_default())}).collect();
         // Pedido de quem desistiu (cancelou, fechou) sai da tela.
-        let gone: Vec<(u64, String, bool)> = self.hosts.iter().filter(|h| h.ended.is_some() && !h.started).map(|h| (h.session, h.from_name.clone(), h.ended.as_deref() == Some(elo_core::session::GAVE_UP))).collect();
+        let gone: Vec<(u64, String, bool)> = self.hosts.iter().filter(|h| h.ended.is_some() && !h.started).map(|h| { (h.session, h.from_name.clone(), h.ended.as_deref() == Some(elo_core::session::GAVE_UP))}).collect();
         for (session, name, gave_up) in gone {
             if self.asks.iter().any(|a| a.session == session) {
                 self.asks.retain(|a| a.session != session);
                 if gave_up {
-                    toasts.push((format!("{name} cancelou o pedido de acesso."), false));
+                    toasts.push((t!("{} cancelou o pedido de acesso.", name), false));
                 }
             }
         }
@@ -846,7 +847,7 @@ impl EloApp {
                     }
                     ViewerEvent::Waiting => v.waiting = true,
                     ViewerEvent::Audio { available } => v.audio_available = available,
-                    ViewerEvent::Features(f) => v.fine_scroll = f.iter().any(|x| x == "rolagem-fina"),
+                    ViewerEvent::Features(f) => { v.fine_scroll = f.iter().any(|x| x == "rolagem-fina")}
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });
                         v.chat_open = true;
@@ -864,7 +865,7 @@ impl EloApp {
                         v.files.loading = false;
                         v.files.listing = Some(l);
                     }
-                    ViewerEvent::Notice(t) => notices.push(t),
+                    ViewerEvent::Notice(t) => notices.push(crate::i18n::tr_dyn(&t)),
                     ViewerEvent::Ended(r) => v.ended = Some(r),
                 }
             }
@@ -872,7 +873,7 @@ impl EloApp {
         for t in notices {
             self.error(t);
         }
-        if learned.iter().fold(false, |changed, (id, pw)| self.settings.learn_password(id, pw) | changed) {
+        if learned.iter().fold(false, |changed, (id, pw)| { self.settings.learn_password(id, pw) | changed}) {
             self.settings.save();
         }
         // Reconexões: tenta de 10 em 10 s enquanto o computador reinicia.
@@ -880,7 +881,7 @@ impl EloApp {
         let expired: Vec<String> = self.reconnects.iter().filter(|r| now > r.until).map(|r| r.name.clone()).collect();
         self.reconnects.retain(|r| now <= r.until);
         for n in expired {
-            self.error(format!("{n} não voltou depois de reiniciar. Confira se ele inicia o Elo com o computador."));
+            self.error(t!("{} não voltou depois de reiniciar. Confira se ele inicia o Elo com o computador.", n));
         }
         if matches!(self.status, Status::Online(_)) && self.pending_connect.is_none()
             && let Some(r) = self.reconnects.iter_mut().find(|r| now >= r.next_try)

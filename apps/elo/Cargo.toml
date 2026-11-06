@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# Idioma do sistema (português ou inglês na interface).
+sys-locale = "0.3"
 elo-core = { workspace = true }
 elo-proto = { workspace = true }
 elo-server = { workspace = true }

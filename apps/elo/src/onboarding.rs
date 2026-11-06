@@ -95,7 +95,7 @@ fn steps(ui: &mut egui::Ui, p: &Palette, step: usize) {
 
 impl EloApp {
     pub fn onboarding_ui(&mut self, ctx: &egui::Context) {
-        let Some(mut ob) = self.onboarding.take() else { return };
+        let Some(mut ob) = self.onboarding.take() else { return ; };
         self.poll_probe();
         if self.probe.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -118,56 +118,56 @@ impl EloApp {
             ui.add_space(16.0);
             egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| match ob.step {
                 0 => {
-                    ui.label(RichText::new("Bem-vindo ao Elo").font(theme::semibold(20.0)).color(p.text));
+                    ui.label(RichText::new(t!("Bem-vindo ao Elo")).font(theme::semibold(20.0)).color(p.text));
                     ui.add_space(4.0);
-                    ui.add(egui::Label::new(RichText::new("Acesso remoto com cifragem ponta a ponta. Em três passos este computador fica pronto para acessar outros e ser acessado.").size(13.0).color(p.text2)).wrap());
+                    ui.add(egui::Label::new(RichText::new(t!("Acesso remoto com cifragem ponta a ponta. Em três passos este computador fica pronto para acessar outros e ser acessado.")).size(13.0).color(p.text2)).wrap());
                     ui.add_space(16.0);
-                    theme::field_label(ui, "Nome deste computador");
-                    ui.add(egui::TextEdit::singleline(&mut ob.name).hint_text("ex.: Notebook da recepção").desired_width(f32::INFINITY));
-                    ui.label(RichText::new("É o nome que aparece para quem se conecta a ele.").size(11.5).color(p.muted));
+                    theme::field_label(ui, t!("Nome deste computador"));
+                    ui.add(egui::TextEdit::singleline(&mut ob.name).hint_text(t!("ex.: Notebook da recepção")).desired_width(f32::INFINITY));
+                    ui.label(RichText::new(t!("É o nome que aparece para quem se conecta a ele.")).size(11.5).color(p.muted));
                 }
                 1 => {
-                    ui.label(RichText::new("Servidor").font(theme::semibold(20.0)).color(p.text));
+                    ui.label(RichText::new(t!("Servidor")).font(theme::semibold(20.0)).color(p.text));
                     ui.add_space(4.0);
-                    ui.add(egui::Label::new(RichText::new("O servidor dá os IDs e liga os computadores. Ele não vê o conteúdo das sessões, que é cifrado entre as duas pontas.").size(13.0).color(p.text2)).wrap());
+                    ui.add(egui::Label::new(RichText::new(t!("O servidor dá os IDs e liga os computadores. Ele não vê o conteúdo das sessões, que é cifrado entre as duas pontas.")).size(13.0).color(p.text2)).wrap());
                     ui.add_space(12.0);
-                    if option(ui, &p, ob.mode == Mode::Local, "Este computador é o servidor", "O Elo roda o servidor aqui. Bom para o primeiro computador da equipe ou para usar na rede local.") {
+                    if option(ui, &p, ob.mode == Mode::Local, t!("Este computador é o servidor"), t!("O Elo roda o servidor aqui. Bom para o primeiro computador da equipe ou para usar na rede local.")) {
                         ob.mode = Mode::Local;
                     }
                     ui.add_space(6.0);
-                    if option(ui, &p, ob.mode == Mode::Remote, "Conectar a um servidor existente", "Use o endereço que você recebeu, por exemplo wss://elo.empresa.com.") {
+                    if option(ui, &p, ob.mode == Mode::Remote, t!("Conectar a um servidor existente"), t!("Use o endereço que você recebeu, por exemplo wss://elo.empresa.com.")) {
                         ob.mode = Mode::Remote;
                     }
                     ui.add_space(12.0);
                     match ob.mode {
                         Mode::Local => {
-                            theme::field_label(ui, "Endereço público (opcional)");
+                            theme::field_label(ui, t!("Endereço público (opcional)"));
                             ui.horizontal(|ui| {
                                 let w = ui.available_width() - 80.0;
                                 ui.add(egui::TextEdit::singleline(&mut ob.public).font(theme::mono(12.0)).hint_text("wss://elo.seudominio.com").desired_width(w));
                                 let can = ob.public_ws().is_some() && !probing && local_online;
-                                if ui.add_enabled(can, egui::Button::new(if probing { "Testando…" } else { "Testar" })).clicked()
+                                if ui.add_enabled(can, egui::Button::new(if probing { t!("Testando…") } else { t!("Testar") })).clicked()
                                     && let Some(a) = ob.public_ws()
                                 {
                                     act = Some(Act::Test(ServerCfg { address: a, tls: true, pin: String::new() }, true));
                                 }
                             });
-                            ui.label(RichText::new("Para acessar pela internet sem abrir portas. Na rede local não precisa.").size(11.5).color(p.muted));
+                            ui.label(RichText::new(t!("Para acessar pela internet sem abrir portas. Na rede local não precisa.")).size(11.5).color(p.muted));
                             crate::ui::cloudflare_help(ui, &p, port);
                         }
                         Mode::Remote => {
-                            theme::field_label(ui, "Endereço do servidor");
+                            theme::field_label(ui, t!("Endereço do servidor"));
                             ui.horizontal(|ui| {
                                 let w = ui.available_width() - 80.0;
                                 ui.add(egui::TextEdit::singleline(&mut ob.address).font(theme::mono(12.0)).hint_text("wss://elo.empresa.com ou 192.168.0.10:21116").desired_width(w));
                                 let can = !ob.address.trim().is_empty() && !probing;
-                                if ui.add_enabled(can, egui::Button::new(if probing { "Testando…" } else { "Testar" })).clicked() {
+                                if ui.add_enabled(can, egui::Button::new(if probing { t!("Testando…") } else { t!("Testar") })).clicked() {
                                     act = Some(Act::Test(ob.remote(), false));
                                 }
                             });
                             if !ob.address.trim().starts_with("ws") {
-                                theme::field_label(ui, "Impressão digital do certificado (se o servidor pediu)");
-                                ui.add(egui::TextEdit::singleline(&mut ob.pin).font(theme::mono(11.0)).hint_text("vazio para wss:// e certificados públicos").desired_width(f32::INFINITY));
+                                theme::field_label(ui, t!("Impressão digital do certificado (se o servidor pediu)"));
+                                ui.add(egui::TextEdit::singleline(&mut ob.pin).font(theme::mono(11.0)).hint_text(t!("vazio para wss:// e certificados públicos")).desired_width(f32::INFINITY));
                             }
                         }
                     }
@@ -180,28 +180,28 @@ impl EloApp {
                     }
                 }
                 _ => {
-                    ui.label(RichText::new("Últimos ajustes").font(theme::semibold(20.0)).color(p.text));
+                    ui.label(RichText::new(t!("Últimos ajustes")).font(theme::semibold(20.0)).color(p.text));
                     ui.add_space(12.0);
-                    ui.checkbox(&mut ob.autostart, RichText::new("Iniciar o Elo junto com o computador").size(13.5));
-                    ui.add(egui::Label::new(RichText::new("Abre minimizado ao entrar no sistema, para este computador continuar acessível depois de reiniciar.").size(12.0).color(p.text2)).wrap());
+                    ui.checkbox(&mut ob.autostart, RichText::new(t!("Iniciar o Elo junto com o computador")).size(13.5));
+                    ui.add(egui::Label::new(RichText::new(t!("Abre minimizado ao entrar no sistema, para este computador continuar acessível depois de reiniciar.")).size(12.0).color(p.text2)).wrap());
                     ui.add_space(14.0);
-                    ui.add(egui::Label::new(RichText::new("Para acessar este computador sem ninguém do outro lado, defina uma senha fixa em Configurações.").size(12.0).color(p.muted)).wrap());
+                    ui.add(egui::Label::new(RichText::new(t!("Para acessar este computador sem ninguém do outro lado, defina uma senha fixa em Configurações.")).size(12.0).color(p.muted)).wrap());
                 }
             });
             ui.add_space(18.0);
             ui.horizontal(|ui| {
                 if ob.step == 0 {
-                    if ui.add(egui::Label::new(RichText::new("Pular").size(12.5).color(p.muted)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    if ui.add(egui::Label::new(RichText::new(t!("Pular")).size(12.5).color(p.muted)).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         act = Some(Act::Skip);
                     }
-                } else if theme::secondary(ui, None, "Voltar").clicked() {
+                } else if theme::secondary(ui, None, t!("Voltar")).clicked() {
                     ob.step -= 1;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (text, ok) = match ob.step {
-                        0 => ("Começar", !ob.name.trim().is_empty()),
-                        1 => ("Continuar", ob.mode == Mode::Local || !ob.address.trim().is_empty()),
-                        _ => ("Concluir", true),
+                        0 => (t!("Começar"), !ob.name.trim().is_empty()),
+                        1 => (t!("Continuar"), ob.mode == Mode::Local || !ob.address.trim().is_empty()),
+                        _ => (t!("Concluir"), true),
                     };
                     if ui.add_enabled_ui(ok, |ui| theme::primary(ui, None, text, None)).inner.clicked() {
                         if ob.step < 2 {
@@ -249,7 +249,7 @@ impl EloApp {
         self.settings.save();
         if ob.autostart != self.autostart {
             if let Err(e) = crate::autostart::set(ob.autostart) {
-                self.error(format!("Iniciar com o computador: {e}"));
+                self.error(t!("Iniciar com o computador: {}", e));
             }
             self.autostart = crate::autostart::enabled();
         }
@@ -258,6 +258,6 @@ impl EloApp {
         if renamed {
             self.restart_control();
         }
-        self.toast("Tudo pronto.");
+        self.toast(t!("Tudo pronto."));
     }
 }

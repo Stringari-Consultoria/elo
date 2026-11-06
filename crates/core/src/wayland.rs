@@ -213,9 +213,9 @@ fn pipewire_loop(fd: OwnedFd, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame
     use spa::pod::Pod;
 
     pw::init();
-    let mainloop = pw::main_loop::MainLoop::new(None).map_err(|e| e.to_string())?;
-    let context = pw::context::Context::new(&mainloop).map_err(|e| e.to_string())?;
-    let core = context.connect_fd(fd, None).map_err(|e| e.to_string())?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| e.to_string())?;
+    let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| e.to_string())?;
+    let core = context.connect_fd_rc(fd, None).map_err(|e| e.to_string())?;
     let ml = mainloop.clone();
     let _quit = quit.attach(mainloop.loop_(), move |_| ml.quit());
 
@@ -250,7 +250,7 @@ fn pipewire_loop(fd: OwnedFd, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame
     let mut keep = Vec::new();
     for (node, slot) in nodes.into_iter().zip(slots) {
         let wanted = wanted.clone();
-        let stream = pw::stream::Stream::new(&core, "elo-tela", pw::properties::properties! {
+        let stream = pw::stream::StreamRc::new(core.clone(), "elo-tela", pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Screen",

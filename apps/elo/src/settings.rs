@@ -104,7 +104,8 @@ pub struct Settings {
     /// Baixar e instalar atualizações sozinho (quando não há sessão).
     pub auto_update: bool,
     /// Fechar a janela deixa o Elo rodando na bandeja.
-    pub close_to_tray: bool,
+    pub close_to_tray: bool, /// Idioma da interface: "auto" (o do sistema), "pt" ou "en".
+    pub language: String,
     /// Conta de técnico neste servidor (painel de clientes).
     pub tech: Option<TechCfg>,
     /// Elo Cliente: empresa a que este computador pertence (código de convite).
@@ -152,7 +153,7 @@ impl Default for Settings {
             allow_requests: true,
             onboarded: false,
             auto_update: true,
-            close_to_tray: true,
+            close_to_tray: true, language: "auto".into(),
             tech: None,
             company: None,
         }
