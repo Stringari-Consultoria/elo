@@ -4,6 +4,7 @@ mod app;
 mod autostart;
 mod onboarding;
 mod settings;
+mod tray;
 mod ui;
 mod update;
 

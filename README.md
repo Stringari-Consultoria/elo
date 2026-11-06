@@ -103,8 +103,14 @@ outro lado.
 podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
 
 **Iniciar com o computador:** ligue em Configurações (ou no assistente). O Elo
-abre minimizado ao entrar no sistema, e o computador continua acessível depois
+abre na bandeja ao entrar no sistema, e o computador continua acessível depois
 de reiniciar.
+
+**Bandeja:** fechar a janela deixa o Elo rodando perto do relógio, aceitando
+conexões. O menu do ícone mostra o seu ID e tem "Abrir", "Copiar ID" e "Sair do
+Elo". Quando chega um pedido de acesso ou começa uma sessão, a janela aparece
+sozinha. No Linux, usa StatusNotifierItem (KDE, e GNOME com a extensão
+AppIndicator, padrão no Ubuntu).
 
 ## Servidor
 

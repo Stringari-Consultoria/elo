@@ -97,6 +97,8 @@ pub struct Settings {
     pub onboarded: bool,
     /// Baixar e instalar atualizações sozinho (quando não há sessão).
     pub auto_update: bool,
+    /// Fechar a janela deixa o Elo rodando na bandeja.
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -118,6 +120,7 @@ impl Default for Settings {
             allow_requests: true,
             onboarded: false,
             auto_update: true,
+            close_to_tray: true,
         }
     }
 }

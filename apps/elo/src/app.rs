@@ -189,6 +189,12 @@ pub struct EloApp {
     pub updater: crate::update::Updater,
     /// Aberto pelo início automático (reabre assim depois de atualizar).
     pub background: bool,
+    /// Ícone na bandeja (se o sistema tiver).
+    pub tray: Option<crate::tray::Tray>,
+    /// "Sair do Elo": fechar a janela encerra de verdade.
+    pub quitting: bool,
+    /// Janela escondida na bandeja.
+    pub hidden: bool,
 }
 
 impl EloApp {
@@ -228,6 +234,9 @@ impl EloApp {
             session_act: None,
             updater: crate::update::Updater::default(),
             background,
+            tray: crate::tray::create(&cc.egui_ctx),
+            quitting: false,
+            hidden: false,
         };
         if !app.settings.onboarded {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
@@ -349,6 +358,38 @@ impl EloApp {
                 std::process::exit(0);
             }
             Err(e) => self.error(format!("Atualização: {e}")),
+        }
+    }
+
+    /// Traz a janela de volta (da bandeja ou minimizada) para a frente.
+    pub fn show_window(&mut self, ctx: &egui::Context) {
+        self.hidden = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Eventos do ícone da bandeja.
+    pub fn tray_tick(&mut self, ctx: &egui::Context) {
+        let id = self.my_id().map(str::to_string);
+        let Some(t) = self.tray.as_mut() else { return };
+        t.set_id(id.as_deref());
+        let acts: Vec<_> = t.rx.try_iter().collect();
+        for a in acts {
+            match a {
+                crate::tray::Act::Open => self.show_window(ctx),
+                crate::tray::Act::CopyId => {
+                    if let Some(id) = &id {
+                        ctx.copy_text(elo_proto::ctrl::pretty_id(id));
+                    }
+                }
+                crate::tray::Act::Quit => {
+                    self.quitting = true;
+                    // A janela precisa estar visível para receber o pedido de fechar.
+                    self.show_window(ctx);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
     }
 
@@ -490,18 +531,23 @@ impl EloApp {
             }
         }
         // Sessões como anfitrião.
+        let mut show = false;
         let mut new_asks = Vec::new();
         let mut toasts = Vec::new();
         for h in self.hosts.iter_mut() {
             for e in h.events.try_iter() {
                 match e {
-                    HostEvent::Ask { from_id, from_name, sas, reply } => new_asks.push(Ask { from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() }),
+                    HostEvent::Ask { from_id, from_name, sas, reply } => {
+                        new_asks.push(Ask { from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() });
+                        show = true;
+                    }
                     HostEvent::Started { sas, with_password, .. } => {
                         h.started = true;
                         h.sas = sas;
                         h.with_password = with_password;
                         h.since = Instant::now();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // Quem está aqui precisa ver o aviso de que está sendo acessado.
+                        show = true;
                     }
                     HostEvent::Chat(t) => h.chat.push(ChatLine { mine: false, text: t }),
                     HostEvent::File(t) => {
@@ -516,6 +562,9 @@ impl EloApp {
             }
         }
         self.asks.extend(new_asks);
+        if show {
+            self.show_window(ctx);
+        }
         let ended: Vec<String> = self.hosts.iter().filter(|h| h.ended.is_some() && h.started).map(|h| format!("{} encerrou: {}", h.from_name, h.ended.clone().unwrap_or_default())).collect();
         self.hosts.retain(|h| h.ended.is_none());
         for (t, e) in toasts {

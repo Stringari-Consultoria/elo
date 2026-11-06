@@ -7,7 +7,7 @@ default-members = ["apps/elo"]
 version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.dependencies]
 stringari-ui = { path = "crates/ui-kit" }

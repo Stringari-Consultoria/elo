@@ -30,12 +30,31 @@ fn human_bytes(b: u64) -> String {
 }
 
 impl eframe::App for EloApp {
+    /// Roda mesmo com a janela escondida ou minimizada: rede, convites,
+    /// sessões, atualizações e bandeja não podem parar.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump(ctx);
+        self.tray_tick(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.start_minimized) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            // Com bandeja, some de vez; sem, fica minimizado na barra de tarefas.
+            if self.tray.is_some() {
+                self.hidden = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
         }
-        self.pump(&ctx);
+        // Fechar a janela: vai para a bandeja (a não ser que tenha pedido para sair).
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.settings.close_to_tray && self.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.hidden = true;
+            self.set_fullscreen(&ctx, false);
+        }
         let p = pal(ui);
         // Tela cheia só faz sentido numa sessão aberta.
         let fs = self.fullscreen && self.active_tab > 0 && self.active_tab <= self.views.len();
@@ -828,7 +847,12 @@ impl EloApp {
             theme::field_label(ui, "Nome deste computador");
             ui.add(egui::TextEdit::singleline(&mut self.settings.device_name).desired_width(f32::INFINITY));
             ui.add_space(6.0);
-            ui.checkbox(&mut self.autostart, "Iniciar o Elo junto com o computador").on_hover_text("Abre minimizado ao entrar no sistema, para continuar acessível depois de reiniciar.");
+            ui.checkbox(&mut self.autostart, "Iniciar o Elo junto com o computador").on_hover_text("Abre na bandeja ao entrar no sistema, para continuar acessível depois de reiniciar.");
+            ui.add_enabled_ui(self.tray.is_some(), |ui| {
+                ui.checkbox(&mut self.settings.close_to_tray, "Ao fechar a janela, continuar rodando na bandeja")
+                    .on_hover_text("O Elo fica perto do relógio e continua aceitando conexões. Para sair, use \"Sair do Elo\" no menu do ícone.")
+                    .on_disabled_hover_text("A bandeja do sistema não está disponível (no GNOME, precisa da extensão AppIndicator).");
+            });
             ui.add_space(6.0);
             theme::field_label(ui, "Senha fixa (acesso não assistido)");
             ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent_password.is_empty() { "mínimo de 8 caracteres" } else { "•••••••• (digite para trocar)" }).desired_width(f32::INFINITY));
