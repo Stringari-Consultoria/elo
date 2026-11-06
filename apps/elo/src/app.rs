@@ -146,6 +146,8 @@ pub struct ViewSession {
     pub started: Instant,
     /// Último movimento do mouse local sobre a tela remota.
     pub last_move: Instant,
+    /// Rolagem ainda não enviada (frações de "clique" da roda, do touchpad).
+    pub scroll_acc: egui::Vec2,
     /// Gerenciador de arquivos (painel lateral).
     pub files: FilesPanel,
 }
@@ -563,6 +565,7 @@ impl EloApp {
                         mods: egui::Modifiers::NONE,
                         started: Instant::now(),
                         last_move: Instant::now(),
+                        scroll_acc: egui::Vec2::ZERO,
                         files: FilesPanel::default(),
                     });
                     self.active_tab = self.views.len();

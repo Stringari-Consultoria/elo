@@ -813,8 +813,7 @@ impl EloApp {
                             egui::MouseWheelUnit::Line => 1.0,
                             egui::MouseWheelUnit::Page => 10.0,
                         };
-                        let (dx, dy) = ((delta.x * k).round() as i32, (delta.y * k).round() as i32);
-                        if dx != 0 || dy != 0 {
+                        if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k) {
                             send(Input::Scroll { dx, dy });
                         }
                     }
@@ -2329,6 +2328,23 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
         });
 }
 
+/// Junta a rolagem em "cliques" inteiros da roda. O touchpad manda muitos
+/// movimentos pequenos (frações de clique): arredondar cada um sozinho perde
+/// quase todos e a rolagem trava; aqui a sobra fica para o próximo.
+fn wheel_steps(acc: &mut Vec2, delta: Vec2) -> Option<(i32, i32)> {
+    // Mudou de sentido: a sobra do sentido anterior não vale mais.
+    if acc.x * delta.x < 0.0 {
+        acc.x = 0.0;
+    }
+    if acc.y * delta.y < 0.0 {
+        acc.y = 0.0;
+    }
+    *acc += delta;
+    let (dx, dy) = (acc.x.trunc(), acc.y.trunc());
+    *acc -= Vec2::new(dx, dy);
+    (dx != 0.0 || dy != 0.0).then_some((dx as i32, dy as i32))
+}
+
 /// Seta do mouse (o cursor do computador remoto, que a captura não inclui).
 fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
     let pts: Vec<egui::Pos2> = [(0.0, 0.0), (0.0, 17.0), (4.0, 13.0), (7.0, 20.0), (9.0, 19.0), (6.0, 12.0), (12.0, 12.0)].iter().map(|&(x, y)| tip + Vec2::new(x, y)).collect();
@@ -2342,4 +2358,24 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
     }
     painter.add(egui::Shape::mesh(mesh));
     painter.add(egui::Shape::closed_line(pts, Stroke::new(1.0, Color32::BLACK)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touchpad_scroll_is_not_lost() {
+        // 40 movimentos de 0,1 clique (touchpad devagar) = 4 cliques.
+        let mut acc = Vec2::ZERO;
+        let total: i32 = (0..40).filter_map(|_| wheel_steps(&mut acc, Vec2::new(0.0, 0.1))).map(|(_, y)| y).sum();
+        assert_eq!(total, 4);
+        // Para baixo também, e virar o sentido descarta a sobra.
+        let mut acc = Vec2::new(0.0, 0.9);
+        assert_eq!(wheel_steps(&mut acc, Vec2::new(0.0, -0.5)), None);
+        assert_eq!(wheel_steps(&mut acc, Vec2::new(0.0, -0.6)), Some((0, -1)));
+        // Roda de mouse comum (um clique inteiro) continua igual.
+        let mut acc = Vec2::ZERO;
+        assert_eq!(wheel_steps(&mut acc, Vec2::new(0.0, 3.0)), Some((0, 3)));
+    }
 }
