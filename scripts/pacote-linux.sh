@@ -72,6 +72,23 @@ Categories=Network;RemoteAccess;
 StartupWMClass=$ID
 DESKTOP
 install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/$PACOTE/"
+# Rolagem suave quando este computador é acessado: libera o /dev/uinput para
+# quem está logado (um arquivo por pacote: os dois podem estar instalados).
+mkdir -p "$PKG/usr/lib/udev/rules.d"
+install -m 644 "$RAIZ/packaging/linux/60-elo-uinput.rules" "$PKG/usr/lib/udev/rules.d/60-$PACOTE-uinput.rules"
+cat > "$PKG/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    modprobe uinput 2>/dev/null || true
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --sysname-match=uinput 2>/dev/null || true
+    fi
+fi
+exit 0
+POSTINST
+chmod 755 "$PKG/DEBIAN/postinst"
 TAM="$(du -sk "$PKG/usr" | cut -f1)"
 cat > "$PKG/DEBIAN/control" <<CONTROL
 Package: $PACOTE
@@ -101,6 +118,7 @@ install -m 755 "$TMP/$EXE" "$TMP/$NOME/"
 if [[ "$EXE" == elo ]]; then install -m 755 "$REL/elo-server" "$TMP/$NOME/"; fi
 install -m 755 "$RAIZ/scripts/instalar-linux.sh" "$TMP/$NOME/instalar.sh"
 install -m 644 "$RAIZ/packaging/icons/elo.svg" "$TMP/$NOME/elo.svg"
+install -m 644 "$RAIZ/packaging/linux/60-elo-uinput.rules" "$TMP/$NOME/"
 install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$TMP/$NOME/"
 cat > "$TMP/$NOME/LEIA-ME.txt" <<TXT
 $APP $VERSAO — acesso remoto
@@ -108,6 +126,9 @@ $APP $VERSAO — acesso remoto
 Instalar (sem root, em ~/.local):   ./instalar.sh
 Remover:                            ./instalar.sh --remover
 Ou só rodar, sem instalar:          ./$EXE
+
+Rolagem suave quando este computador for acessado (opcional, pede root):
+  sudo cp 60-elo-uinput.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger --sysname-match=uinput
 
 Requer Linux $ARQ com glibc $GLIBC ou mais nova e sessão X11.
 TXT

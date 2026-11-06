@@ -57,6 +57,8 @@ pub enum Input {
     Text(String),
     /// Ctrl+Alt+Del e outros atalhos do sistema.
     SecureAttention,
+    /// Rolagem em 1/120 de clique (só para anfitriões com "rolagem-fina").
+    ScrollFine { dx: i32, dy: i32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,9 +141,11 @@ pub enum Msg {
 pub const FEATURES: &[&str] = &["audio"];
 
 /// Codifica `Welcome` (ou outra mensagem) seguida da lista de recursos.
-pub fn with_features(m: &Msg) -> Result<Vec<u8>, postcard::Error> {
+/// `features`: os recursos deste anfitrião (os de `FEATURES` e os que
+/// dependem da máquina, como "rolagem-fina").
+pub fn with_features(m: &Msg, features: &[&str]) -> Result<Vec<u8>, postcard::Error> {
     let mut v = postcard::to_stdvec(m)?;
-    v.extend(postcard::to_stdvec(&FEATURES)?);
+    v.extend(postcard::to_stdvec(&features)?);
     Ok(v)
 }
 
@@ -175,7 +179,7 @@ mod tests {
 
     #[test]
     fn features_ride_after_welcome_without_breaking_old_readers() {
-        let bytes = with_features(&welcome()).unwrap();
+        let bytes = with_features(&welcome(), FEATURES).unwrap();
         // Versão antiga: lê a mensagem e ignora o resto.
         assert_eq!(postcard::from_bytes::<Msg>(&bytes).unwrap(), welcome());
         // Versão nova: lê também os recursos.

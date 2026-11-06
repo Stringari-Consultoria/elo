@@ -1,0 +1,4 @@
+# Elo: rolagem suave quando este computador é acessado. O Elo cria um mouse
+# virtual (uinput) com rodas de alta resolução; esta regra libera o
+# /dev/uinput para quem está logado na tela (como fazem a Steam e outros).
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"

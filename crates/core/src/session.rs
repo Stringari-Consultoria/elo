@@ -40,9 +40,13 @@ impl Chan {
         self.send_bytes(&postcard::to_stdvec(m).map_err(|e| e.to_string())?)
     }
 
-    /// Mensagem seguida da lista de recursos desta versão.
+    /// Mensagem seguida da lista de recursos deste anfitrião.
     fn send_with_features(&mut self, m: &Msg) -> Result<(), String> {
-        self.send_bytes(&elo_proto::msg::with_features(m).map_err(|e| e.to_string())?)
+        let mut feats: Vec<&str> = elo_proto::msg::FEATURES.to_vec();
+        if platform::fine_scroll() {
+            feats.push("rolagem-fina");
+        }
+        self.send_bytes(&elo_proto::msg::with_features(m, &feats).map_err(|e| e.to_string())?)
     }
 
     fn send_bytes(&mut self, plain: &[u8]) -> Result<(), String> {
@@ -614,6 +618,8 @@ pub enum ViewerEvent {
     Connected { name: String, os: String, sas: String, monitors: Vec<Monitor>, permissions: Permissions },
     /// Se o outro lado sabe mandar som (versões antigas não sabem).
     Audio { available: bool },
+    /// Recursos que o anfitrião anunciou ("audio", "rolagem-fina"…).
+    Features(Vec<String>),
     Waiting,
     Chat(String),
     File(Transfer),
@@ -685,6 +691,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
     // Som: liga sozinho se o outro lado sabe mandar.
     let audio_ok = ch.has("audio");
     let _ = ev.send(ViewerEvent::Audio { available: audio_ok });
+    let _ = ev.send(ViewerEvent::Features(ch.features.clone()));
     let mut volume = 1.0f32;
     let mut player: Option<crate::audio::Player> = None;
     let start_audio = |ch: &mut Chan, volume: f32| -> Result<Option<crate::audio::Player>, String> {

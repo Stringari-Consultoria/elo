@@ -154,6 +154,8 @@ pub struct ViewSession {
     pub audio_available: bool,
     pub audio_on: bool,
     pub volume: f32,
+    /// O anfitrião rola suave (manda a rolagem em 1/120 de clique).
+    pub fine_scroll: bool,
     /// Gerenciador de arquivos (painel lateral).
     pub files: FilesPanel,
 }
@@ -745,6 +747,7 @@ impl EloApp {
                         audio_available: false,
                         audio_on: true,
                         volume: 1.0,
+                        fine_scroll: false,
                         files: FilesPanel::default(),
                     });
                     self.active_tab = self.views.len();
@@ -843,6 +846,7 @@ impl EloApp {
                     }
                     ViewerEvent::Waiting => v.waiting = true,
                     ViewerEvent::Audio { available } => v.audio_available = available,
+                    ViewerEvent::Features(f) => v.fine_scroll = f.iter().any(|x| x == "rolagem-fina"),
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });
                         v.chat_open = true;

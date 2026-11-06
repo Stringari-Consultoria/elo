@@ -25,6 +25,18 @@ pub trait Control: Send {
     fn apply(&mut self, input: &Input, monitor: u8);
 }
 
+/// Este computador, como anfitrião, sabe rolar suave (1/120 de clique)?
+pub fn fine_scroll() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::uinput::available()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 pub fn os_name() -> String {
     match std::env::consts::OS {
         "linux" => "Linux".into(),
@@ -96,6 +108,10 @@ mod x11 {
         max_kc: u8,
         keysyms: Vec<u32>,
         per: u8,
+        /// Rolagem suave (uinput), se houver permissão.
+        fine: Option<crate::uinput::FineScroll>,
+        /// Sobra da rolagem fina quando vira cliques (sem uinput).
+        fine_rest: [i32; 2],
     }
 
     fn connect() -> Result<X11, String> {
@@ -103,7 +119,8 @@ mod x11 {
         let s = &conn.setup().roots[screen];
         let (root, sw, sh) = (s.root, s.width_in_pixels, s.height_in_pixels);
         let (min_kc, max_kc) = (conn.setup().min_keycode, conn.setup().max_keycode);
-        let mut x = X11 { conn, root, mons: Vec::new(), min_kc, max_kc, keysyms: Vec::new(), per: 0 };
+        let fine = if crate::uinput::available() { crate::uinput::FineScroll::open().ok() } else { None };
+        let mut x = X11 { conn, root, mons: Vec::new(), min_kc, max_kc, keysyms: Vec::new(), per: 0, fine, fine_rest: [0; 2] };
         x.refresh_monitors(sw, sh);
         x.load_keymap();
         Ok(x)
@@ -266,6 +283,17 @@ mod x11 {
         }
     }
 
+    impl X11 {
+        /// Cliques da roda pelo XTest (botões 4/5 e 6/7).
+        fn scroll_clicks(&mut self, dx: i32, dy: i32) {
+            let clicks = |v: i32, neg: u8, pos: u8| (0..v.unsigned_abs().min(20)).map(move |_| if v < 0 { neg } else { pos });
+            for b in clicks(dy, 5, 4).chain(clicks(dx, 7, 6)) {
+                self.fake(4, b, 0, 0);
+                self.fake(5, b, 0, 0);
+            }
+        }
+    }
+
     impl Control for X11 {
         fn apply(&mut self, input: &Input, monitor: u8) {
             let (ox, oy) = self.mons.get(monitor as usize).map(|m| (m.x as i32, m.y as i32)).unwrap_or((0, 0));
@@ -279,11 +307,17 @@ mod x11 {
                     };
                     self.fake(if *down { 4 } else { 5 }, b, 0, 0);
                 }
-                Input::Scroll { dx, dy } => {
-                    let clicks = |v: i32, neg: u8, pos: u8| (0..v.unsigned_abs().min(20)).map(move |_| if v < 0 { neg } else { pos });
-                    for b in clicks(*dy, 5, 4).chain(clicks(*dx, 7, 6)) {
-                        self.fake(4, b, 0, 0);
-                        self.fake(5, b, 0, 0);
+                Input::Scroll { dx, dy } => self.scroll_clicks(*dx, *dy),
+                Input::ScrollFine { dx, dy } => {
+                    let ok = self.fine.as_mut().is_some_and(|f| f.scroll(*dx, *dy).is_ok());
+                    if !ok {
+                        // Sem uinput: junta em cliques inteiros.
+                        self.fine_rest[0] += dx;
+                        self.fine_rest[1] += dy;
+                        let (cx, cy) = (self.fine_rest[0] / crate::uinput::PER_CLICK, self.fine_rest[1] / crate::uinput::PER_CLICK);
+                        self.fine_rest[0] -= cx * crate::uinput::PER_CLICK;
+                        self.fine_rest[1] -= cy * crate::uinput::PER_CLICK;
+                        self.scroll_clicks(cx, cy);
                     }
                 }
                 Input::Key { key, down } => {
@@ -362,6 +396,8 @@ mod native {
     pub struct Ctl {
         e: Enigo,
         origins: Vec<(i32, i32)>,
+        /// Sobra da rolagem fina (vira cliques).
+        fine_rest: [i32; 2],
     }
 
     fn key_of(k: Key) -> enigo::Key {
@@ -424,6 +460,15 @@ mod native {
                     let _ = self.e.scroll(-*dy, Axis::Vertical);
                     self.e.scroll(*dx, Axis::Horizontal)
                 }
+                Input::ScrollFine { dx, dy } => {
+                    self.fine_rest[0] += dx;
+                    self.fine_rest[1] += dy;
+                    let (cx, cy) = (self.fine_rest[0] / 120, self.fine_rest[1] / 120);
+                    self.fine_rest[0] -= cx * 120;
+                    self.fine_rest[1] -= cy * 120;
+                    let _ = self.e.scroll(-cy, Axis::Vertical);
+                    self.e.scroll(cx, Axis::Horizontal)
+                }
                 Input::Key { key, down } => self.e.key(key_of(*key), if *down { Direction::Press } else { Direction::Release }),
                 Input::Text(t) => self.e.text(t),
                 Input::SecureAttention => {
@@ -445,7 +490,7 @@ mod native {
 
     pub fn open_control() -> Result<Box<dyn Control>, String> {
         let origins = xcap::Monitor::all().unwrap_or_default().iter().map(|m| (m.x().unwrap_or(0), m.y().unwrap_or(0))).collect();
-        Ok(Box::new(Ctl { e: Enigo::new(&Settings::default()).map_err(|e| e.to_string())?, origins }))
+        Ok(Box::new(Ctl { e: Enigo::new(&Settings::default()).map_err(|e| e.to_string())?, origins, fine_rest: [0; 2] }))
     }
 }
 

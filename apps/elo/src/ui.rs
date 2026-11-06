@@ -907,7 +907,12 @@ impl EloApp {
                             egui::MouseWheelUnit::Line => 1.0,
                             egui::MouseWheelUnit::Page => 10.0,
                         };
-                        if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k) {
+                        // Anfitrião que rola suave: em 1/120 de clique; senão, cliques inteiros.
+                        if v.fine_scroll {
+                            if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k * 120.0) {
+                                send(Input::ScrollFine { dx, dy });
+                            }
+                        } else if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k) {
                             send(Input::Scroll { dx, dy });
                         }
                     }
