@@ -208,6 +208,9 @@ pub struct HostOptions {
     pub restart: fn() -> Result<(), String>,
 }
 
+/// Motivo de fim quando quem pediu acesso desistiu antes da resposta.
+pub const GAVE_UP: &str = "quem pediu desistiu do pedido";
+
 pub enum HostEvent {
     /// Pedido sem senha: responda com as permissões (ou `None` para recusar).
     Ask { from_id: String, from_name: String, sas: String, reply: Sender<Option<Permissions>> },
@@ -297,9 +300,27 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     if keys.mode == AuthMode::Request {
         let (tx, rrx) = channel();
         let _ = ev.send(HostEvent::Ask { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), reply: tx });
-        match rrx.recv_timeout(Duration::from_secs(90)) {
-            Ok(Some(p)) => perms = p,
-            _ => {
+        // Espera a resposta de quem está aqui, de olho na conexão: se o outro
+        // lado desistir (cancelar, fechar), o pedido some da tela.
+        ch.c.set_read_timeout(Some(Duration::from_millis(200)));
+        let start = Instant::now();
+        let answer = loop {
+            match rrx.try_recv() {
+                Ok(a) => break a,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            if h.stop.load(Ordering::Relaxed) || start.elapsed() > Duration::from_secs(90) {
+                break None;
+            }
+            match ch.poll() {
+                Ok(Some(Msg::Bye(_))) | Err(_) => return Err(GAVE_UP.into()),
+                _ => {}
+            }
+        };
+        match answer {
+            Some(p) => perms = p,
+            None => {
                 let _ = ch.send(&Msg::Bye("o pedido de acesso foi recusado".into()));
                 return Err("pedido recusado".into());
             }

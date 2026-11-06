@@ -68,7 +68,9 @@ impl eframe::App for EloApp {
         }
         // Faixa "sendo acessado".
         if self.hosts.iter().any(|h| h.started) {
-            egui::Panel::top("hosting").frame(egui::Frame::new().fill(p.warning_bg).stroke(Stroke::new(1.0, p.warning)).inner_margin(Margin::symmetric(14, 8))).show(ui, |ui| self.host_banner(ui));
+            let in_session = self.active_tab > 0 && self.active_tab <= self.views.len();
+            let under = if in_session { Color32::from_gray(24) } else { p.bg };
+            egui::Panel::top("hosting").frame(egui::Frame::new().fill(under).inner_margin(Margin { left: 16, right: 16, top: 12, bottom: 2 })).show(ui, |ui| self.host_banner(ui));
         }
         if !fs {
             egui::Panel::bottom("status").exact_size(26.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status_bar(ui));
@@ -266,42 +268,104 @@ impl EloApp {
         });
     }
 
+    /// Aviso de que este computador está sendo acessado: quem, há quanto
+    /// tempo, o que pode fazer (clique liga/desliga), chat e Encerrar.
     fn host_banner(&mut self, ui: &mut egui::Ui) {
         let p = pal(ui);
+        let m = mac::of(self.settings.dark);
         let mut stop = None;
         let mut perms_change = Vec::new();
+        let compact = ui.available_width() < 980.0;
+        let now = ui.input(|i| i.time);
+        // O ponto "ao vivo" pulsa devagar.
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         for (i, h) in self.hosts.iter_mut().enumerate().filter(|(_, h)| h.started) {
-            ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Eye, 15.0, p.warning);
-                ui.label(RichText::new(format!("Este computador está sendo acessado por {} ({})", h.from_name, pretty_id(&h.from_id))).font(theme::semibold(12.5)).color(p.text));
-                ui.label(RichText::new(format!("· código {} · {} min", h.sas, h.since.elapsed().as_secs() / 60)).size(12.0).color(p.text2)).on_hover_text("Peça para a outra pessoa confirmar este código: se for igual nos dois lados, ninguém está no meio.");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::danger_button(ui, "Encerrar").clicked() {
-                        stop = Some(i);
-                    }
-                    let mut pm = h.permissions;
-                    let c1 = ui.checkbox(&mut pm.files, "Arquivos").changed();
-                    let c2 = ui.checkbox(&mut pm.clipboard, "Área de transf.").changed();
-                    let c3 = ui.checkbox(&mut pm.control, "Controle").changed();
-                    if c1 || c2 || c3 {
-                        h.permissions = pm;
-                        perms_change.push((i, pm));
+            egui::Frame::new()
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, theme::alpha(m.orange, 0.5)))
+                .corner_radius(CornerRadius::same(14))
+                .shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(if m.dark { 90 } else { 22 }) })
+                .inner_margin(Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        // Ícone com o ponto "ao vivo".
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+                        mac::icon_tile(ui.painter(), r, Icon::Eye, m.orange);
+                        let dot = r.right_top() + Vec2::new(-2.0, 2.0);
+                        let t = ((now % 1.6) / 1.6) as f32;
+                        ui.painter().circle_stroke(dot, 5.0 + 7.0 * t, Stroke::new(2.0, theme::alpha(m.red, 0.6 * (1.0 - t))));
+                        ui.painter().circle_filled(dot, 5.5, p.surface);
+                        ui.painter().circle_filled(dot, 4.0, m.red);
+                        ui.add_space(6.0);
+                        // Quem e há quanto tempo.
+                        let right_w = if compact { 250.0 } else { 470.0 };
+                        let text_w = (ui.available_width() - right_w).max(120.0);
+                        ui.allocate_ui_with_layout(Vec2::new(text_w, 38.0), Layout::top_down(Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.add(egui::Label::new(RichText::new(format!("{} está acessando este computador", h.from_name)).font(theme::semibold(13.5)).color(p.text)).truncate());
+                            let mins = h.since.elapsed().as_secs() / 60;
+                            let how = if h.with_password { "entrou com a senha" } else { "você aceitou" };
+                            let when = if mins == 0 { "agora".to_string() } else { format!("{mins} min") };
+                            ui.add(egui::Label::new(RichText::new(format!("ID {} · código {} · {how} · {when}", pretty_id(&h.from_id), h.sas)).size(11.5).color(p.text2)).truncate())
+                                .on_hover_text("Peça para a outra pessoa confirmar o código: se for igual nos dois lados, ninguém está no meio.");
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if mac::button(ui, &m, "Encerrar", Kind::Destructive, None, true).on_hover_text("Desconecta quem está acessando").clicked() {
+                                stop = Some(i);
+                            }
+                            ui.add_space(6.0);
+                            let chat_tip = if h.chat.is_empty() { "Chat".to_string() } else { format!("Chat ({} mensagens)", h.chat.len()) };
+                            let c = mac::round_icon(ui, &m, Icon::Comment, &chat_tip, 30.0, true);
+                            if h.chat_open {
+                                ui.painter().circle_stroke(c.rect.center(), 15.0, Stroke::new(1.5, m.accent));
+                            }
+                            if !h.chat.is_empty() && !h.chat_open {
+                                let b = c.rect.right_top() + Vec2::new(-3.0, 3.0);
+                                ui.painter().circle_filled(b, 7.0, m.red);
+                                ui.painter().text(b, Align2::CENTER_CENTER, h.chat.len().min(9).to_string(), theme::semibold(9.5), Color32::WHITE);
+                            }
+                            if c.clicked() {
+                                h.chat_open = !h.chat_open;
+                            }
+                            if mac::round_icon(ui, &m, Icon::Upload, "Enviar um arquivo para quem está acessando", 30.0, true).clicked()
+                                && let Some(f) = rfd::FileDialog::new().pick_file()
+                            {
+                                let _ = h.handle.cmd.send(Cmd::SendFile(f));
+                            }
+                            ui.add_space(4.0);
+                            let (d, _) = ui.allocate_exact_size(Vec2::new(1.0, 22.0), Sense::hover());
+                            ui.painter().rect_filled(d, CornerRadius::ZERO, m.sep);
+                            ui.add_space(4.0);
+                            // O que a pessoa pode fazer: clique liga/desliga.
+                            let mut pm = h.permissions;
+                            for (icon, label, on) in [(Icon::Folder, "Arquivos", &mut pm.files), (Icon::Copy, "Copiar/colar", &mut pm.clipboard), (Icon::Cursor, "Controle", &mut pm.control)] {
+                                if perm_chip(ui, &m, icon, label, *on, compact).clicked() {
+                                    *on = !*on;
+                                }
+                            }
+                            if pm != h.permissions {
+                                h.permissions = pm;
+                                perms_change.push((i, pm));
+                            }
+                        });
+                    });
+                    // Chat aberto: dentro do cartão.
+                    if h.chat_open {
+                        ui.add_space(8.0);
+                        let (sep, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+                        ui.painter().rect_filled(sep, CornerRadius::ZERO, m.sep);
+                        ui.add_space(8.0);
+                        let cmd = h.handle.cmd.clone();
+                        ui.allocate_ui(Vec2::new(ui.available_width(), 230.0), |ui| {
+                            ui.set_max_height(230.0);
+                            chat_panel(ui, &m, &mut h.chat, &mut h.chat_input, &h.transfers, |t| {
+                                let _ = cmd.send(Cmd::Chat(t));
+                            });
+                        });
                     }
                 });
-            });
-            // Chat do anfitrião (compacto).
-            let cmd = h.handle.cmd.clone();
-            egui::CollapsingHeader::new(RichText::new(format!("Chat{}", if h.chat.is_empty() { String::new() } else { format!(" ({})", h.chat.len()) })).size(12.0)).id_salt(("hchat", i, h.chat.is_empty())).default_open(!h.chat.is_empty()).show(ui, |ui| {
-                ui.set_max_height(220.0);
-                chat_panel(ui, &mac::of(ui.visuals().dark_mode), &mut h.chat, &mut h.chat_input, &h.transfers, |t| {
-                    let _ = cmd.send(Cmd::Chat(t));
-                });
-                if ui.button("Enviar arquivo para quem está acessando…").clicked()
-                    && let Some(f) = rfd::FileDialog::new().pick_file()
-                {
-                    let _ = h.handle.cmd.send(Cmd::SendFile(f));
-                }
-            });
+            ui.add_space(8.0);
         }
         for (i, pm) in perms_change {
             let _ = self.hosts[i].handle.cmd.send(Cmd::Permissions(pm));
@@ -927,7 +991,7 @@ impl EloApp {
             if let Some(ok) = decision {
                 let a = self.asks.remove(0);
                 let _ = a.reply.send(ok.then_some(a.permissions));
-                if let Some(h) = self.hosts.iter_mut().find(|h| h.from_id == a.from_id && !h.started) {
+                if let Some(h) = self.hosts.iter_mut().find(|h| h.session == a.session) {
                     h.permissions = a.permissions;
                 }
             }
@@ -1782,6 +1846,29 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
             r.request_focus();
         }
     }
+}
+
+/// Permissão de quem acessa: cápsula azul (liberado) ou cinza (bloqueado).
+fn perm_chip(ui: &mut egui::Ui, m: &mac::Mac, icon: Icon, label: &str, on: bool, compact: bool) -> egui::Response {
+    let font = theme::medium(12.0);
+    let g = ui.painter().layout_no_wrap(label.to_string(), font.clone(), m.label);
+    let w = if compact { 30.0 } else { g.size().x + 40.0 };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let (fill, fg) = if on { (theme::alpha(m.accent, 0.14 + 0.08 * hover), m.accent) } else { (m.hover.gamma_multiply(1.0 + hover), m.label3) };
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(14), fill);
+    let ic = if compact { rect.center() } else { egui::pos2(rect.left() + 17.0, rect.center().y) };
+    icons::paint(p, egui::Rect::from_center_size(ic, Vec2::splat(14.0)), icon, fg);
+    if !on {
+        // Risco no ícone: bloqueado.
+        p.line_segment([ic + Vec2::new(-7.0, 7.0), ic + Vec2::new(7.0, -7.0)], Stroke::new(1.5, fg));
+    }
+    if !compact {
+        p.text(egui::pos2(rect.left() + 30.0, rect.center().y), Align2::LEFT_CENTER, label, font, fg);
+    }
+    let tip = if on { format!("{label}: liberado. Clique para bloquear.") } else { format!("{label}: bloqueado. Clique para liberar.") };
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Painel lateral da sessão (chat, arquivos): material escuro, como a tela.

@@ -154,6 +154,8 @@ pub struct ViewSession {
 
 /// Sessão em que este computador está sendo acessado.
 pub struct HostSession {
+    /// Sessão no servidor (liga o pedido de acesso a esta conexão).
+    pub session: u64,
     pub from_id: String,
     pub from_name: String,
     pub handle: Handle,
@@ -167,9 +169,12 @@ pub struct HostSession {
     pub transfers: Vec<Transfer>,
     pub ended: Option<String>,
     pub since: Instant,
+    /// Chat aberto no aviso de "sendo acessado".
+    pub chat_open: bool,
 }
 
 pub struct Ask {
+    pub session: u64,
     pub from_id: String,
     pub from_name: String,
     pub sas: String,
@@ -579,7 +584,7 @@ impl EloApp {
                     }
                     let (tx, rx) = channel();
                     let handle = session::host(self.server_cfg(), session, secret, from_id.clone(), from_name.clone(), self.host_options(), tx);
-                    self.hosts.push(HostSession { from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now() });
+                    self.hosts.push(HostSession { session, from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false });
                 }
             }
         }
@@ -591,7 +596,7 @@ impl EloApp {
             for e in h.events.try_iter() {
                 match e {
                     HostEvent::Ask { from_id, from_name, sas, reply } => {
-                        new_asks.push(Ask { from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() });
+                        new_asks.push(Ask { session: h.session, from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() });
                         show = true;
                     }
                     HostEvent::Started { sas, with_password, .. } => {
@@ -602,7 +607,10 @@ impl EloApp {
                         // Quem está aqui precisa ver o aviso de que está sendo acessado.
                         show = true;
                     }
-                    HostEvent::Chat(t) => h.chat.push(ChatLine { mine: false, text: t }),
+                    HostEvent::Chat(t) => {
+                        h.chat.push(ChatLine { mine: false, text: t });
+                        h.chat_open = true;
+                    }
                     HostEvent::File(t) => {
                         if t.finished && t.incoming {
                             toasts.push((format!("Arquivo recebido: {}", t.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()), false));
@@ -619,6 +627,16 @@ impl EloApp {
             self.show_window(ctx);
         }
         let ended: Vec<String> = self.hosts.iter().filter(|h| h.ended.is_some() && h.started).map(|h| format!("{} encerrou: {}", h.from_name, h.ended.clone().unwrap_or_default())).collect();
+        // Pedido de quem desistiu (cancelou, fechou) sai da tela.
+        let gone: Vec<(u64, String, bool)> = self.hosts.iter().filter(|h| h.ended.is_some() && !h.started).map(|h| (h.session, h.from_name.clone(), h.ended.as_deref() == Some(elo_core::session::GAVE_UP))).collect();
+        for (session, name, gave_up) in gone {
+            if self.asks.iter().any(|a| a.session == session) {
+                self.asks.retain(|a| a.session != session);
+                if gave_up {
+                    toasts.push((format!("{name} cancelou o pedido de acesso."), false));
+                }
+            }
+        }
         self.hosts.retain(|h| h.ended.is_none());
         for (t, e) in toasts {
             if e { self.error(t) } else { self.toast(t) }

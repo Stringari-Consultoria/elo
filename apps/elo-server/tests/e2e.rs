@@ -331,3 +331,36 @@ fn wake_on_lan_relay() {
     drop(bg);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Quem pediu acesso (sem senha) e desistiu: o pedido some do anfitrião, em
+/// vez de ficar esperando resposta na tela.
+#[test]
+fn cancelled_request_disappears() {
+    let port = 24000 + (std::process::id() % 1000) as u16;
+    let dir = std::env::temp_dir().join(format!("elo-e2e-pedido-{port}"));
+    let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    let cfg = ServerCfg { address: format!("127.0.0.1:{port}"), tls: false, pin: String::new() };
+    let host = client::start(cfg.clone(), [5u8; 32], "Anfitrião".into());
+    let viewer = client::start(cfg.clone(), [6u8; 32], "Visualizador".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
+    viewer.tx.send(client::Command::Connect { target: host_id }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    let (htx, hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
+    let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(cfg.clone(), vs, vsec, String::new(), viewer_id, "Visualizador".into(), dir.join("baixados"), Arc::new(Mutex::new(Remote::default())), vtx);
+    // Sem senha: vira pedido na tela do anfitrião.
+    // (Guarda o pedido, como a tela do app: ninguém respondeu ainda.)
+    let Some(HostEvent::Ask { reply: _pending, .. }) = wait(&hrx, 10, |e| matches!(e, HostEvent::Ask { .. })) else { panic!("o pedido não chegou ao anfitrião") };
+    assert!(wait(&vrx, 5, |e| matches!(e, ViewerEvent::Waiting)).is_some());
+    // Quem pediu cancela.
+    vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let ended = wait(&hrx, 8, |e| matches!(e, HostEvent::Ended(_)));
+    let Some(HostEvent::Ended(r)) = ended else { panic!("o anfitrião continuou esperando a resposta") };
+    assert_eq!(r, session::GAVE_UP);
+    let _ = std::fs::remove_dir_all(&dir);
+}
