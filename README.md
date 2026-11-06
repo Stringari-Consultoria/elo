@@ -67,8 +67,11 @@ Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
 e passar para o `.deb`, rode antes `./instalar.sh --remover`, porque a cópia em
 `~/.local` tem prioridade sobre a do sistema.
 
-**No Linux** a sessão precisa ser **X11**. No Ubuntu, escolha "Ubuntu no Xorg"
-na tela de login. Wayland ainda não é suportado.
+**No Linux** funciona no X11 e no **Wayland** (GNOME, KDE e outros com o
+portal do sistema). No Wayland, na primeira vez que alguém acessa, o sistema
+pergunta na tela se pode compartilhar: ligue **"Permitir interação remota"**
+(sem isso dá para ver, mas não controlar) e deixe **"Lembrar desta seleção"**
+marcado, para as próximas vezes não perguntarem de novo.
 
 **No macOS**, os builds ainda não são assinados nem notarizados pela Apple, e
 na primeira abertura aparece "a Apple não pôde verificar". Para liberar: tente
@@ -346,7 +349,7 @@ política de privacidade.
 Requisitos: **Rust 1.88+** ([rustup](https://rustup.rs)). No Linux (Debian/Ubuntu):
 
 ```sh
-sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxcb1-dev libxdo-dev
+sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxcb1-dev libxdo-dev libasound2-dev libpipewire-0.3-dev libclang-dev
 ```
 
 Os atalhos ficam no `Makefile` (`make` lista todos):
@@ -406,8 +409,11 @@ o instalador e o `.zip` do Windows, e publica a release.
 - **Windows ainda não foi testado em máquina real.** O CI compila e roda os
   testes nos três sistemas; o Linux e o macOS já foram testados em máquinas
   reais. Telas UAC do Windows precisam de teste.
-- **Linux: só X11.** No Wayland, captura e controle exigem o portal
-  (xdg-desktop-portal/PipeWire), que ainda não foi implementado.
+- **Wayland:** testado no GNOME 46 (numa sessão aninhada); KDE e outros
+  ambientes com o portal devem funcionar, mas ainda não foram testados. Se a
+  permissão guardada deixar de valer (por exemplo, depois de revogada nos
+  Ajustes), o sistema pergunta de novo na tela do computador acessado: para
+  acesso sem ninguém lá, prefira uma sessão X11 nesse computador.
 - **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
   Windows exige um serviço do sistema que o Elo ainda não tem.
 - **Som no Mac acessado** exige o macOS 14.2 ou mais novo e a permissão

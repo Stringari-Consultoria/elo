@@ -9,6 +9,8 @@ pub mod platform;
 pub mod session;
 #[cfg(target_os = "linux")]
 pub mod uinput;
+#[cfg(target_os = "linux")]
+pub mod wayland;
 
 /// Senha temporária: 8 caracteres sem ambiguidade (sem 0/O, 1/l/I).
 pub fn temp_password() -> String {

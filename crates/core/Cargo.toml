@@ -28,6 +28,11 @@ cpal = "0.18"
 x11rb = { version = "0.13", features = ["xtest", "randr"] }
 # Rolagem suave (mouse virtual pelo uinput).
 evdev = "0.13"
+# Wayland: portal (RemoteDesktop + ScreenCast) e quadros pelo PipeWire.
+ashpd = { version = "0.14", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
+# 0.8: a mesma do xcap (só pode haver uma cópia da biblioteca nativa).
+pipewire = "0.8"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.7"

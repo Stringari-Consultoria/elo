@@ -98,7 +98,7 @@ Priority: optional
 Architecture: $ARQ_DEB
 Maintainer: Gabriel Stringari <gabriel@gabrielstringari.com>
 Installed-Size: $TAM
-Depends: libc6 (>= $GLIBC), libgcc-s1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libvulkan1, libasound2t64 | libasound2
+Depends: libc6 (>= $GLIBC), libgcc-s1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libvulkan1, libasound2t64 | libasound2, libpipewire-0.3-0t64 | libpipewire-0.3-0
 Recommends: pipewire-bin | pulseaudio-utils
 Suggests: elo-server
 Homepage: https://github.com/Stringari-Consultoria/elo

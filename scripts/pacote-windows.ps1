@@ -27,8 +27,10 @@ $nome = "$prefixo-$versao-windows-x64"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) $nome
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 New-Item -ItemType Directory $tmp | Out-Null
-$itens = if ($cliente) { @("$rel\elo-cliente.exe") } else { @("$rel\elo.exe", "$rel\elo-server.exe") }
-Copy-Item ($itens + @("$raiz\LICENSE-MIT", "$raiz\LICENSE-APACHE")) $tmp
+# (Lista montada item a item: no PowerShell, um "if" com um item só vira texto.)
+$itens = @("$rel\$exe.exe", "$raiz\LICENSE-MIT", "$raiz\LICENSE-APACHE")
+if (-not $cliente) { $itens += "$rel\elo-server.exe" }
+Copy-Item $itens $tmp
 Copy-Item "$raiz\NOTICE" "$tmp\NOTICE.txt"
 $zip = Join-Path $dist "$nome.zip"
 if (Test-Path $zip) { Remove-Item $zip }
@@ -74,7 +76,8 @@ if (-not (Test-Path $iscc)) {
     Write-Warning "Inno Setup 6 nao encontrado: so o .zip foi gerado (choco install innosetup)"
     exit 0
 }
-$extra = if ($cliente) { @("/DCliente") } else { @() }
+$extra = @()
+if ($cliente) { $extra += "/DCliente" }
 & $iscc /Q "/DAppVersion=$versao" "/DBinDir=$rel" "/DRaiz=$raiz" @extra "$raiz\packaging\windows\elo.iss"
 if ($LASTEXITCODE -ne 0) { throw "falha no Inno Setup" }
 Write-Host "Gerado: $(Join-Path $dist "$nome-setup.exe")"

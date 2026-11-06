@@ -1,7 +1,9 @@
 //! Captura de tela e injeção de mouse/teclado por sistema.
 //!
 //! - Linux (X11): protocolo X puro (x11rb): `GetImage` para a tela e XTest
-//!   para a entrada. No Wayland, abra a sessão em "GNOME/KDE no Xorg".
+//!   para a entrada.
+//! - Linux (Wayland): portal do sistema (RemoteDesktop + ScreenCast) e
+//!   PipeWire; ver `wayland.rs`.
 //! - Windows e macOS: `xcap` (captura) e `enigo` (entrada). No macOS é preciso
 //!   autorizar "Gravação de Tela" e "Acessibilidade" em Ajustes do Sistema.
 
@@ -29,7 +31,8 @@ pub trait Control: Send {
 pub fn fine_scroll() -> bool {
     #[cfg(target_os = "linux")]
     {
-        crate::uinput::available()
+        // Wayland: rolagem suave pelo portal; X11: pelo mouse virtual (uinput).
+        crate::wayland::is_wayland() || crate::uinput::available()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -75,7 +78,25 @@ pub fn computer_name() -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub use x11::{open_control, open_screen};
+pub(crate) use x11::{char_keysym, keysym_of};
+
+/// Captura de tela: portal (Wayland) ou X11.
+#[cfg(target_os = "linux")]
+pub fn open_screen() -> Result<Box<dyn Screen>, String> {
+    if crate::wayland::is_wayland() {
+        return crate::wayland::open_screen();
+    }
+    x11::open_screen()
+}
+
+/// Mouse e teclado: portal (Wayland) ou XTest (X11).
+#[cfg(target_os = "linux")]
+pub fn open_control() -> Result<Box<dyn Control>, String> {
+    if crate::wayland::is_wayland() {
+        return crate::wayland::open_control();
+    }
+    x11::open_control()
+}
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use native::{open_control, open_screen};
@@ -212,7 +233,7 @@ mod x11 {
         }
     }
 
-    fn keysym_of(k: Key) -> u32 {
+    pub(crate) fn keysym_of(k: Key) -> u32 {
         match k {
             Key::Enter => 0xff0d,
             Key::Tab => 0xff09,
@@ -241,7 +262,7 @@ mod x11 {
         }
     }
 
-    pub fn char_keysym(c: char) -> u32 {
+    pub(crate) fn char_keysym(c: char) -> u32 {
         match c {
             '\n' => 0xff0d,
             '\t' => 0xff09,
