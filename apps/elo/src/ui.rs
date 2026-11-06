@@ -299,7 +299,7 @@ impl EloApp {
                         ui.painter().circle_filled(dot, 4.0, m.red);
                         ui.add_space(6.0);
                         // Quem e há quanto tempo.
-                        let right_w = if compact { 250.0 } else { 470.0 };
+                        let right_w = if compact { 286.0 } else { 540.0 };
                         let text_w = (ui.available_width() - right_w).max(120.0);
                         ui.allocate_ui_with_layout(Vec2::new(text_w, 38.0), Layout::top_down(Align::Min), |ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
@@ -338,6 +338,10 @@ impl EloApp {
                             ui.painter().rect_filled(d, CornerRadius::ZERO, m.sep);
                             ui.add_space(4.0);
                             // O que a pessoa pode fazer: clique liga/desliga.
+                            if perm_chip(ui, &m, Icon::Speaker, "Som", h.audio, compact).clicked() {
+                                h.audio = !h.audio;
+                                let _ = h.handle.cmd.send(Cmd::Audio(h.audio));
+                            }
                             let mut pm = h.permissions;
                             for (icon, label, on) in [(Icon::Folder, "Arquivos", &mut pm.files), (Icon::Copy, "Copiar/colar", &mut pm.clipboard), (Icon::Cursor, "Controle", &mut pm.control)] {
                                 if perm_chip(ui, &m, icon, label, *on, compact).clicked() {
@@ -2309,6 +2313,17 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                             glass_divider(ui);
                         }
                         // Ações.
+                        let (icon, tip) = if !v.audio_available {
+                            (Icon::SpeakerOff, "Sem som: o Elo do outro computador é de uma versão que ainda não manda som")
+                        } else if v.audio_on {
+                            (Icon::Speaker, "Som ligado. Clique para desligar (o volume fica em Mais opções)")
+                        } else {
+                            (Icon::SpeakerOff, "Som desligado. Clique para ouvir")
+                        };
+                        if glass_icon(ui, icon, tip, false, v.audio_available, None).clicked() {
+                            v.audio_on = !v.audio_on;
+                            let _ = v.handle.cmd.send(Cmd::Audio(v.audio_on));
+                        }
                         if glass_icon(ui, Icon::Comment, "Chat", v.chat_open, true, None).clicked() {
                             v.chat_open = !v.chat_open;
                             v.files.open = false;
@@ -2360,6 +2375,31 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
     act
 }
 
+/// Volume contínuo (0 a 100%), como o da Central de Controle.
+fn cc_volume(ui: &mut egui::Ui, value: f32) -> Option<f32> {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click_and_drag());
+    let track = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 16.0, 6.0));
+    let mut pick = None;
+    if (resp.clicked() || resp.dragged())
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let v = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+        if (v - value).abs() > 0.001 {
+            pick = Some(v);
+        }
+    }
+    let v = pick.unwrap_or(value).clamp(0.0, 1.0);
+    let kx = track.left() + track.width() * v;
+    let p = ui.painter();
+    p.rect_filled(track, CornerRadius::same(3), Color32::from_white_alpha(30));
+    p.rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(kx, track.bottom())), CornerRadius::same(3), Color32::WHITE);
+    let knob = egui::pos2(kx, track.center().y);
+    p.add(egui::Shadow { offset: [0, 1], blur: 5, spread: 0, color: Color32::from_black_alpha(120) }.as_shape(egui::Rect::from_center_size(knob, Vec2::splat(18.0)), CornerRadius::same(9)));
+    p.circle_filled(knob, 9.0, Color32::WHITE);
+    resp.on_hover_text(format!("Volume: {:.0}%", v * 100.0)).on_hover_cursor(egui::CursorIcon::PointingHand);
+    pick
+}
+
 /// Menu "Mais opções", como a Central de Controle: módulos de ajuste,
 /// qualidade da imagem num controle deslizante e ações no outro computador.
 fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
@@ -2394,6 +2434,35 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
                     let (jpeg, fps) = quality(q);
                     let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
                 }
+            });
+            cc_module(ui, |ui| {
+                ui.horizontal(|ui| {
+                    icons::icon(ui, Icon::Speaker, 14.0, GLASS_TEXT2);
+                    ui.label(RichText::new("Som do outro computador").font(theme::semibold(12.5)).color(GLASS_TEXT));
+                });
+                ui.add_space(4.0);
+                if !v.audio_available {
+                    ui.label(RichText::new("O Elo de lá ainda não manda som. Atualize-o.").size(11.5).color(GLASS_MUTED));
+                    return;
+                }
+                ui.horizontal(|ui| {
+                    let on = v.audio_on;
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+                    ui.painter().circle_filled(r.center(), 15.0, if on { GLASS_BLUE } else { Color32::from_white_alpha(30) });
+                    icons::paint(ui.painter(), r.shrink(8.0), if on { Icon::Speaker } else { Icon::SpeakerOff }, Color32::WHITE);
+                    if resp.on_hover_text(if on { "Desligar o som" } else { "Ouvir o som" }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        v.audio_on = !on;
+                        let _ = v.handle.cmd.send(Cmd::Audio(v.audio_on));
+                    }
+                    if let Some(vol) = cc_volume(ui, v.volume) {
+                        v.volume = vol;
+                        let _ = v.handle.cmd.send(Cmd::Volume(vol));
+                        if !v.audio_on && vol > 0.0 {
+                            v.audio_on = true;
+                            let _ = v.handle.cmd.send(Cmd::Audio(true));
+                        }
+                    }
+                });
             });
             cc_module(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;

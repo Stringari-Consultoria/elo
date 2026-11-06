@@ -31,6 +31,7 @@ sessão**, nem o próprio servidor.
 ## Recursos
 
 - **Controle remoto** de mouse e teclado, com vários monitores.
+- **Som do computador acessado**: o que toca lá sai aqui (Opus, 96 kbps), com volume e botão de desligar.
 - **Chat e área de transferência** nos dois sentidos.
 - **Gerenciador de arquivos**: navegue nas pastas do outro computador, baixe e
   envie arquivos (ou arraste para a janela da sessão).
@@ -240,6 +241,13 @@ política de privacidade.
 - **Vídeo:** a tela é dividida em blocos de 64 px, e só os blocos que mudaram
   vão em JPEG. Quando a tela para, os blocos são refinados em qualidade alta.
   Com até 2 quadros sem confirmação, a sessão se adapta a links lentos.
+- **Som:** o anfitrião captura o que está saindo nas caixas (PipeWire ou
+  PulseAudio no Linux, loopback do WASAPI no Windows, process tap do Core
+  Audio no macOS 14.2+), comprime em Opus (48 kHz, estéreo, 20 ms, codec em
+  Rust puro) e o visualizador toca com um pequeno buffer contra a variação
+  da rede. Versões novas anunciam o que sabem fazer logo depois da mensagem
+  de boas-vindas, e versões antigas simplesmente ignoram: o som só é pedido
+  a quem anunciou.
 
 ## Desenvolvimento
 
@@ -310,7 +318,10 @@ o instalador e o `.zip` do Windows, e publica a release.
   (xdg-desktop-portal/PipeWire), que ainda não foi implementado.
 - **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
   Windows exige um serviço do sistema que o Elo ainda não tem.
-- **Ainda não há:** áudio remoto, gravação de sessão, impressão remota, nem
+- **Som no Mac acessado** exige o macOS 14.2 ou mais novo e a permissão
+  "Gravação de áudio do sistema". No Linux, precisa do `pw-record` (PipeWire)
+  ou do `parec` (PulseAudio), que já vêm nas distribuições comuns.
+- **Ainda não há:** gravação de sessão, impressão remota, nem
   builds assinados pela Apple ou pela Microsoft.
 - Com layouts de teclado diferentes nos dois lados, o texto chega certo, mas
   atalhos com teclas fora do ASCII podem não chegar.

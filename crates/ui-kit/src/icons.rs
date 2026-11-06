@@ -132,6 +132,10 @@ pub enum Icon {
     Expand,
     /// Sair da tela cheia: quatro cantos para dentro.
     Shrink,
+    /// Som ligado: alto-falante com ondas.
+    Speaker,
+    /// Som desligado: alto-falante riscado.
+    SpeakerOff,
 }
 
 struct Pen<'a> {
@@ -798,6 +802,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect(3.0, 4.0, 4.5, 16.0, 0.5);
             pen.rect(8.5, 4.0, 4.5, 16.0, 0.5);
             pen.closed(&[(14.5, 5.5), (18.5, 4.5), (21.5, 19.0), (17.5, 20.0)]);
+        }
+        Icon::Speaker => {
+            pen.closed(&[(3.5, 9.0), (7.5, 9.0), (12.5, 4.5), (12.5, 19.5), (7.5, 15.0), (3.5, 15.0)]);
+            pen.arc(13.0, 12.0, 3.5, 3.5, -0.9, 0.9);
+            pen.arc(13.0, 12.0, 7.0, 7.0, -0.95, 0.95);
+        }
+        Icon::SpeakerOff => {
+            pen.closed(&[(3.5, 9.0), (7.5, 9.0), (12.5, 4.5), (12.5, 19.5), (7.5, 15.0), (3.5, 15.0)]);
+            pen.line(&[(15.5, 9.5), (20.5, 14.5)]);
+            pen.line(&[(20.5, 9.5), (15.5, 14.5)]);
         }
         Icon::Expand => {
             pen.line(&[(4.0, 9.0), (4.0, 4.0), (9.0, 4.0)]);

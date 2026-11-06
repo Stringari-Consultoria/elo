@@ -124,6 +124,32 @@ pub enum Msg {
     /// Visualizador pede para reiniciar o computador do anfitrião (exige
     /// permissão de controle). O anfitrião responde `Bye(BYE_RESTART)`.
     Restart,
+    // Novas mensagens entram sempre no fim (a posição é o código na rede).
+    // Só são mandadas a quem anunciou o recurso (ver `FEATURES`).
+    /// Visualizador quer receber o som (recurso "audio").
+    AudioStart,
+    AudioStop,
+    /// Anfitrião → visualizador: um pacote Opus (48 kHz, estéreo, 20 ms).
+    Audio(Vec<u8>),
+}
+
+/// Recursos que esta versão entende, além do básico. O anfitrião manda a
+/// lista logo depois do `Welcome`, no mesmo quadro: versões antigas ignoram
+/// os bytes a mais, as novas leem com `features_after`.
+pub const FEATURES: &[&str] = &["audio"];
+
+/// Codifica `Welcome` (ou outra mensagem) seguida da lista de recursos.
+pub fn with_features(m: &Msg) -> Result<Vec<u8>, postcard::Error> {
+    let mut v = postcard::to_stdvec(m)?;
+    v.extend(postcard::to_stdvec(&FEATURES)?);
+    Ok(v)
+}
+
+/// Lê a mensagem e a lista de recursos que veio depois (vazia se não veio).
+pub fn features_after(bytes: &[u8]) -> Result<(Msg, Vec<String>), postcard::Error> {
+    let (m, rest) = postcard::take_from_bytes::<Msg>(bytes)?;
+    let feats = if rest.is_empty() { Vec::new() } else { postcard::from_bytes::<Vec<String>>(rest).unwrap_or_default() };
+    Ok((m, feats))
 }
 
 /// Motivo do `Bye` quando o anfitrião vai reiniciar (o visualizador reconecta).
@@ -137,4 +163,27 @@ pub struct DirEntry {
     pub size: u64,
     /// Segundos desde 1970 (0 = desconhecido).
     pub modified: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn welcome() -> Msg {
+        Msg::Welcome { name: "pc".into(), os: "Linux".into(), monitors: Vec::new(), permissions: Permissions::default() }
+    }
+
+    #[test]
+    fn features_ride_after_welcome_without_breaking_old_readers() {
+        let bytes = with_features(&welcome()).unwrap();
+        // Versão antiga: lê a mensagem e ignora o resto.
+        assert_eq!(postcard::from_bytes::<Msg>(&bytes).unwrap(), welcome());
+        // Versão nova: lê também os recursos.
+        let (m, f) = features_after(&bytes).unwrap();
+        assert_eq!(m, welcome());
+        assert_eq!(f, vec!["audio".to_string()]);
+        // Anfitrião antigo (sem lista): nenhum recurso.
+        let (_, f) = features_after(&postcard::to_stdvec(&welcome()).unwrap()).unwrap();
+        assert!(f.is_empty());
+    }
 }

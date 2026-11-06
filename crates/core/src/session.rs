@@ -27,13 +27,32 @@ struct Chan {
     open: Opener,
     pub sent: u64,
     pub recv: u64,
+    /// Recursos que o outro lado anunciou (ver `msg::FEATURES`).
+    features: Vec<String>,
 }
 
 impl Chan {
+    fn new(c: Conn, keys: &elo_proto::secure::Keys) -> Self {
+        Chan { c, fr: Framer::new(), seal: Sealer::new(&keys.send), open: Opener::new(&keys.recv), sent: 0, recv: 0, features: Vec::new() }
+    }
+
     fn send(&mut self, m: &Msg) -> Result<(), String> {
-        let data = self.seal.seal(&postcard::to_stdvec(m).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        self.send_bytes(&postcard::to_stdvec(m).map_err(|e| e.to_string())?)
+    }
+
+    /// Mensagem seguida da lista de recursos desta versão.
+    fn send_with_features(&mut self, m: &Msg) -> Result<(), String> {
+        self.send_bytes(&elo_proto::msg::with_features(m).map_err(|e| e.to_string())?)
+    }
+
+    fn send_bytes(&mut self, plain: &[u8]) -> Result<(), String> {
+        let data = self.seal.seal(plain).map_err(|e| e.to_string())?;
         self.sent += data.len() as u64 + 4;
         write_frame(&mut self.c, &data).map_err(|e| e.to_string())
+    }
+
+    fn has(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
     }
 
     fn poll(&mut self) -> Result<Option<Msg>, String> {
@@ -41,7 +60,17 @@ impl Chan {
             Ok(Some(f)) => {
                 self.recv += f.len() as u64 + 4;
                 let plain = self.open.open(&f).map_err(|e| e.to_string())?;
-                postcard::from_bytes(&plain).map(Some).map_err(|e| e.to_string())
+                match elo_proto::msg::features_after(&plain) {
+                    Ok((m, feats)) => {
+                        if !feats.is_empty() {
+                            self.features = feats;
+                        }
+                        Ok(Some(m))
+                    }
+                    // Mensagem de uma versão mais nova (o quadro é autenticado, então
+                    // não é ruído): ignora em vez de derrubar a sessão.
+                    Err(_) => Ok(None),
+                }
             }
             Ok(None) => Ok(None),
             Err(e) => Err(if e.kind() == std::io::ErrorKind::UnexpectedEof { "o outro lado encerrou".into() } else { e.to_string() }),
@@ -206,7 +235,13 @@ pub struct HostOptions {
     pub default_permissions: Permissions,
     /// Como reiniciar o computador (testes trocam por uma função que não reinicia).
     pub restart: fn() -> Result<(), String>,
+    /// Mandar o som deste computador a quem pedir (dá para mudar na sessão).
+    pub audio: bool,
 }
+
+/// Ligar o som sozinho ao conectar (os testes desligam: anfitrião e
+/// visualizador no mesmo computador fariam eco).
+pub static AUDIO_ON_START: AtomicBool = AtomicBool::new(true);
 
 /// Motivo de fim quando quem pediu acesso desistiu antes da resposta.
 pub const GAVE_UP: &str = "quem pediu desistiu do pedido";
@@ -248,6 +283,10 @@ pub enum Cmd {
     Permissions(Permissions),
     Clipboard(bool),
     SecureAttention,
+    /// Visualizador: ouvir ou não o som de lá. Anfitrião: permitir ou não.
+    Audio(bool),
+    /// Volume do som recebido (0 a 1,5).
+    Volume(f32),
 }
 
 fn new_handle() -> (Handle, Receiver<Cmd>) {
@@ -295,7 +334,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
             return Err(e.to_string());
         }
     };
-    let mut ch = Chan { c, fr: Framer::new(), seal: Sealer::new(&keys.send), open: Opener::new(&keys.recv), sent: 0, recv: 0 };
+    let mut ch = Chan::new(c, &keys);
     let mut perms = opt.default_permissions;
     if keys.mode == AuthMode::Request {
         let (tx, rrx) = channel();
@@ -330,7 +369,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut control = platform::open_control().ok();
     let mut clip = Clip::new();
     let monitors = screen.monitors();
-    ch.send(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
+    ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
     let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), with_password: keys.mode == AuthMode::Password });
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
     let mut enc = Encoder::new();
@@ -346,6 +385,12 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut files = Files::default();
     let mut frames_win = (Instant::now(), 0u32);
     let mut last_rx = Instant::now();
+    // Som: manda só se quem acessa pediu e se aqui está permitido.
+    let mut audio_allowed = opt.audio;
+    let mut audio_wanted = false;
+    let mut audio_failed = false;
+    let mut capture: Option<(crate::audio::Capture, crate::audio::Encoder)> = None;
+    let mut pcm = Vec::new();
     loop {
         if h.stop.load(Ordering::Relaxed) {
             let _ = ch.send(&Msg::Bye("o anfitrião encerrou a sessão".into()));
@@ -431,6 +476,14 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         }
                     }
                 }
+                Msg::AudioStart => {
+                    audio_wanted = true;
+                    audio_failed = false;
+                    if !audio_allowed {
+                        ch.send(&Msg::Notice("o som está desligado do outro lado".into()))?;
+                    }
+                }
+                Msg::AudioStop => audio_wanted = false,
                 Msg::Ping(n) => ch.send(&Msg::Pong(n))?,
                 Msg::Bye(r) => return Err(r),
                 _ => {}
@@ -449,8 +502,36 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     perms = p;
                     ch.send(&Msg::Permissions(p))?;
                 }
+                Cmd::Audio(on) => {
+                    audio_allowed = on;
+                    audio_failed = false;
+                    if audio_wanted {
+                        ch.send(&Msg::Notice(if on { "o som foi liberado do outro lado".into() } else { "o som foi desligado do outro lado".into() }))?;
+                    }
+                }
                 _ => {}
             }
+        }
+        // Som: captura, comprime e manda (pacotes de 20 ms).
+        if audio_wanted && audio_allowed && !audio_failed {
+            if capture.is_none() {
+                match crate::audio::Capture::open().and_then(|c| Ok((c, crate::audio::Encoder::new()?))) {
+                    Ok(c) => capture = Some(c),
+                    Err(e) => {
+                        audio_failed = true;
+                        ch.send(&Msg::Notice(format!("sem som do outro computador: {e}")))?;
+                    }
+                }
+            }
+            if let Some((cap, enc)) = capture.as_mut() {
+                pcm.clear();
+                cap.read(&mut pcm);
+                for p in enc.push(&pcm) {
+                    ch.send(&Msg::Audio(p))?;
+                }
+            }
+        } else if capture.is_some() {
+            capture = None;
         }
         let mut progress = Vec::new();
         files.pump(&mut ch, &mut progress)?;
@@ -531,6 +612,8 @@ pub struct Remote {
 
 pub enum ViewerEvent {
     Connected { name: String, os: String, sas: String, monitors: Vec<Monitor>, permissions: Permissions },
+    /// Se o outro lado sabe mandar som (versões antigas não sabem).
+    Audio { available: bool },
     Waiting,
     Chat(String),
     File(Transfer),
@@ -571,7 +654,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
         elo_proto::Error::Auth => "senha incorreta (ou o computador bloqueou novas tentativas por alguns minutos)".to_string(),
         e => e.to_string(),
     })?;
-    let mut ch = Chan { c, fr: Framer::new(), seal: Sealer::new(&keys.send), open: Opener::new(&keys.recv), sent: 0, recv: 0 };
+    let mut ch = Chan::new(c, &keys);
     if keys.mode == AuthMode::Request {
         let _ = ev.send(ViewerEvent::Waiting);
     }
@@ -599,6 +682,26 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
     };
     ch.send(&Msg::Hello { name: my_name.into(), from_id: my_id.into() })?;
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
+    // Som: liga sozinho se o outro lado sabe mandar.
+    let audio_ok = ch.has("audio");
+    let _ = ev.send(ViewerEvent::Audio { available: audio_ok });
+    let mut volume = 1.0f32;
+    let mut player: Option<crate::audio::Player> = None;
+    let start_audio = |ch: &mut Chan, volume: f32| -> Result<Option<crate::audio::Player>, String> {
+        match crate::audio::Player::open(volume) {
+            Ok(p) => {
+                ch.send(&Msg::AudioStart)?;
+                Ok(Some(p))
+            }
+            Err(e) => {
+                let _ = ev.send(ViewerEvent::Notice(format!("não dá para tocar o som aqui: {e}")));
+                Ok(None)
+            }
+        }
+    };
+    if audio_ok && AUDIO_ON_START.load(Ordering::Relaxed) {
+        player = start_audio(&mut ch, volume)?;
+    }
     let mut clip = Clip::new();
     let mut clip_sync = true;
     let mut last_clip = Instant::now();
@@ -675,6 +778,11 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 Msg::Notice(t) => {
                     let _ = ev.send(ViewerEvent::Notice(t));
                 }
+                Msg::Audio(packet) => {
+                    if let Some(p) = player.as_mut() {
+                        p.push(&packet);
+                    }
+                }
                 Msg::Pong(_) => {}
                 Msg::Ping(n) => ch.send(&Msg::Pong(n))?,
                 Msg::Bye(r) => return Err(r),
@@ -714,6 +822,22 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 Cmd::Refresh => ch.send(&Msg::Refresh)?,
                 Cmd::Clipboard(on) => clip_sync = on,
                 Cmd::Permissions(_) => {}
+                Cmd::Audio(on) => {
+                    if !audio_ok {
+                        let _ = ev.send(ViewerEvent::Notice("o Elo do outro computador ainda não manda som: atualize-o".into()));
+                    } else if on && player.is_none() {
+                        player = start_audio(&mut ch, volume)?;
+                    } else if !on && player.is_some() {
+                        player = None;
+                        ch.send(&Msg::AudioStop)?;
+                    }
+                }
+                Cmd::Volume(v) => {
+                    volume = v;
+                    if let Some(p) = &player {
+                        p.set_volume(v);
+                    }
+                }
             }
         }
         let mut progress = Vec::new();

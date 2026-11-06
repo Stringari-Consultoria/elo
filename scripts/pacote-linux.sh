@@ -69,10 +69,11 @@ Priority: optional
 Architecture: $ARQ_DEB
 Maintainer: Gabriel Stringari <gabriel@gabrielstringari.com>
 Installed-Size: $TAM
-Depends: libc6 (>= $GLIBC), libgcc-s1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libvulkan1
+Depends: libc6 (>= $GLIBC), libgcc-s1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libvulkan1, libasound2t64 | libasound2
+Recommends: pipewire-bin | pulseaudio-utils
 Homepage: https://github.com/Stringari-Consultoria/elo
 Description: Acesso remoto com cifragem ponta a ponta
- Um computador vê e controla a tela de outro, com chat, área de
+ Um computador vê, ouve e controla a tela de outro, com chat, área de
  transferência e envio de arquivos. O servidor de conexão vem embutido
  no app; as sessões são cifradas ponta a ponta (SPAKE2 + ChaCha20-Poly1305).
 CONTROL

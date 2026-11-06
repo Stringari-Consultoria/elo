@@ -42,6 +42,8 @@ fn session_through_relay() {
         eprintln!("sem DISPLAY: teste pulado");
         return;
     }
+    // Os dois lados no mesmo computador: sem som (faria eco).
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
     let port = 22000 + (std::process::id() % 1000) as u16;
     let dir = std::env::temp_dir().join(format!("elo-e2e-{port}"));
     let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
@@ -71,7 +73,7 @@ fn session_through_relay() {
         assert_eq!(hs, vs);
         assert_eq!(from, viewer_id);
         let (htx, hrx) = channel();
-        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
+        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
         let hh = session::host(cfg.clone(), hs, hsec, from.clone(), "Visualizador".into(), opt, htx);
         let remote = Arc::new(Mutex::new(Remote::default()));
         let (vtx, vrx) = channel();
@@ -86,6 +88,8 @@ fn session_through_relay() {
         assert!(!monitors.is_empty());
         let Some(HostEvent::Started { sas: hsas, .. }) = wait(&hrx, 5, |e| matches!(e, HostEvent::Started { .. })) else { panic!() };
         assert_eq!(sas, hsas);
+        // O anfitrião anuncia que sabe mandar som (lista de recursos depois do Welcome).
+        assert!(wait(&vrx, 5, |e| matches!(e, ViewerEvent::Audio { available: true })).is_some(), "o som não foi anunciado");
         // Recebe a tela.
         let end = Instant::now() + Duration::from_secs(15);
         loop {
@@ -234,7 +238,7 @@ fn websocket_like_cloudflare_tunnel() {
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     assert_eq!((hs, &from_id), (vs, &viewer_id));
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
+    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();
@@ -349,7 +353,7 @@ fn cancelled_request_disappears() {
     let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
+    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
     let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let (vtx, vrx) = channel();
     let vh = session::viewer(cfg.clone(), vs, vsec, String::new(), viewer_id, "Visualizador".into(), dir.join("baixados"), Arc::new(Mutex::new(Remote::default())), vtx);

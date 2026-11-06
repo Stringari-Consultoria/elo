@@ -20,6 +20,9 @@ mac_address = "1"
 tungstenite = { workspace = true }
 arboard = { version = "3", default-features = false }
 image = { workspace = true }
+# Som: Opus em Rust puro (sem C) e saída/captura de som nos três sistemas.
+opus1 = "0.3"
+cpal = "0.18"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xtest", "randr"] }

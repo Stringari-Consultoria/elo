@@ -148,6 +148,10 @@ pub struct ViewSession {
     pub last_move: Instant,
     /// Rolagem ainda não enviada (frações de "clique" da roda, do touchpad).
     pub scroll_acc: egui::Vec2,
+    /// O outro lado sabe mandar som / estamos ouvindo / volume (0 a 1,5).
+    pub audio_available: bool,
+    pub audio_on: bool,
+    pub volume: f32,
     /// Gerenciador de arquivos (painel lateral).
     pub files: FilesPanel,
 }
@@ -171,6 +175,8 @@ pub struct HostSession {
     pub since: Instant,
     /// Chat aberto no aviso de "sendo acessado".
     pub chat_open: bool,
+    /// Mandar o som deste computador.
+    pub audio: bool,
 }
 
 pub struct Ask {
@@ -323,7 +329,7 @@ impl EloApp {
         if self.settings.unattended && !self.settings.permanent_password.is_empty() {
             passwords.push(self.settings.permanent_password.clone());
         }
-        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer }
+        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, audio: true }
     }
 
     /// Servidor em uso: o local (se ligado) ou o configurado.
@@ -571,6 +577,9 @@ impl EloApp {
                         started: Instant::now(),
                         last_move: Instant::now(),
                         scroll_acc: egui::Vec2::ZERO,
+                        audio_available: false,
+                        audio_on: true,
+                        volume: 1.0,
                         files: FilesPanel::default(),
                     });
                     self.active_tab = self.views.len();
@@ -584,7 +593,7 @@ impl EloApp {
                     }
                     let (tx, rx) = channel();
                     let handle = session::host(self.server_cfg(), session, secret, from_id.clone(), from_name.clone(), self.host_options(), tx);
-                    self.hosts.push(HostSession { session, from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false });
+                    self.hosts.push(HostSession { session, from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false, audio: true });
                 }
             }
         }
@@ -668,6 +677,7 @@ impl EloApp {
                         }
                     }
                     ViewerEvent::Waiting => v.waiting = true,
+                    ViewerEvent::Audio { available } => v.audio_available = available,
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });
                         v.chat_open = true;

@@ -30,6 +30,8 @@
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>O Elo conecta a servidores e computadores na sua rede local para o acesso remoto.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>O Elo manda o som deste Mac para quem está acessando, quando você permite.</string>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 Gabriel Stringari. MIT ou Apache-2.0.</string>
 </dict>
