@@ -102,9 +102,15 @@ impl eframe::App for EloApp {
                 Some(SessAct::Favorite) => {
                     let v = &self.views[idx];
                     let (id, name, os) = (v.target_id.clone(), v.target_name.clone(), v.os.clone());
-                    let on = self.settings.toggle_favorite(&id, &name, &os);
+                    // A senha que abriu esta sessão vai junto (vazia se entrou pedindo permissão).
+                    let pw = if v.connected { v.password.clone() } else { String::new() };
+                    let on = self.settings.toggle_favorite(&id, &name, &os, &pw);
                     self.settings.save();
-                    self.toast(if on { "Salvo nos favoritos. Dá para renomear na tela inicial." } else { "Removido dos favoritos." });
+                    self.toast(match (on, pw.is_empty()) {
+                        (true, false) => "Salvo nos favoritos com a senha. Na próxima vez conecta direto; dá para renomear na tela inicial.",
+                        (true, true) => "Salvo nos favoritos. Na tela inicial dá para renomear e guardar a senha do acesso não assistido.",
+                        _ => "Removido dos favoritos.",
+                    });
                 }
                 None => {}
             }
@@ -123,6 +129,8 @@ impl eframe::App for EloApp {
                     self.reconnects.retain(|x| x.id != v.target_id);
                     self.reconnects.push(crate::app::Reconnect { id: v.target_id.clone(), name: name.clone(), password: v.password.clone(), next_try: now + std::time::Duration::from_secs(20), until: now + std::time::Duration::from_secs(360) });
                     closed.push((i, format!("{name} está reiniciando. O Elo reconecta sozinho quando ele voltar.")));
+                } else if r.starts_with("senha incorreta") && v.password == self.settings.saved_password(&v.target_id).unwrap_or_default() {
+                    closed.push((i, format!("{name}: a senha salva no favorito não foi aceita. Se a senha fixa de lá mudou, atualize no lápis do cartão do favorito.")));
                 } else {
                     closed.push((i, format!("{name}: {r}")));
                 }
@@ -539,7 +547,9 @@ impl EloApp {
             }
             ui.add_space(10.0);
             theme::field_label(ui, "Senha (opcional)");
-            let r2 = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text("vazio = pedir permissão na tela").font(egui::FontId::proportional(14.5)).margin(Margin::symmetric(16, 6)).min_size(Vec2::new(0.0, 44.0)).align(Align2::LEFT_CENTER).desired_width(f32::INFINITY));
+            let saved = self.settings.saved_password(&elo_proto::ctrl::clean_id(&self.target)).is_some();
+            let hint = if saved { "usando a senha salva no favorito" } else { "vazio = pedir permissão na tela" };
+            let r2 = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).font(egui::FontId::proportional(14.5)).margin(Margin::symmetric(16, 6)).min_size(Vec2::new(0.0, 44.0)).align(Align2::LEFT_CENTER).desired_width(f32::INFINITY));
             let enter = (r.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.add_space(16.0);
             let busy = self.pending_connect.is_some();
@@ -579,8 +589,7 @@ impl EloApp {
             for chunk in list.chunks(cols) {
                 ui.columns(cols, |c| {
                     for (i, (id, name, sub_name, os, fav)) in chunk.iter().enumerate() {
-                        let renaming = self.renaming.as_mut().filter(|(rid, _)| rid == id).map(|(_, t)| t);
-                        tile(&mut c[i], p, id, name, sub_name, os, *fav, renaming, &mut out);
+                        tile(&mut c[i], p, id, name, sub_name, os, *fav, &mut out);
                     }
                 });
                 ui.add_space(10.0);
@@ -594,23 +603,17 @@ impl EloApp {
                 self.error("Sem conexão com o servidor do Elo.");
             }
         }
-        if let Some(id) = out.start_rename {
-            let cur = self.settings.favorite(&id).map(|f| f.alias.clone()).unwrap_or_default();
-            self.renaming = Some((id, cur));
-        }
-        if let Some((id, alias)) = out.renamed {
-            if let Some(f) = self.settings.favorites.iter_mut().find(|f| f.id == id) {
-                f.alias = alias;
-            }
-            self.renaming = None;
-            self.settings.save();
+        if let Some(id) = out.start_rename
+            && let Some(f) = self.settings.favorite(&id)
+        {
+            self.renaming = Some(crate::app::FavEdit { id, alias: f.alias.clone(), password: f.password.clone(), show: false, new: false });
         }
         if let Some(id) = out.star {
             if self.settings.favorite(&id).is_some() {
                 self.settings.favorites.retain(|f| f.id != id);
             } else if let Some(r) = self.settings.recent.iter().find(|r| r.id == id).cloned() {
-                self.settings.toggle_favorite(&r.id, &r.name, &r.os);
-                self.renaming = Some((id, String::new()));
+                self.settings.toggle_favorite(&r.id, &r.name, &r.os, "");
+                self.renaming = Some(crate::app::FavEdit { id, alias: String::new(), password: String::new(), show: false, new: true });
             }
             self.settings.save();
         }
@@ -836,6 +839,7 @@ impl EloApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.fav_editor(ctx);
         // Pedidos de acesso (sem senha).
         if let Some(a) = self.asks.first_mut() {
             let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
@@ -888,6 +892,60 @@ impl EloApp {
     }
 
     /// Painel do servidor embutido: online, sessões em andamento e histórico.
+    /// Editar favorito: nome dado aqui e senha do acesso não assistido de lá.
+    fn fav_editor(&mut self, ctx: &egui::Context) {
+        let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
+        let Some(e) = self.renaming.as_mut() else { return };
+        let Some(f) = self.settings.favorite(&e.id) else {
+            self.renaming = None;
+            return;
+        };
+        let reported = if f.name.is_empty() { pretty_id(&f.id) } else { format!("{} · {}", f.name, pretty_id(&f.id)) };
+        let (mut save, mut close) = (false, false);
+        egui::Modal::new(egui::Id::unique("favorito")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(22))).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.horizontal(|ui| {
+                icons::icon(ui, Icon::Star, 18.0, p.warning);
+                ui.label(RichText::new(if e.new { "Salvo nos favoritos" } else { "Editar favorito" }).font(theme::semibold(16.0)).color(p.text));
+            });
+            ui.label(RichText::new(reported).font(theme::mono(12.0)).color(p.muted));
+            ui.add_space(12.0);
+            theme::field_label(ui, "Nome");
+            let r = ui.add(egui::TextEdit::singleline(&mut e.alias).hint_text(if f.name.is_empty() { "Nome para este computador".to_string() } else { f.name.clone() }).desired_width(f32::INFINITY));
+            if e.new && r.ctx.memory(|m| m.focused().is_none()) {
+                r.request_focus();
+            }
+            ui.add_space(8.0);
+            theme::field_label(ui, "Senha do acesso não assistido");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut e.password).password(!e.show).hint_text("vazio = pedir permissão na tela").desired_width(ui.available_width() - 70.0));
+                if ui.selectable_label(e.show, if e.show { "Ocultar" } else { "Mostrar" }).clicked() {
+                    e.show = !e.show;
+                }
+            });
+            ui.add(egui::Label::new(RichText::new("A senha fixa configurada no outro computador. Com ela salva, o Elo conecta direto, sem ninguém precisar aceitar lá. Fica guardada só neste computador.").size(11.5).color(p.text2)).wrap());
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::primary(ui, None, "Salvar", None).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+                if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+            });
+        });
+        if save {
+            let e = self.renaming.take().expect("editando");
+            if let Some(f) = self.settings.favorites.iter_mut().find(|f| f.id == e.id) {
+                f.alias = e.alias.trim().to_string();
+                f.password = e.password;
+            }
+            self.settings.save();
+        } else if close {
+            self.renaming = None;
+        }
+    }
+
     fn server_panel(&mut self, ctx: &egui::Context) {
         let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
         // Atualiza a cada 2 s.
@@ -1575,7 +1633,6 @@ struct TileOut {
     wake: Option<String>,
     star: Option<String>,
     start_rename: Option<String>,
-    renamed: Option<(String, String)>,
 }
 
 /// Cor do avatar por sistema.
@@ -1589,7 +1646,7 @@ fn os_color(os: &str) -> Color32 {
 }
 
 /// Cartão de um computador: avatar, nome, ID e ações (estrela, renomear).
-fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os: &str, fav: bool, renaming: Option<&mut String>, out: &mut TileOut) {
+fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os: &str, fav: bool, out: &mut TileOut) {
     // O fundo clicável vem primeiro; os botões por cima recebem os próprios cliques.
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), Sense::click());
     let hovered = resp.hovered();
@@ -1602,26 +1659,15 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     // Espaço para até três botões à direita (ligar, renomear, estrela).
     let text_w = (rect.right() - 108.0 - text_left).max(40.0);
     let sub = if sub_name.is_empty() { format!("{} · {os}", pretty_id(id)) } else { format!("{sub_name} · {}", pretty_id(id)) };
-    match renaming {
-        Some(text) => {
-            let r = ui.put(egui::Rect::from_min_size(egui::pos2(text_left, rect.center().y - 14.0), Vec2::new(text_w, 28.0)), egui::TextEdit::singleline(text).hint_text("Nome para este computador"));
-            r.request_focus();
-            if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                out.renamed = Some((id.to_string(), text.trim().to_string()));
-            }
-        }
-        None => {
-            let one_line = |t: &str, font: egui::FontId, color: Color32| {
-                let mut job = egui::text::LayoutJob::simple_singleline(t.to_string(), font, color);
-                job.wrap = egui::text::TextWrapping { max_width: text_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-            let g1 = one_line(name, theme::semibold(13.5), p.text);
-            let g2 = one_line(&sub, theme::mono(11.0), p.muted);
-            painter.galley(egui::pos2(text_left, rect.center().y - 18.0), g1, p.text);
-            painter.galley(egui::pos2(text_left, rect.center().y + 3.0), g2, p.muted);
-        }
-    }
+    let one_line = |t: &str, font: egui::FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(t.to_string(), font, color);
+        job.wrap = egui::text::TextWrapping { max_width: text_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let g1 = one_line(name, theme::semibold(13.5), p.text);
+    let g2 = one_line(&sub, theme::mono(11.0), p.muted);
+    painter.galley(egui::pos2(text_left, rect.center().y - 18.0), g1, p.text);
+    painter.galley(egui::pos2(text_left, rect.center().y + 3.0), g2, p.muted);
     // Ações à direita.
     let star = egui::Rect::from_center_size(egui::pos2(rect.right() - 24.0, rect.center().y), Vec2::splat(28.0));
     let sr = ui.put(star, egui::Button::new("").frame(false)).on_hover_text(if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" });
@@ -1642,7 +1688,7 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     }
     if fav && (hovered || sr.hovered()) {
         let edit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(28.0));
-        let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text("Renomear");
+        let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text("Editar nome e senha");
         icons::paint(ui.painter(), edit.shrink(7.0), Icon::Edit, if er.hovered() { p.text } else { p.muted });
         if er.clicked() {
             out.start_rename = Some(id.to_string());

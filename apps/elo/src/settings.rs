@@ -15,6 +15,10 @@ pub struct Favorite {
     /// Nome que o próprio computador informa.
     pub name: String,
     pub os: String,
+    /// Senha fixa (acesso não assistido) do outro computador. Vazio = pedir
+    /// permissão na tela. Fica neste arquivo, que só o usuário lê (0600).
+    #[serde(default)]
+    pub password: String,
 }
 
 impl Favorite {
@@ -173,13 +177,30 @@ impl Settings {
     }
 
     /// Salva ou tira dos favoritos. Devolve se ficou salvo.
-    pub fn toggle_favorite(&mut self, id: &str, name: &str, os: &str) -> bool {
+    pub fn toggle_favorite(&mut self, id: &str, name: &str, os: &str, password: &str) -> bool {
         if self.favorite(id).is_some() {
             self.favorites.retain(|f| f.id != id);
             false
         } else {
-            self.favorites.push(Favorite { id: id.into(), alias: String::new(), name: name.into(), os: os.into() });
+            self.favorites.push(Favorite { id: id.into(), alias: String::new(), name: name.into(), os: os.into(), password: password.into() });
             true
+        }
+    }
+
+    /// Senha salva no favorito, se houver.
+    pub fn saved_password(&self, id: &str) -> Option<&str> {
+        self.favorite(id).map(|f| f.password.as_str()).filter(|p| !p.is_empty())
+    }
+
+    /// Atualiza a senha de um favorito que acabou de conectar com ela.
+    /// Devolve se mudou algo.
+    pub fn learn_password(&mut self, id: &str, password: &str) -> bool {
+        match self.favorites.iter_mut().find(|f| f.id == id) {
+            Some(f) if !password.is_empty() && f.password != password => {
+                f.password = password.into();
+                true
+            }
+            _ => false,
         }
     }
 

@@ -91,6 +91,16 @@ pub struct Reconnect {
     pub until: Instant,
 }
 
+/// Edição de um favorito: nome dado aqui e senha do acesso não assistido.
+pub struct FavEdit {
+    pub id: String,
+    pub alias: String,
+    pub password: String,
+    pub show: bool,
+    /// Acabou de entrar nos favoritos (o título muda).
+    pub new: bool,
+}
+
 /// Gerenciador de arquivos de uma sessão: pastas do computador acessado.
 #[derive(Default)]
 pub struct FilesPanel {
@@ -195,8 +205,8 @@ pub struct EloApp {
     pub start_minimized: bool,
     /// Sessão em tela cheia (esconde as barras do Elo).
     pub fullscreen: bool,
-    /// Favorito sendo renomeado: (ID, texto).
-    pub renaming: Option<(String, String)>,
+    /// Favorito sendo editado (nome e senha).
+    pub renaming: Option<FavEdit>,
     /// Ação pedida na barra da sessão (aplicada depois de desenhar).
     pub session_act: Option<crate::ui::SessAct>,
     pub updater: crate::update::Updater,
@@ -295,6 +305,8 @@ impl EloApp {
             self.error("Sem conexão com o servidor do Elo.");
             return;
         }
+        // Sem senha digitada: usa a salva no favorito.
+        let password = if password.is_empty() { self.settings.saved_password(&t).unwrap_or_default().to_string() } else { password };
         self.pending_connect = Some((t.clone(), password));
         let _ = self.control.tx.send(Command::Connect { target: t });
     }
@@ -613,6 +625,7 @@ impl EloApp {
         }
         // Sessões como visualizador.
         let mut notices = Vec::new();
+        let mut learned = Vec::new();
         for v in self.views.iter_mut() {
             for e in v.events.try_iter() {
                 match e {
@@ -628,6 +641,10 @@ impl EloApp {
                         }
                         v.monitors = monitors;
                         v.permissions = permissions;
+                        // Entrou com senha: ela está certa, guarda no favorito (se a de lá mudou).
+                        if !v.password.is_empty() {
+                            learned.push((v.target_id.clone(), v.password.clone()));
+                        }
                     }
                     ViewerEvent::Waiting => v.waiting = true,
                     ViewerEvent::Chat(t) => {
@@ -654,6 +671,9 @@ impl EloApp {
         }
         for t in notices {
             self.error(t);
+        }
+        if learned.iter().fold(false, |changed, (id, pw)| self.settings.learn_password(id, pw) | changed) {
+            self.settings.save();
         }
         // Reconexões: tenta de 10 em 10 s enquanto o computador reinicia.
         let now = Instant::now();
