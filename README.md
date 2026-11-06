@@ -30,7 +30,9 @@ sessão**, nem o próprio servidor.
 ## Recursos
 
 - **Controle remoto** de mouse e teclado, com vários monitores.
-- **Chat, área de transferência e arquivos** nos dois sentidos.
+- **Chat e área de transferência** nos dois sentidos.
+- **Gerenciador de arquivos**: navegue nas pastas do outro computador, baixe e
+  envie arquivos (ou arraste para a janela da sessão).
 - **Cifragem ponta a ponta**: SPAKE2 a partir da senha, depois ChaCha20-Poly1305.
 - **Código de verificação** de 6 dígitos nas duas telas, contra ataques no meio.
 - **Pedido de acesso**: sem senha, o outro lado aceita na tela e escolhe as permissões.
@@ -83,6 +85,13 @@ Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
 **Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
 configurações e ligue a opção na tela inicial. A conexão então entra sem
 ninguém do outro lado.
+
+**Arquivos:** na sessão, clique em **Arquivos** para ver as pastas do outro
+computador. Clique duplo abre a pasta ou baixa o arquivo; **Enviar para cá**
+manda arquivos deste computador para a pasta aberta. Também dá para arrastar
+arquivos para a janela. Os baixados vão para a pasta de recebidos
+(Configurações). Só funciona com a permissão "Transferir arquivos" ligada do
+outro lado.
 
 **Favoritos:** na sessão, clique na estrela. Na tela inicial, os favoritos
 podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.

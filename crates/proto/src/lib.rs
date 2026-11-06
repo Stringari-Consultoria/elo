@@ -15,7 +15,8 @@ pub mod frame;
 pub mod msg;
 pub mod secure;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// 2: gerenciador de arquivos (ListDir, DirListing, FileRequest, Notice).
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 21116;
 
 #[derive(Debug, thiserror::Error)]

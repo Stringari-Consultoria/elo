@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use elo_core::client::{self, Command, Control, Event};
 use elo_core::net::ServerCfg;
-use elo_core::session::{self, Handle, HostEvent, HostOptions, Remote, Transfer, ViewerEvent};
+use elo_core::session::{self, Handle, HostEvent, HostOptions, Listing, Remote, Transfer, ViewerEvent};
 use elo_proto::msg::{Monitor, Permissions};
 
 use crate::settings::{LocalServer, Settings};
@@ -82,6 +82,19 @@ pub struct ChatLine {
     pub text: String,
 }
 
+/// Gerenciador de arquivos de uma sessão: pastas do computador acessado.
+#[derive(Default)]
+pub struct FilesPanel {
+    pub open: bool,
+    pub listing: Option<Listing>,
+    /// Caminho na barra (editável).
+    pub path: String,
+    /// Nomes selecionados na pasta atual.
+    pub selected: Vec<String>,
+    pub hidden: bool,
+    pub loading: bool,
+}
+
 /// Sessão em que este computador acessa outro.
 pub struct ViewSession {
     pub target_id: String,
@@ -110,6 +123,8 @@ pub struct ViewSession {
     pub started: Instant,
     /// Último movimento do mouse local sobre a tela remota.
     pub last_move: Instant,
+    /// Gerenciador de arquivos (painel lateral).
+    pub files: FilesPanel,
 }
 
 /// Sessão em que este computador está sendo acessado.
@@ -266,6 +281,54 @@ impl EloApp {
 
     /// Aplica as configurações de servidor: reinicia o local se mudou e
     /// reconecta o cliente.
+    /// Arquivos arrastados para a janela durante uma sessão: envia para o
+    /// outro computador (para a pasta aberta no gerenciador, se houver).
+    pub fn drop_files(&mut self, ctx: &egui::Context, idx: usize, area: egui::Rect) {
+        let Some(v) = self.views.get_mut(idx) else { return };
+        let (hovering, dropped) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.clone()));
+        if hovering && v.connected {
+            let p = if self.settings.dark { stringari_ui::theme::DARK } else { stringari_ui::theme::LIGHT };
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("soltar-arquivos")));
+            painter.rect_filled(area, 0.0, egui::Color32::from_black_alpha(150));
+            let inner = area.shrink(24.0);
+            painter.rect_stroke(inner, egui::CornerRadius::same(16), egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+            let who = if v.target_name.is_empty() { elo_proto::ctrl::pretty_id(&v.target_id) } else { v.target_name.clone() };
+            let text = if !v.permissions.files {
+                "O outro lado não liberou a transferência de arquivos".to_string()
+            } else if let Some(l) = v.files.listing.as_ref().filter(|_| v.files.open) {
+                format!("Solte para enviar para {who}\n{}", l.path)
+            } else {
+                format!("Solte para enviar para {who}")
+            };
+            painter.text(inner.center(), egui::Align2::CENTER_CENTER, text, stringari_ui::theme::semibold(18.0), egui::Color32::WHITE);
+        }
+        if dropped.is_empty() || !v.connected {
+            return;
+        }
+        if !v.permissions.files {
+            self.error("O outro lado não liberou a transferência de arquivos.");
+            return;
+        }
+        let dir = v.files.listing.as_ref().filter(|_| v.files.open).map(|l| l.path.clone());
+        let mut n = 0;
+        for f in dropped {
+            let path = f.path().to_path_buf();
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            let c = match &dir {
+                Some(d) => session::Cmd::Upload(path, d.clone()),
+                None => session::Cmd::SendFile(path),
+            };
+            let _ = v.handle.cmd.send(c);
+            n += 1;
+        }
+        if n > 0 && !v.files.open {
+            // Mostra o progresso.
+            v.chat_open = true;
+        }
+    }
+
     pub fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
         self.fullscreen = on;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
@@ -386,6 +449,7 @@ impl EloApp {
                         mods: egui::Modifiers::NONE,
                         started: Instant::now(),
                         last_move: Instant::now(),
+                        files: FilesPanel::default(),
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();
@@ -438,6 +502,7 @@ impl EloApp {
             self.toast(t);
         }
         // Sessões como visualizador.
+        let mut notices = Vec::new();
         for v in self.views.iter_mut() {
             for e in v.events.try_iter() {
                 match e {
@@ -460,10 +525,25 @@ impl EloApp {
                         v.chat_open = true;
                     }
                     ViewerEvent::File(t) => upsert(&mut v.transfers, t),
-                    ViewerEvent::Permissions(p) => v.permissions = p,
+                    ViewerEvent::Permissions(p) => {
+                        v.permissions = p;
+                        if !p.files {
+                            v.files.open = false;
+                        }
+                    }
+                    ViewerEvent::Listing(l) => {
+                        v.files.path = l.path.clone();
+                        v.files.selected.clear();
+                        v.files.loading = false;
+                        v.files.listing = Some(l);
+                    }
+                    ViewerEvent::Notice(t) => notices.push(t),
                     ViewerEvent::Ended(r) => v.ended = Some(r),
                 }
             }
+        }
+        for t in notices {
+            self.error(t);
         }
         // Avisos expiram.
         self.toasts.retain(|t| t.at.elapsed().as_secs() < if t.error { 10 } else { 5 });

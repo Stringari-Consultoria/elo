@@ -102,7 +102,9 @@ pub enum Msg {
     SelectMonitor(u8),
     /// Pede quadro completo.
     Refresh,
-    FileOffer { id: u32, name: String, size: u64 },
+    /// `dir`: pasta de destino no anfitrião (gerenciador de arquivos); sem ela,
+    /// vai para a pasta de recebidos. O visualizador sempre usa a dele.
+    FileOffer { id: u32, name: String, size: u64, dir: Option<String> },
     FileAccept { id: u32 },
     FileChunk { id: u32, data: Vec<u8> },
     FileEnd { id: u32 },
@@ -111,4 +113,22 @@ pub enum Msg {
     Ping(u64),
     Pong(u64),
     Bye(String),
+    /// Visualizador pede o conteúdo de uma pasta do anfitrião ("" = pasta pessoal).
+    ListDir { path: String },
+    /// Resposta ao `ListDir`: caminho completo, pasta de cima e itens (ou erro).
+    DirListing { path: String, parent: Option<String>, entries: Vec<DirEntry>, error: Option<String> },
+    /// Visualizador pede um arquivo do anfitrião (chega como `FileOffer`).
+    FileRequest { path: String },
+    /// Aviso curto para mostrar ao outro lado (ex.: arquivo não encontrado).
+    Notice(String),
+}
+
+/// Item de uma pasta no gerenciador de arquivos.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    /// Segundos desde 1970 (0 = desconhecido).
+    pub modified: u64,
 }

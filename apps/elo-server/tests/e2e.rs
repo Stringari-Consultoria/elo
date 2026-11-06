@@ -106,9 +106,29 @@ fn session_through_relay() {
         // Arquivo do visualizador para o anfitrião.
         let f = dir.join("teste.txt");
         std::fs::write(&f, vec![b'x'; 500_000]).unwrap();
-        vh.cmd.send(session::Cmd::SendFile(f)).unwrap();
+        vh.cmd.send(session::Cmd::SendFile(f.clone())).unwrap();
         let Some(HostEvent::File(t)) = wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.finished)) else { panic!("arquivo não chegou") };
         assert_eq!(std::fs::metadata(t.path.unwrap()).unwrap().len(), 500_000);
+        // Gerenciador de arquivos: lista a pasta, baixa um arquivo e envia para uma subpasta.
+        let shared = dir.join("compartilhada");
+        std::fs::create_dir_all(shared.join("sub")).unwrap();
+        std::fs::write(shared.join("remoto.txt"), vec![b'r'; 1000]).unwrap();
+        vh.cmd.send(session::Cmd::ListDir(shared.to_string_lossy().into_owned())).unwrap();
+        let Some(ViewerEvent::Listing(l)) = wait(&vrx, 5, |e| matches!(e, ViewerEvent::Listing(_))) else { panic!("listagem não chegou") };
+        assert!(l.error.is_none(), "{:?}", l.error);
+        assert!(l.entries[0].dir && l.entries[0].name == "sub", "pastas primeiro: {:?}", l.entries);
+        assert!(l.entries.iter().any(|e| e.name == "remoto.txt" && e.size == 1000));
+        vh.cmd.send(session::Cmd::ListDir(shared.join("nao-existe").to_string_lossy().into_owned())).unwrap();
+        let Some(ViewerEvent::Listing(l)) = wait(&vrx, 5, |e| matches!(e, ViewerEvent::Listing(_))) else { panic!() };
+        assert!(l.error.is_some());
+        vh.cmd.send(session::Cmd::Download(shared.join("remoto.txt").to_string_lossy().into_owned())).unwrap();
+        let Some(ViewerEvent::File(t)) = wait(&vrx, 10, |e| matches!(e, ViewerEvent::File(t) if t.incoming && t.finished)) else { panic!("download não chegou") };
+        assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), vec![b'r'; 1000]);
+        vh.cmd.send(session::Cmd::Upload(f.clone(), shared.join("sub").to_string_lossy().into_owned())).unwrap();
+        let Some(HostEvent::File(t)) = wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.incoming && t.finished)) else { panic!("upload não chegou") };
+        let up = t.path.unwrap();
+        assert!(up.starts_with(shared.join("sub")), "{}", up.display());
+        assert_eq!(std::fs::metadata(&up).unwrap().len(), 500_000);
         vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::Ended(_))).is_some());
         let _ = hh;

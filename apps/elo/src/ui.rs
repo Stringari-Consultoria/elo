@@ -59,7 +59,12 @@ impl eframe::App for EloApp {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg).inner_margin(Margin::same(24))).show(ui, |ui| self.home(ui));
         } else {
             let idx = tab - 1;
-            if self.views[idx].chat_open {
+            if self.views[idx].files.open {
+                let downloads = self.settings.downloads.clone();
+                egui::Panel::right("arquivos").default_size(440.0).min_size(340.0).frame(egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::same(14))).show(ui, |ui| {
+                    files_panel(ui, &mut self.views[idx], &downloads);
+                });
+            } else if self.views[idx].chat_open {
                 egui::Panel::right("chat").default_size(300.0).frame(egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::same(10))).show(ui, |ui| {
                     let v = &mut self.views[idx];
                     let cmd = v.handle.cmd.clone();
@@ -68,7 +73,8 @@ impl eframe::App for EloApp {
                     });
                 });
             }
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(24))).show(ui, |ui| self.remote_view(ui, idx));
+            let central = egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(24))).show(ui, |ui| self.remote_view(ui, idx)).response.rect;
+            self.drop_files(&ctx, idx, central);
             match self.session_act.take() {
                 Some(SessAct::Fullscreen) => {
                     let on = !self.fullscreen;
@@ -253,62 +259,148 @@ impl EloApp {
 
     fn home(&mut self, ui: &mut egui::Ui) {
         let p = pal(ui);
-        let w = ui.available_width().min(980.0);
-        ui.vertical_centered(|ui| {
-            ui.set_max_width(w);
-            ui.columns(2, |cols| {
-                // Este computador.
-                card(&p).show(&mut cols[0], |ui| {
-                    ui.set_min_height(330.0);
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("ESTE COMPUTADOR").font(theme::semibold(11.0)).color(p.muted));
-                    ui.add_space(10.0);
-                    ui.label(RichText::new("Seu ID").size(12.5).color(p.text2));
-                    match &self.status {
-                        Status::Online(id) => {
-                            let id = id.clone();
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(pretty_id(&id)).font(theme::mono(30.0)).color(p.text));
-                                if theme::icon_button(ui, Icon::Copy, "Copiar ID", true).clicked() {
-                                    copy(ui, &pretty_id(&id));
-                                    self.toast("ID copiado");
-                                }
-                            });
-                        }
-                        Status::Connecting => {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(RichText::new("obtendo ID…").size(14.0).color(p.text2));
-                            });
-                        }
-                        Status::Offline(r) => {
-                            ui.label(RichText::new("—").font(theme::mono(30.0)).color(p.muted));
-                            ui.add(egui::Label::new(RichText::new(format!("Sem conexão com o servidor: {r}")).size(12.0).color(p.danger)).wrap());
-                        }
-                    }
-                    ui.add_space(12.0);
-                    ui.label(RichText::new("Senha temporária").size(12.5).color(p.text2));
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |outer| {
+            // Coluna central de até 1040 px (com folga para a barra de rolagem).
+            let full = outer.available_rect_before_wrap();
+            let w = (full.width() - 28.0).min(1040.0);
+            let x0 = full.center().x - w / 2.0;
+            let mut inner = outer.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(x0, full.top()), Vec2::new(w, f32::INFINITY))).layout(Layout::top_down(Align::Min)));
+            let ui = &mut inner;
+            {
+                ui.add_space(4.0);
+                // Cabeçalho.
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Acesso remoto").font(theme::semibold(22.0)).color(p.text));
+                        ui.label(RichText::new("Passe seu ID para receber ajuda, ou digite o ID de outro computador para acessá-lo.").size(13.0).color(p.text2));
+                    });
+                });
+                ui.add_space(18.0);
+                let gap = 16.0;
+                let col = (w - gap) / 2.0;
+                let top = ui.cursor().min.y;
+                let left_x = x0;
+                // Coluna da esquerda: destaque com o ID + acesso não assistido.
+                let mut left = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(left_x, top), Vec2::new(col, 1000.0))).layout(Layout::top_down(Align::Min)));
+                self.hero(&mut left, &p);
+                left.add_space(12.0);
+                self.unattended_card(&mut left, &p);
+                let left_bottom = left.min_rect().bottom();
+                // Coluna da direita: acessar outro computador.
+                let mut right = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(left_x + col + gap, top), Vec2::new(col, 1000.0))).layout(Layout::top_down(Align::Min)));
+                self.connect_card(&mut right, &p, left_bottom - top);
+                let bottom = left_bottom.max(right.min_rect().bottom());
+                ui.allocate_space(Vec2::new(w, bottom - top));
+                // Computadores salvos e recentes.
+                ui.add_space(26.0);
+                self.computers(ui, &p);
+                ui.add_space(22.0);
+                ui.horizontal(|ui| {
+                    let text = "O conteúdo das sessões é cifrado ponta a ponta. O servidor vê só IDs, nomes dos computadores, horários e volume de dados.";
+                    let tw = ui.painter().layout_no_wrap(text.into(), egui::FontId::proportional(11.5), p.muted).size().x + 20.0;
+                    ui.add_space(((w - tw) / 2.0).max(0.0));
+                    icons::icon(ui, Icon::Lock, 12.0, p.muted);
+                    ui.label(RichText::new(text).size(11.5).color(p.muted));
+                });
+                ui.add_space(12.0);
+            }
+            let h = inner.min_rect().height();
+            outer.allocate_space(Vec2::new(full.width(), h));
+        });
+    }
+
+    /// Cartão azul com o ID deste computador e a senha temporária.
+    fn hero(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let white = Color32::WHITE;
+        let soft = Color32::from_white_alpha(200);
+        let r = egui::Frame::new().fill(p.accent).corner_radius(CornerRadius::same(16)).inner_margin(Margin::same(22)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("SEU ID").font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let (t, c) = match &self.status {
+                        Status::Online(_) => ("Online", Color32::from_rgb(120, 240, 170)),
+                        Status::Connecting => ("Conectando", Color32::from_rgb(255, 214, 120)),
+                        Status::Offline(_) => ("Sem conexão", Color32::from_rgb(255, 160, 160)),
+                    };
+                    egui::Frame::new().fill(Color32::from_white_alpha(38)).corner_radius(CornerRadius::same(255)).inner_margin(Margin::symmetric(9, 3)).show(ui, |ui| {
+                        // Dentro do layout da direita para a esquerda: o primeiro fica à direita.
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 5.0;
+                            ui.label(RichText::new(t).font(theme::medium(11.5)).color(white));
+                            theme::dot(ui, c, 7.0);
+                        });
+                    });
+                });
+            });
+            ui.add_space(6.0);
+            match self.status.clone() {
+                Status::Online(id) => {
                     ui.horizontal(|ui| {
-                        let shown = if self.show_temp { self.temp_password.clone() } else { "••••••••".into() };
-                        ui.label(RichText::new(shown).font(theme::mono(20.0)).color(p.text));
-                        if theme::icon_button(ui, Icon::Eye, if self.show_temp { "Ocultar" } else { "Mostrar" }, true).clicked() {
-                            self.show_temp = !self.show_temp;
-                        }
-                        if theme::icon_button(ui, Icon::Copy, "Copiar senha", true).clicked() {
-                            copy(ui, &self.temp_password);
-                            self.toast("Senha copiada");
-                        }
-                        if theme::icon_button(ui, Icon::Refresh, "Gerar nova senha", true).clicked() {
-                            self.temp_password = elo_core::temp_password();
-                            self.toast("Nova senha temporária gerada (a anterior deixa de valer)");
+                        ui.label(RichText::new(pretty_id(&id)).font(theme::mono(40.0)).color(white));
+                        ui.add_space(4.0);
+                        if light_button(ui, Icon::Copy, "Copiar ID").clicked() {
+                            copy(ui, &pretty_id(&id));
+                            self.toast("ID copiado");
                         }
                     });
-                    ui.label(RichText::new("Passe o ID e a senha para quem vai ajudar você. Sem a senha, cada pedido precisa do seu aceite.").size(11.5).color(p.muted));
+                }
+                Status::Connecting => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().color(white).size(22.0));
+                        ui.label(RichText::new("obtendo ID…").size(16.0).color(soft));
+                    });
                     ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    let mut un = self.settings.unattended;
-                    if theme::switch(ui, &mut un, "Acesso não assistido (senha fixa)").changed() {
+                }
+                Status::Offline(r) => {
+                    ui.label(RichText::new("— — —").font(theme::mono(40.0)).color(Color32::from_white_alpha(120)));
+                    ui.add(egui::Label::new(RichText::new(format!("Sem conexão com o servidor: {r}")).size(12.0).color(white)).wrap());
+                }
+            }
+            ui.add_space(14.0);
+            ui.label(RichText::new("SENHA TEMPORÁRIA").font(theme::semibold(11.0)).extra_letter_spacing(0.8).color(soft));
+            ui.add_space(4.0);
+            egui::Frame::new().fill(Color32::from_black_alpha(46)).corner_radius(CornerRadius::same(10)).inner_margin(Margin { left: 14, right: 6, top: 4, bottom: 4 }).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let shown = if self.show_temp { self.temp_password.clone() } else { "••••••••".into() };
+                    ui.label(RichText::new(shown).font(theme::mono(19.0)).color(white));
+                    ui.add_space(10.0);
+                    if light_button(ui, Icon::Eye, if self.show_temp { "Ocultar" } else { "Mostrar" }).clicked() {
+                        self.show_temp = !self.show_temp;
+                    }
+                    if light_button(ui, Icon::Copy, "Copiar senha").clicked() {
+                        copy(ui, &self.temp_password);
+                        self.toast("Senha copiada");
+                    }
+                    if light_button(ui, Icon::Refresh, "Gerar nova senha").clicked() {
+                        self.temp_password = elo_core::temp_password();
+                        self.toast("Nova senha temporária gerada (a anterior deixa de valer)");
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.add(egui::Label::new(RichText::new("Passe o ID e a senha para quem vai ajudar. Sem a senha, cada pedido precisa do seu aceite.").size(12.0).color(soft)).wrap());
+        });
+        // Anéis decorativos à direita (longe dos cantos arredondados).
+        let rect = r.response.rect;
+        let painter = ui.painter().with_clip_rect(rect.shrink(1.0));
+        let c = egui::pos2(rect.right() + 40.0, rect.bottom() - rect.height() * 0.28);
+        for (rad, a) in [(rect.height() * 0.52, 9u8), (rect.height() * 0.32, 12u8)] {
+            painter.circle_stroke(c, rad, Stroke::new(14.0, Color32::from_white_alpha(a)));
+        }
+    }
+
+    fn unattended_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        card(p).inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let mut un = self.settings.unattended;
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Acesso não assistido").font(theme::semibold(13.5)).color(p.text));
+                    ui.label(RichText::new(if self.settings.unattended { "Ligado: a senha fixa entra sem ninguém aqui." } else { "Entrar com uma senha fixa, sem ninguém aqui." }).size(12.0).color(p.text2));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::switch(ui, &mut un, "").changed() {
                         if un && self.settings.permanent_password.len() < 8 {
                             self.show_settings = true;
                             self.toast("Defina uma senha fixa (8+ caracteres) nas configurações");
@@ -317,152 +409,117 @@ impl EloApp {
                             self.settings.save();
                         }
                     }
-                    ui.label(RichText::new(if self.settings.unattended { "Com a senha fixa, a conexão entra sem precisar de alguém aqui." } else { "Desligado: só a senha temporária ou o aceite na tela." }).size(11.5).color(p.muted));
-                });
-                // Acessar outro.
-                card(&p).show(&mut cols[1], |ui| {
-                    ui.set_min_height(330.0);
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("ACESSAR OUTRO COMPUTADOR").font(theme::semibold(11.0)).color(p.muted));
-                    ui.add_space(10.0);
-                    theme::field_label(ui, "ID do computador");
-                    let out = egui::TextEdit::singleline(&mut self.target).hint_text("123 456 789").font(theme::mono(20.0)).desired_width(f32::INFINITY).show(ui);
-                    let r = out.response;
-                    // Formata enquanto digita (e leva o cursor para o fim).
-                    if r.changed() {
-                        let d = elo_proto::ctrl::clean_id(&self.target);
-                        let f = pretty_id(&d.chars().take(9).collect::<String>());
-                        if f != self.target {
-                            self.target = f;
-                            let mut st = out.state;
-                            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(self.target.chars().count()))));
-                            st.store(ui.ctx(), r.id);
-                        }
-                    }
-                    ui.add_space(6.0);
-                    theme::field_label(ui, "Senha (opcional)");
-                    let r2 = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text("vazio = pedir permissão").desired_width(f32::INFINITY));
-                    let enter = (r.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.add_space(10.0);
-                    let busy = self.pending_connect.is_some();
-                    ui.horizontal(|ui| {
-                        let b = ui.add_enabled(!busy, egui::Button::new(RichText::new(if busy { "Conectando…" } else { "Conectar" }).color(p.on_accent).font(theme::semibold(13.0))).fill(p.accent).min_size(Vec2::new(140.0, 34.0)).corner_radius(CornerRadius::same(8)));
-                        if (b.clicked() || enter) && !busy {
-                            let (t, pw) = (self.target.clone(), self.password.clone());
-                            self.connect(t, pw);
-                        }
-                        if busy {
-                            ui.spinner();
-                        }
-                    });
-                    ui.add_space(14.0);
-                    // Favoritos e recentes: clique preenche o ID; clique duplo já conecta.
-                    let mut go: Option<(String, bool)> = None;
-                    let mut star: Option<(String, String, String)> = None;
-                    let mut start_rename: Option<String> = None;
-                    let mut renamed: Option<(String, String)> = None;
-                    let mut unfav: Option<String> = None;
-                    let row = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-                        egui::Frame::new().fill(p.panel).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| add(ui));
-                        });
-                        ui.add_space(4.0);
-                    };
-                    let pick = |r: egui::Response, id: &str, go: &mut Option<(String, bool)>| {
-                        let r = r.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                        if r.double_clicked() {
-                            *go = Some((id.to_string(), true));
-                        } else if r.clicked() {
-                            *go = Some((id.to_string(), false));
-                        }
-                    };
-                    if !self.settings.favorites.is_empty() {
-                        ui.label(RichText::new("Favoritos").size(12.0).color(p.text2));
-                        for f in &self.settings.favorites {
-                            let renaming = &mut self.renaming;
-                            row(ui, &mut |ui| {
-                                icons::icon(ui, Icon::Star, 15.0, p.accent);
-                                match renaming.as_mut().filter(|(id, _)| *id == f.id) {
-                                    Some((_, text)) => {
-                                        let r = ui.add(egui::TextEdit::singleline(text).hint_text(f.name.as_str()).desired_width(ui.available_width() - 40.0));
-                                        r.request_focus();
-                                        if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                            renamed = Some((f.id.clone(), text.trim().to_string()));
-                                        }
-                                    }
-                                    None => {
-                                        let r = ui.vertical(|ui| {
-                                            ui.label(RichText::new(f.label()).size(12.5).color(p.text));
-                                            let sub = if f.alias.trim().is_empty() || f.name.is_empty() { format!("{} · {}", pretty_id(&f.id), f.os) } else { format!("{} · {} · {}", f.name, pretty_id(&f.id), f.os) };
-                                            ui.label(RichText::new(sub).font(theme::mono(11.0)).color(p.muted));
-                                        });
-                                        pick(r.response, &f.id, &mut go);
-                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            if theme::icon_button(ui, Icon::Close, "Tirar dos favoritos", false).clicked() {
-                                                unfav = Some(f.id.clone());
-                                            }
-                                            if theme::icon_button(ui, Icon::Edit, "Renomear", false).clicked() {
-                                                start_rename = Some(f.id.clone());
-                                            }
-                                        });
-                                    }
-                                }
-                            });
-                        }
-                        ui.add_space(6.0);
-                    }
-                    let recent: Vec<_> = self.settings.recent.iter().filter(|r| self.settings.favorite(&r.id).is_none()).take(6).collect();
-                    if !recent.is_empty() {
-                        ui.label(RichText::new("Recentes").size(12.0).color(p.text2));
-                        for r in recent {
-                            row(ui, &mut |ui| {
-                                icons::icon(ui, Icon::Monitor, 15.0, p.text2);
-                                let resp = ui.vertical(|ui| {
-                                    ui.label(RichText::new(if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }).size(12.5).color(p.text));
-                                    ui.label(RichText::new(format!("{} · {}", pretty_id(&r.id), r.os)).font(theme::mono(11.0)).color(p.muted));
-                                });
-                                pick(resp.response, &r.id, &mut go);
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if theme::icon_button(ui, Icon::Star, "Salvar nos favoritos", false).clicked() {
-                                        star = Some((r.id.clone(), r.name.clone(), r.os.clone()));
-                                    }
-                                });
-                            });
-                        }
-                    }
-                    if let Some(id) = start_rename {
-                        let cur = self.settings.favorite(&id).map(|f| f.alias.clone()).unwrap_or_default();
-                        self.renaming = Some((id, cur));
-                    }
-                    if let Some((id, alias)) = renamed {
-                        if let Some(f) = self.settings.favorites.iter_mut().find(|f| f.id == id) {
-                            f.alias = alias;
-                        }
-                        self.renaming = None;
-                        self.settings.save();
-                    }
-                    if let Some(id) = unfav {
-                        self.settings.favorites.retain(|f| f.id != id);
-                        self.settings.save();
-                    }
-                    if let Some((id, name, os)) = star {
-                        self.settings.toggle_favorite(&id, &name, &os);
-                        self.settings.save();
-                        self.renaming = Some((id, String::new()));
-                    }
-                    if let Some((id, now)) = go {
-                        self.target = pretty_id(&id);
-                        if now {
-                            let pw = self.password.clone();
-                            self.connect(id, pw);
-                        }
-                    }
                 });
             });
-            ui.add_space(16.0);
-            ui.label(RichText::new("O conteúdo das sessões é cifrado ponta a ponta. O servidor do Elo vê só IDs, nomes dos computadores, horários e volume de dados.").size(11.5).color(p.muted));
         });
+    }
+
+    /// Cartão "Acessar outro computador". `min_h`: altura da coluna ao lado.
+    fn connect_card(&mut self, ui: &mut egui::Ui, p: &Palette, min_h: f32) {
+        card(p).corner_radius(CornerRadius::same(16)).inner_margin(Margin::same(22)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(min_h - 44.0);
+            ui.label(RichText::new("Acessar outro computador").font(theme::semibold(16.0)).color(p.text));
+            ui.label(RichText::new("Digite o ID que a outra pessoa passou.").size(12.5).color(p.text2));
+            ui.add_space(16.0);
+            theme::field_label(ui, "ID do computador");
+            let out = egui::TextEdit::singleline(&mut self.target)
+                .hint_text(RichText::new("123 456 789").font(theme::mono(28.0)).color(theme::alpha(p.muted, 0.6)))
+                .font(theme::mono(28.0))
+                .margin(Margin::symmetric(16, 8))
+                .min_size(Vec2::new(0.0, 64.0))
+                .align(Align2::LEFT_CENTER)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+            let r = out.response;
+            // Formata enquanto digita (e leva o cursor para o fim).
+            if r.changed() {
+                let d = elo_proto::ctrl::clean_id(&self.target);
+                let f = pretty_id(&d.chars().take(9).collect::<String>());
+                if f != self.target {
+                    self.target = f;
+                    let mut st = out.state;
+                    st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(self.target.chars().count()))));
+                    st.store(ui.ctx(), r.id);
+                }
+            }
+            ui.add_space(10.0);
+            theme::field_label(ui, "Senha (opcional)");
+            let r2 = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text("vazio = pedir permissão na tela").font(egui::FontId::proportional(14.5)).margin(Margin::symmetric(16, 6)).min_size(Vec2::new(0.0, 44.0)).align(Align2::LEFT_CENTER).desired_width(f32::INFINITY));
+            let enter = (r.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(16.0);
+            let busy = self.pending_connect.is_some();
+            let b = big_button(ui, p, if busy { "Conectando…" } else { "Conectar" }, !busy);
+            if (b.clicked() || enter) && !busy {
+                let (t, pw) = (self.target.clone(), self.password.clone());
+                self.connect(t, pw);
+            }
+        });
+    }
+
+    /// Favoritos e recentes em cartões. Clique preenche o ID; clique duplo conecta.
+    fn computers(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let favs: Vec<(String, String, String, String, bool)> = self.settings.favorites.iter().map(|f| (f.id.clone(), f.label(), if f.alias.trim().is_empty() || f.name.is_empty() { String::new() } else { f.name.clone() }, f.os.clone(), true)).collect();
+        let recent: Vec<(String, String, String, String, bool)> = self
+            .settings
+            .recent
+            .iter()
+            .filter(|r| self.settings.favorite(&r.id).is_none())
+            .take(6)
+            .map(|r| (r.id.clone(), if r.name.is_empty() { pretty_id(&r.id) } else { r.name.clone() }, String::new(), r.os.clone(), false))
+            .collect();
+        if favs.is_empty() && recent.is_empty() {
+            return;
+        }
+        let mut out = TileOut::default();
+        let cols = if ui.available_width() > 780.0 { 3 } else { 2 };
+        for (title, list) in [("Favoritos", favs), ("Recentes", recent)] {
+            if list.is_empty() {
+                continue;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(title).font(theme::semibold(14.0)).color(p.text));
+                ui.label(RichText::new(list.len().to_string()).size(12.0).color(p.muted));
+            });
+            ui.add_space(8.0);
+            for chunk in list.chunks(cols) {
+                ui.columns(cols, |c| {
+                    for (i, (id, name, sub_name, os, fav)) in chunk.iter().enumerate() {
+                        let renaming = self.renaming.as_mut().filter(|(rid, _)| rid == id).map(|(_, t)| t);
+                        tile(&mut c[i], p, id, name, sub_name, os, *fav, renaming, &mut out);
+                    }
+                });
+                ui.add_space(10.0);
+            }
+            ui.add_space(8.0);
+        }
+        if let Some(id) = out.start_rename {
+            let cur = self.settings.favorite(&id).map(|f| f.alias.clone()).unwrap_or_default();
+            self.renaming = Some((id, cur));
+        }
+        if let Some((id, alias)) = out.renamed {
+            if let Some(f) = self.settings.favorites.iter_mut().find(|f| f.id == id) {
+                f.alias = alias;
+            }
+            self.renaming = None;
+            self.settings.save();
+        }
+        if let Some(id) = out.star {
+            if self.settings.favorite(&id).is_some() {
+                self.settings.favorites.retain(|f| f.id != id);
+            } else if let Some(r) = self.settings.recent.iter().find(|r| r.id == id).cloned() {
+                self.settings.toggle_favorite(&r.id, &r.name, &r.os);
+                self.renaming = Some((id, String::new()));
+            }
+            self.settings.save();
+        }
+        if let Some((id, now)) = out.go {
+            self.target = pretty_id(&id);
+            if now {
+                let pw = self.password.clone();
+                self.connect(id, pw);
+            }
+        }
     }
 
     fn remote_view(&mut self, ui: &mut egui::Ui, idx: usize) {
@@ -954,6 +1011,172 @@ fn docker_gateways() -> Vec<String> {
     v
 }
 
+/// Abre um arquivo ou pasta no programa padrão do sistema.
+pub(crate) fn open_path(p: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(p).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(p).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(p).spawn();
+}
+
+/// Junta pasta e nome no formato do computador remoto (\ no Windows, / nos outros).
+fn remote_join(dir: &str, name: &str) -> String {
+    let sep = if dir.contains('\\') && !dir.contains('/') { '\\' } else { '/' };
+    if dir.ends_with(['/', '\\']) { format!("{dir}{name}") } else { format!("{dir}{sep}{name}") }
+}
+
+/// Gerenciador de arquivos: pastas do computador acessado, baixar e enviar.
+fn files_panel(ui: &mut egui::Ui, v: &mut ViewSession, downloads: &std::path::Path) {
+    let p = pal(ui);
+    let cmd = v.handle.cmd.clone();
+    let mut go: Option<String> = None;
+    ui.horizontal(|ui| {
+        icons::icon(ui, Icon::FolderOpen, 16.0, p.accent);
+        let who = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+        ui.label(RichText::new(format!("Arquivos de {who}")).font(theme::semibold(14.0)).color(p.text));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if theme::icon_button(ui, Icon::Close, "Fechar", false).clicked() {
+                v.files.open = false;
+            }
+        });
+    });
+    ui.add_space(8.0);
+    // Barra de caminho.
+    let f = &mut v.files;
+    let parent = f.listing.as_ref().and_then(|l| l.parent.clone());
+    let current = f.listing.as_ref().map(|l| l.path.clone()).unwrap_or_default();
+    ui.horizontal(|ui| {
+        if ui.add_enabled_ui(parent.is_some(), |ui| theme::icon_button(ui, Icon::ArrowUp, "Pasta de cima", true)).inner.clicked() {
+            go = parent.clone();
+        }
+        if theme::icon_button(ui, Icon::Home, "Pasta pessoal", true).clicked() {
+            go = Some(String::new());
+        }
+        if theme::icon_button(ui, Icon::Refresh, "Atualizar", true).clicked() {
+            go = Some(current.clone());
+        }
+        let r = ui.add(egui::TextEdit::singleline(&mut f.path).font(theme::mono(12.0)).hint_text("caminho no outro computador").desired_width(ui.available_width()));
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            go = Some(f.path.clone());
+        }
+    });
+    ui.add_space(6.0);
+    if let Some(e) = f.listing.as_ref().and_then(|l| l.error.clone()) {
+        ui.add(egui::Label::new(RichText::new(e).size(12.0).color(p.danger)).wrap());
+    }
+    // Lista da pasta.
+    let footer = 230.0;
+    let list_h = (ui.available_height() - footer).max(120.0);
+    egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(4)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+            if f.loading && f.listing.is_none() {
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| ui.spinner());
+                return;
+            }
+            let Some(l) = &f.listing else { return };
+            let mut shown = 0;
+            for e in l.entries.iter().filter(|e| f.hidden || !e.name.starts_with('.')) {
+                shown += 1;
+                let sel = f.selected.contains(&e.name);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+                let fill = if sel { p.selected } else if resp.hovered() { p.hover } else { Color32::TRANSPARENT };
+                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+                let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(15.0));
+                icons::paint(ui.painter(), ic, if e.dir { Icon::Folder } else { Icon::File }, if e.dir { p.accent } else { p.text2 });
+                let size = if e.dir { String::new() } else { human_bytes(e.size) };
+                let sw = ui.painter().layout_no_wrap(size.clone(), theme::mono(11.0), p.muted).size().x;
+                let mut job = egui::text::LayoutJob::simple_singleline(e.name.clone(), egui::FontId::proportional(13.0), p.text);
+                job.wrap = egui::text::TextWrapping { max_width: (rect.width() - 52.0 - sw).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                let g = ui.fonts_mut(|fo| fo.layout_job(job));
+                ui.painter().galley(egui::pos2(rect.left() + 32.0, rect.center().y - g.size().y / 2.0), g, p.text);
+                ui.painter().text(egui::pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, size, theme::mono(11.0), p.muted);
+                if resp.double_clicked() {
+                    if e.dir {
+                        go = Some(remote_join(&l.path, &e.name));
+                    } else {
+                        let _ = cmd.send(Cmd::Download(remote_join(&l.path, &e.name)));
+                    }
+                } else if resp.clicked() && !e.dir {
+                    if sel {
+                        f.selected.retain(|n| n != &e.name);
+                    } else {
+                        f.selected.push(e.name.clone());
+                    }
+                }
+            }
+            if shown == 0 && l.error.is_none() {
+                ui.add_space(16.0);
+                ui.vertical_centered(|ui| ui.label(RichText::new("Pasta vazia").size(12.5).color(p.muted)));
+            }
+        });
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let n = f.selected.len();
+        let label = if n > 1 { format!("Baixar {n} arquivos") } else { "Baixar".to_string() };
+        if ui.add_enabled_ui(n > 0, |ui| theme::primary(ui, Some(Icon::Download), &label, None)).inner.on_disabled_hover_text("Selecione arquivos (clique). Clique duplo baixa direto.").clicked() {
+            for name in f.selected.drain(..) {
+                let _ = cmd.send(Cmd::Download(remote_join(&current, &name)));
+            }
+        }
+        if ui.add_enabled_ui(!current.is_empty(), |ui| theme::secondary(ui, Some(Icon::Upload), "Enviar para cá…")).inner.on_hover_text("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.").clicked()
+            && let Some(list) = rfd::FileDialog::new().pick_files()
+        {
+            for path in list {
+                let _ = cmd.send(Cmd::Upload(path, current.clone()));
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.checkbox(&mut f.hidden, "Ocultos");
+        });
+    });
+    if let Some(path) = go {
+        f.loading = true;
+        let _ = cmd.send(Cmd::ListDir(path));
+    }
+    // Transferências.
+    ui.add_space(10.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Transferências").font(theme::semibold(12.5)).color(p.text));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui.small_button("Abrir recebidos").on_hover_text(downloads.display().to_string()).clicked() {
+                let _ = std::fs::create_dir_all(downloads);
+                open_path(downloads);
+            }
+        });
+    });
+    egui::ScrollArea::vertical().id_salt("transferencias").auto_shrink([false, false]).show(ui, |ui| {
+        if v.transfers.is_empty() {
+            ui.label(RichText::new("Nada ainda. Arquivos baixados vão para a pasta de recebidos.").size(11.5).color(p.muted));
+        }
+        for t in v.transfers.iter().rev().take(20) {
+            let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
+            ui.horizontal(|ui| {
+                icons::icon(ui, if t.incoming { Icon::Download } else { Icon::Upload }, 13.0, if t.finished { p.success } else { p.text2 });
+                let status = if t.finished { "concluído".to_string() } else { format!("{:.0}% de {}", pct * 100.0, human_bytes(t.total)) };
+                ui.add(egui::Label::new(RichText::new(&t.name).size(12.0).color(p.text)).truncate());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if t.finished && t.incoming
+                        && let Some(path) = &t.path
+                        && ui.small_button("Abrir").clicked()
+                    {
+                        open_path(path);
+                    }
+                    ui.label(RichText::new(status).size(11.0).color(p.muted));
+                });
+            });
+            if !t.finished {
+                ui.add(egui::ProgressBar::new(pct).desired_height(4.0));
+            }
+        }
+    });
+}
+
 fn chat_panel(ui: &mut egui::Ui, chat: &mut Vec<ChatLine>, input: &mut String, transfers: &[elo_core::session::Transfer], mut send: impl FnMut(String)) {
     let p = pal(ui);
     ui.label(RichText::new("Chat").font(theme::semibold(13.0)).color(p.text));
@@ -995,6 +1218,108 @@ fn session_info(ui: &mut egui::Ui, p: &Palette, v: &ViewSession) {
     ui.label(RichText::new(format!("{} min · {fps} qps · {}", v.started.elapsed().as_secs() / 60, human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed)))).size(11.5).color(p.muted)).on_hover_text("Duração · quadros por segundo · dados recebidos");
 }
 
+/// Botão principal largo (toda a largura), com o texto centralizado.
+fn big_button(ui: &mut egui::Ui, p: &Palette, text: &str, enabled: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), if enabled { Sense::click() } else { Sense::hover() });
+    let fill = if !enabled {
+        theme::alpha(p.accent, 0.5)
+    } else if resp.is_pointer_button_down_on() {
+        p.accent_pressed
+    } else if resp.hovered() {
+        p.accent_hover
+    } else {
+        p.accent
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, theme::semibold(14.0), p.on_accent);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// Botão de ícone claro, para usar sobre o fundo azul.
+fn light_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_white_alpha(40));
+    }
+    icons::paint(ui.painter(), rect.shrink(7.5), icon, Color32::WHITE);
+    resp.on_hover_text(label).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// O que aconteceu nos cartões de computadores.
+#[derive(Default)]
+struct TileOut {
+    go: Option<(String, bool)>,
+    star: Option<String>,
+    start_rename: Option<String>,
+    renamed: Option<(String, String)>,
+}
+
+/// Cor do avatar por sistema.
+fn os_color(os: &str) -> Color32 {
+    match os {
+        "macOS" => Color32::from_rgb(110, 110, 120),
+        "Windows" => Color32::from_rgb(14, 140, 233),
+        "Linux" => Color32::from_rgb(226, 150, 30),
+        _ => Color32::from_rgb(120, 130, 150),
+    }
+}
+
+/// Cartão de um computador: avatar, nome, ID e ações (estrela, renomear).
+fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os: &str, fav: bool, renaming: Option<&mut String>, out: &mut TileOut) {
+    // O fundo clicável vem primeiro; os botões por cima recebem os próprios cliques.
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), Sense::click());
+    let hovered = resp.hovered();
+    let painter = ui.painter();
+    painter.rect(rect, CornerRadius::same(12), if hovered { p.hover } else { p.surface }, Stroke::new(1.0, if hovered { theme::alpha(p.accent, 0.55) } else { p.border }), egui::StrokeKind::Inside);
+    let av = egui::pos2(rect.left() + 32.0, rect.center().y);
+    painter.circle_filled(av, 19.0, os_color(os));
+    icons::paint(painter, egui::Rect::from_center_size(av, Vec2::splat(20.0)), Icon::Monitor, Color32::WHITE);
+    let text_left = rect.left() + 62.0;
+    let text_w = (rect.right() - 74.0 - text_left).max(40.0);
+    let sub = if sub_name.is_empty() { format!("{} · {os}", pretty_id(id)) } else { format!("{sub_name} · {}", pretty_id(id)) };
+    match renaming {
+        Some(text) => {
+            let r = ui.put(egui::Rect::from_min_size(egui::pos2(text_left, rect.center().y - 14.0), Vec2::new(text_w, 28.0)), egui::TextEdit::singleline(text).hint_text("Nome para este computador"));
+            r.request_focus();
+            if r.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                out.renamed = Some((id.to_string(), text.trim().to_string()));
+            }
+        }
+        None => {
+            let one_line = |t: &str, font: egui::FontId, color: Color32| {
+                let mut job = egui::text::LayoutJob::simple_singleline(t.to_string(), font, color);
+                job.wrap = egui::text::TextWrapping { max_width: text_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+            let g1 = one_line(name, theme::semibold(13.5), p.text);
+            let g2 = one_line(&sub, theme::mono(11.0), p.muted);
+            painter.galley(egui::pos2(text_left, rect.center().y - 18.0), g1, p.text);
+            painter.galley(egui::pos2(text_left, rect.center().y + 3.0), g2, p.muted);
+        }
+    }
+    // Ações à direita.
+    let star = egui::Rect::from_center_size(egui::pos2(rect.right() - 24.0, rect.center().y), Vec2::splat(28.0));
+    let sr = ui.put(star, egui::Button::new("").frame(false)).on_hover_text(if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" });
+    icons::paint(ui.painter(), star.shrink(6.0), Icon::Star, if fav { p.warning } else if sr.hovered() { p.text } else { p.muted });
+    if sr.clicked() {
+        out.star = Some(id.to_string());
+    }
+    if fav && (hovered || sr.hovered()) {
+        let edit = egui::Rect::from_center_size(egui::pos2(rect.right() - 52.0, rect.center().y), Vec2::splat(28.0));
+        let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text("Renomear");
+        icons::paint(ui.painter(), edit.shrink(7.0), Icon::Edit, if er.hovered() { p.text } else { p.muted });
+        if er.clicked() {
+            out.start_rename = Some(id.to_string());
+        }
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.double_clicked() {
+        out.go = Some((id.to_string(), true));
+    } else if resp.clicked() {
+        out.go = Some((id.to_string(), false));
+    }
+}
+
 /// Ação da barra da sessão que mexe no app (fora da sessão).
 pub enum SessAct {
     Fullscreen,
@@ -1014,12 +1339,16 @@ fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: boo
     }
     if ui.selectable_label(v.chat_open, "Chat").clicked() {
         v.chat_open = !v.chat_open;
+        v.files.open = false;
     }
-    if ui.add_enabled(v.permissions.files, egui::Button::new("Enviar arquivo")).clicked()
-        && let Some(f) = rfd::FileDialog::new().pick_file()
-    {
-        let _ = v.handle.cmd.send(Cmd::SendFile(f));
-        v.chat_open = true;
+    let files = ui.add_enabled_ui(v.permissions.files, |ui| ui.selectable_label(v.files.open, "Arquivos")).inner;
+    if files.on_hover_text("Ver as pastas do outro computador, baixar e enviar arquivos (dá para arrastar arquivos para a janela)").on_disabled_hover_text("O outro lado não liberou a transferência de arquivos").clicked() {
+        v.files.open = !v.files.open;
+        v.chat_open = false;
+        if v.files.open && v.files.listing.is_none() {
+            v.files.loading = true;
+            let _ = v.handle.cmd.send(Cmd::ListDir(String::new()));
+        }
     }
     if ui.add_enabled(v.permissions.control, egui::Button::new("Ctrl+Alt+Del")).clicked() {
         let _ = v.handle.cmd.send(Cmd::SecureAttention);

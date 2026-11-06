@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use elo_proto::codec::{Decoder, Encoder};
 use elo_proto::ctrl::{FromServer, ToServer};
 use elo_proto::frame::{read_frame, write_frame};
-use elo_proto::msg::{Input, Monitor, Msg, Permissions};
+use elo_proto::msg::{DirEntry, Input, Monitor, Msg, Permissions};
 use elo_proto::secure::{AuthMode, Opener, Sealer, host_handshake, viewer_handshake};
 
 use crate::net::{Conn, Framer, ServerCfg, connect};
@@ -83,12 +83,16 @@ pub struct Transfer {
 }
 
 impl Files {
-    fn offer(&mut self, ch: &mut Chan, path: &Path) -> Result<Transfer, String> {
-        let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    fn offer(&mut self, ch: &mut Chan, path: &Path, dir: Option<String>) -> Result<Transfer, String> {
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        if meta.is_dir() {
+            return Err("pastas ainda não podem ser enviadas; envie os arquivos".into());
+        }
+        let size = meta.len();
         self.next += 1;
         let id = self.next;
         let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "arquivo".into());
-        ch.send(&Msg::FileOffer { id, name: name.clone(), size })?;
+        ch.send(&Msg::FileOffer { id, name: name.clone(), size, dir })?;
         self.offered.push((id, path.to_path_buf(), size));
         Ok(Transfer { id, name, done: 0, total: size, incoming: false, finished: false, path: Some(path.to_path_buf()) })
     }
@@ -157,6 +161,40 @@ impl Files {
     }
 }
 
+/// Pasta pessoal do usuário.
+fn home_dir() -> PathBuf {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }))
+}
+
+/// Lista uma pasta do anfitrião para o gerenciador de arquivos.
+fn list_dir(path: &str) -> Msg {
+    const MAX: usize = 10_000;
+    let p = if path.trim().is_empty() { home_dir() } else { PathBuf::from(path.trim()) };
+    let p = std::fs::canonicalize(&p).unwrap_or(p);
+    // No Windows, canonicalize devolve "\\?\C:\..."; mostra o caminho comum.
+    let shown = p.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let parent = Path::new(&shown).parent().map(|x| x.to_string_lossy().into_owned());
+    let rd = match std::fs::read_dir(&p) {
+        Ok(rd) => rd,
+        Err(e) => return Msg::DirListing { path: shown, parent, entries: Vec::new(), error: Some(e.to_string()) },
+    };
+    let mut entries: Vec<DirEntry> = rd
+        .filter_map(|e| e.ok())
+        .take(MAX)
+        .map(|e| {
+            // Segue links simbólicos (pasta que aponta para pasta).
+            let meta = std::fs::metadata(e.path()).or_else(|_| e.metadata());
+            let (dir, size, modified) = match meta {
+                Ok(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)),
+                Err(_) => (false, 0, 0),
+            };
+            DirEntry { name: e.file_name().to_string_lossy().into_owned(), dir, size, modified }
+        })
+        .collect();
+    entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Msg::DirListing { path: shown, parent, entries, error: None }
+}
+
 // ── anfitrião ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -192,6 +230,11 @@ pub enum Cmd {
     Input(Input),
     Chat(String),
     SendFile(PathBuf),
+    /// Gerenciador de arquivos (visualizador): listar pasta do anfitrião,
+    /// baixar um arquivo de lá e enviar um arquivo para uma pasta de lá.
+    ListDir(String),
+    Download(String),
+    Upload(PathBuf, String),
     Quality { jpeg: u8, fps: u8 },
     Monitor(u8),
     Refresh,
@@ -315,9 +358,11 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     full = true;
                 }
                 Msg::Refresh => full = true,
-                Msg::FileOffer { id, name, size } => {
+                Msg::FileOffer { id, name, size, dir } => {
                     if perms.files {
-                        match files.start_incoming(&opt.downloads, id, &name, size) {
+                        // Pasta escolhida no gerenciador (se existir); senão, a de recebidos.
+                        let target = dir.map(PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(|| opt.downloads.clone());
+                        match files.start_incoming(&target, id, &name, size) {
                             Ok(_) => ch.send(&Msg::FileAccept { id })?,
                             Err(_) => ch.send(&Msg::FileCancel { id })?,
                         }
@@ -336,6 +381,22 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         let _ = ev.send(HostEvent::File(t));
                     }
                 }
+                Msg::ListDir { path } => {
+                    let reply = if perms.files { list_dir(&path) } else { Msg::DirListing { path, parent: None, entries: Vec::new(), error: Some("o outro lado não liberou a transferência de arquivos".into()) } };
+                    ch.send(&reply)?;
+                }
+                Msg::FileRequest { path } => {
+                    if !perms.files {
+                        ch.send(&Msg::Notice("o outro lado não liberou a transferência de arquivos".into()))?;
+                    } else {
+                        match files.offer(&mut ch, Path::new(&path), None) {
+                            Ok(t) => {
+                                let _ = ev.send(HostEvent::File(t));
+                            }
+                            Err(e) => ch.send(&Msg::Notice(format!("não foi possível baixar {}: {e}", Path::new(&path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(path.clone()))))?,
+                        }
+                    }
+                }
                 Msg::Ping(n) => ch.send(&Msg::Pong(n))?,
                 Msg::Bye(r) => return Err(r),
                 _ => {}
@@ -346,7 +407,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
             match cmd {
                 Cmd::Chat(t) => ch.send(&Msg::Chat(t))?,
                 Cmd::SendFile(p) => {
-                    if let Ok(t) = files.offer(&mut ch, &p) {
+                    if let Ok(t) = files.offer(&mut ch, &p, None) {
                         let _ = ev.send(HostEvent::File(t));
                     }
                 }
@@ -440,7 +501,20 @@ pub enum ViewerEvent {
     Chat(String),
     File(Transfer),
     Permissions(Permissions),
+    /// Conteúdo de uma pasta do anfitrião.
+    Listing(Listing),
+    /// Aviso do outro lado (ex.: não deu para baixar).
+    Notice(String),
     Ended(String),
+}
+
+/// Pasta do anfitrião, para o gerenciador de arquivos.
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    pub path: String,
+    pub parent: Option<String>,
+    pub entries: Vec<DirEntry>,
+    pub error: Option<String>,
 }
 
 pub fn viewer(cfg: ServerCfg, session: u64, secret: [u8; 16], password: String, my_id: String, my_name: String, downloads: PathBuf, remote: Arc<Mutex<Remote>>, events: Sender<ViewerEvent>) -> Handle {
@@ -543,7 +617,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                     perms = p;
                     let _ = ev.send(ViewerEvent::Permissions(p));
                 }
-                Msg::FileOffer { id, name, size } => match files.start_incoming(downloads, id, &name, size) {
+                Msg::FileOffer { id, name, size, .. } => match files.start_incoming(downloads, id, &name, size) {
                     Ok(_) => ch.send(&Msg::FileAccept { id })?,
                     Err(_) => ch.send(&Msg::FileCancel { id })?,
                 },
@@ -561,6 +635,12 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                         let _ = ev.send(ViewerEvent::File(t));
                     }
                 }
+                Msg::DirListing { path, parent, entries, error } => {
+                    let _ = ev.send(ViewerEvent::Listing(Listing { path, parent, entries, error }));
+                }
+                Msg::Notice(t) => {
+                    let _ = ev.send(ViewerEvent::Notice(t));
+                }
                 Msg::Pong(_) => {}
                 Msg::Ping(n) => ch.send(&Msg::Pong(n))?,
                 Msg::Bye(r) => return Err(r),
@@ -576,7 +656,17 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 }
                 Cmd::SecureAttention => ch.send(&Msg::Input(Input::SecureAttention))?,
                 Cmd::Chat(t) => ch.send(&Msg::Chat(t))?,
-                Cmd::SendFile(p) => match files.offer(&mut ch, &p) {
+                Cmd::ListDir(path) => ch.send(&Msg::ListDir { path })?,
+                Cmd::Download(path) => ch.send(&Msg::FileRequest { path })?,
+                Cmd::Upload(p, dir) => match files.offer(&mut ch, &p, Some(dir)) {
+                    Ok(t) => {
+                        let _ = ev.send(ViewerEvent::File(t));
+                    }
+                    Err(e) => {
+                        let _ = ev.send(ViewerEvent::Notice(format!("não foi possível enviar: {e}")));
+                    }
+                },
+                Cmd::SendFile(p) => match files.offer(&mut ch, &p, None) {
                     Ok(t) => {
                         let _ = ev.send(ViewerEvent::File(t));
                     }
