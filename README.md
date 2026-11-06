@@ -43,6 +43,7 @@ sessão**, nem o próprio servidor.
 - **Assistente na primeira abertura**: escolha entre ser o servidor ou conectar a um, com teste.
 - **Favoritos** com nome personalizado, **tela cheia** e **iniciar com o computador**.
 - **Atualização automática**, com pacotes assinados e conferidos antes de instalar.
+- **Wake-on-LAN**: liga um computador desligado da lista de favoritos ou recentes.
 - **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
 - **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
 
@@ -106,6 +107,14 @@ podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
 **Iniciar com o computador:** ligue em Configurações (ou no assistente). O Elo
 abre na bandeja ao entrar no sistema, e o computador continua acessível depois
 de reiniciar.
+
+**Ligar um computador (Wake-on-LAN):** passe o mouse num cartão de favorito ou
+recente e clique no botão de ligar. O servidor manda o "pacote mágico" na rede
+dele e pede o mesmo aos Elos online na rede do computador desligado (mesmo IP
+público). Requisitos: o computador precisa ter aberto a versão nova do Elo ao
+menos uma vez (para o servidor conhecer o endereço da placa de rede), o
+Wake-on-LAN ligado na BIOS/placa e, em geral, cabo de rede; e alguém (o
+servidor ou outro Elo) precisa estar ligado na mesma rede.
 
 **Reiniciar e reconectar:** na sessão, "Reiniciar" reinicia o outro
 computador (com a permissão de controle). O Elo tenta reconectar sozinho por

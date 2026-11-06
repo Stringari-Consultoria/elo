@@ -34,6 +34,11 @@ pub fn os_name() -> String {
     }
 }
 
+/// Endereço da placa de rede principal ("aa:bb:cc:dd:ee:ff"), para o Wake-on-LAN.
+pub fn mac_address() -> String {
+    mac_address::get_mac_address().ok().flatten().map(|m| m.to_string().to_lowercase()).unwrap_or_default()
+}
+
 /// Reinicia o computador (pedido de quem acessa, com permissão de controle).
 pub fn restart_computer() -> Result<(), String> {
     let mut cmd = if cfg!(target_os = "windows") {

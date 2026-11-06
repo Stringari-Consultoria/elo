@@ -88,6 +88,14 @@ impl Limits {
     }
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Known {
+    name: String,
+    os: String,
+    mac: String,
+    ip: String,
+}
+
 struct State {
     data: PathBuf,
     /// hash(token) → ID
@@ -98,8 +106,9 @@ struct State {
     limits: Mutex<Limits>,
     /// Sessões no relay agora: id → (anfitrião, visualizador, início).
     active: Mutex<HashMap<u64, (String, String, u64)>>,
-    /// Último nome e sistema vistos de cada ID (só em memória, para o painel).
-    names: Mutex<HashMap<String, (String, String)>>,
+    /// Último nome, sistema, MAC e IP de cada ID (`dispositivos.json`): painel
+    /// e Wake-on-LAN.
+    known: Mutex<HashMap<String, Known>>,
     /// Dias que o histórico de sessões é guardado (0 = para sempre).
     retention_days: std::sync::atomic::AtomicU32,
 }
@@ -111,6 +120,16 @@ impl State {
             let tmp = self.data.join("ids.json.tmp");
             if tokio::fs::write(&tmp, j).await.is_ok() {
                 let _ = tokio::fs::rename(&tmp, self.data.join("ids.json")).await;
+            }
+        }
+    }
+
+    async fn save_known(&self) {
+        let k = self.known.lock().await;
+        if let Ok(j) = serde_json::to_vec_pretty(&*k) {
+            let tmp = self.data.join("dispositivos.json.tmp");
+            if tokio::fs::write(&tmp, j).await.is_ok() {
+                let _ = tokio::fs::rename(&tmp, self.data.join("dispositivos.json")).await;
             }
         }
     }
@@ -146,7 +165,7 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 32], name: String, os: String, version: u32) {
+async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 32], name: String, os: String, version: u32, mac: String) {
     let (mut rd, mut wr) = tokio::io::split(s);
     if version != elo_proto::PROTOCOL_VERSION {
         let _ = write_msg(&mut wr, &FromServer::Error { code: ErrorCode::Version, message: "atualize o Elo para conectar".into() }).await;
@@ -180,7 +199,19 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     {
         let mut on = state.online.lock().await;
         on.entry(id.clone()).or_default().push(Device { tx: tx.clone(), name: name.clone(), os: os.clone(), ip: peer.ip().to_string(), since: now_secs() });
-        state.names.lock().await.insert(id.clone(), (name.clone(), os.clone()));
+        let k = Known { name: name.clone(), os: os.clone(), mac: if elo_proto::ctrl::magic_packet(&mac).is_some() { mac.clone() } else { String::new() }, ip: peer.ip().to_string() };
+        let changed = {
+            let mut known = state.known.lock().await;
+            let old = known.get(&id).map(|o| (o.name.clone(), o.os.clone(), o.mac.clone(), o.ip.clone()));
+            let new = (k.name.clone(), k.os.clone(), k.mac.clone(), k.ip.clone());
+            // Sem MAC agora (ex.: versão antiga) não apaga o que já se sabia.
+            let mac = if k.mac.is_empty() { old.as_ref().map(|o| o.2.clone()).unwrap_or_default() } else { k.mac.clone() };
+            known.insert(id.clone(), Known { mac, ..k });
+            old != Some(new)
+        };
+        if changed {
+            state.save_known().await;
+        }
     }
     eprintln!("[+] {id} ({name}, {os}) de {peer}");
     if write_msg(&mut wr, &FromServer::Welcome { id: id.clone() }).await.is_err() {
@@ -227,6 +258,37 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let _ = tx.send(FromServer::SessionReady { session, secret, target_name: host.name.clone(), target_os: host.os.clone() });
                 drop(on);
                 state.pending.lock().await.insert(session, Pending { secret, host_id: target, viewer_id: id.clone(), created: Instant::now(), waiting: None });
+            }
+            ToServer::Wake { target } => {
+                let target = elo_proto::ctrl::clean_id(&target);
+                if !state.limits.lock().await.allow(&format!("wake:{}", peer.ip()), 10) {
+                    let _ = tx.send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitos pedidos para ligar computadores; aguarde um minuto".into() });
+                    continue;
+                }
+                if state.online.lock().await.contains_key(&target) {
+                    let _ = tx.send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse computador já está ligado e com o Elo aberto".into() });
+                    continue;
+                }
+                let Some(k) = state.known.lock().await.get(&target).cloned().filter(|k| !k.mac.is_empty()) else {
+                    let _ = tx.send(FromServer::Error { code: ErrorCode::NotFound, message: "o servidor ainda não sabe o endereço da placa de rede desse computador (abra nele uma vez a versão nova do Elo)".into() });
+                    continue;
+                };
+                // O próprio servidor manda na rede dele (servidor embutido no escritório)...
+                let mac = k.mac.clone();
+                let _ = tokio::task::spawn_blocking(move || elo_proto::ctrl::wake_on_lan(&mac)).await;
+                // ...e os Elos online na mesma rede do alvo (mesmo IP público) também.
+                let mut relays = 0u32;
+                for (oid, devs) in state.online.lock().await.iter() {
+                    if let Some(d) = devs.last()
+                        && d.ip == k.ip
+                        && *oid != target
+                    {
+                        let _ = d.tx.send(FromServer::WakeRequest { mac: k.mac.clone() });
+                        relays += 1;
+                    }
+                }
+                eprintln!("[~] {id} pediu para ligar {target} ({relays} na rede dele)");
+                let _ = tx.send(FromServer::WakeSent { target, relays });
             }
             ToServer::Decline { session } => {
                 if let Some(p) = state.pending.lock().await.remove(&session)
@@ -454,7 +516,7 @@ async fn dispatch(state: Arc<State>, mut s: BoxStream, peer: SocketAddr) {
     let Ok(Ok(first)) = tokio::time::timeout(Duration::from_secs(15), read_frame(&mut s)).await else { return };
     let Ok(msg) = postcard::from_bytes::<ToServer>(&first) else { return };
     match msg {
-        ToServer::Hello { token, name, os, version } => control(state, s, peer, token, name, os, version).await,
+        ToServer::Hello { token, name, os, version, mac } => control(state, s, peer, token, name, os, version, mac).await,
         ToServer::Join { session, secret, host } => join(state, s, session, secret, host).await,
         _ => {
             let _ = write_msg(&mut s, &FromServer::Error { code: ErrorCode::BadRequest, message: "comece com Hello ou Join".into() }).await;
@@ -568,6 +630,7 @@ impl Server {
         let listener = TcpListener::bind(&cfg.listen).await.map_err(|e| std::io::Error::new(e.kind(), format!("porta {}: {e}", cfg.listen)))?;
         let local_addr = listener.local_addr()?;
         prune_log(&cfg.data, cfg.retention_days);
+        let known: HashMap<String, Known> = std::fs::read(cfg.data.join("dispositivos.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let state = Arc::new(State {
             data: cfg.data,
             ids: Mutex::new(ids),
@@ -575,7 +638,7 @@ impl Server {
             pending: Mutex::new(HashMap::new()),
             limits: Mutex::new(Limits::default()),
             active: Mutex::new(HashMap::new()),
-            names: Mutex::new(HashMap::new()),
+            known: Mutex::new(known),
             retention_days: std::sync::atomic::AtomicU32::new(cfg.retention_days),
         });
         Ok(Server { listener, tls, state, local_addr, fingerprint })
@@ -750,8 +813,8 @@ impl Background {
     /// andamento e as últimas do histórico. Não chame de dentro do tokio.
     pub fn stats(&self) -> Stats {
         let st = &self.state;
-        let names = st.names.blocking_lock().clone();
-        let name = |id: &str| names.get(id).map(|x| x.0.clone()).unwrap_or_default();
+        let names = st.known.blocking_lock().clone();
+        let name = |id: &str| names.get(id).map(|x| x.name.clone()).unwrap_or_default();
         let mut online: Vec<OnlineDevice> = st.online.blocking_lock().iter().filter_map(|(id, v)| v.last().map(|d| OnlineDevice { id: id.clone(), name: d.name.clone(), os: d.os.clone(), ip: d.ip.clone(), since: d.since })).collect();
         online.sort_by_key(|d| d.name.to_lowercase());
         let mut active: Vec<SessionInfo> = st.active.blocking_lock().values().map(|(h, v, start)| SessionInfo { host_id: h.clone(), host_name: name(h), viewer_id: v.clone(), viewer_name: name(v), start: *start, end: 0, bytes: 0 }).collect();

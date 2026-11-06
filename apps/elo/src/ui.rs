@@ -587,6 +587,13 @@ impl EloApp {
             }
             ui.add_space(8.0);
         }
+        if let Some(id) = out.wake {
+            if matches!(self.status, Status::Online(_)) {
+                let _ = self.control.tx.send(elo_core::client::Command::Wake { target: id });
+            } else {
+                self.error("Sem conexão com o servidor do Elo.");
+            }
+        }
         if let Some(id) = out.start_rename {
             let cur = self.settings.favorite(&id).map(|f| f.alias.clone()).unwrap_or_default();
             self.renaming = Some((id, cur));
@@ -1565,6 +1572,7 @@ fn light_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
 #[derive(Default)]
 struct TileOut {
     go: Option<(String, bool)>,
+    wake: Option<String>,
     star: Option<String>,
     start_rename: Option<String>,
     renamed: Option<(String, String)>,
@@ -1591,7 +1599,8 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     painter.circle_filled(av, 19.0, os_color(os));
     icons::paint(painter, egui::Rect::from_center_size(av, Vec2::splat(20.0)), Icon::Monitor, Color32::WHITE);
     let text_left = rect.left() + 62.0;
-    let text_w = (rect.right() - 74.0 - text_left).max(40.0);
+    // Espaço para até três botões à direita (ligar, renomear, estrela).
+    let text_w = (rect.right() - 108.0 - text_left).max(40.0);
     let sub = if sub_name.is_empty() { format!("{} · {os}", pretty_id(id)) } else { format!("{sub_name} · {}", pretty_id(id)) };
     match renaming {
         Some(text) => {
@@ -1620,8 +1629,19 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     if sr.clicked() {
         out.star = Some(id.to_string());
     }
+    // Ligar pelo Wake-on-LAN (aparece ao passar o mouse).
+    let mut x = rect.right() - 52.0;
+    if hovered || sr.hovered() {
+        let wr = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(28.0));
+        let w = ui.put(wr, egui::Button::new("").frame(false)).on_hover_text("Ligar este computador (Wake-on-LAN)");
+        icons::paint(ui.painter(), wr.shrink(7.0), Icon::Power, if w.hovered() { p.success } else { p.muted });
+        if w.clicked() {
+            out.wake = Some(id.to_string());
+        }
+        x -= 28.0;
+    }
     if fav && (hovered || sr.hovered()) {
-        let edit = egui::Rect::from_center_size(egui::pos2(rect.right() - 52.0, rect.center().y), Vec2::splat(28.0));
+        let edit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(28.0));
         let er = ui.put(edit, egui::Button::new("").frame(false)).on_hover_text("Renomear");
         icons::paint(ui.painter(), edit.shrink(7.0), Icon::Edit, if er.hovered() { p.text } else { p.muted });
         if er.clicked() {

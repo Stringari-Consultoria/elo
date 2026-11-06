@@ -298,3 +298,36 @@ fn session_log_retention() {
     drop(bg);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Wake-on-LAN: o servidor guarda o MAC de quem se apresentou e, quando
+/// alguém pede para ligar esse computador, repassa aos Elos da rede dele.
+#[test]
+fn wake_on_lan_relay() {
+    use elo_proto::ctrl::{FromServer, ToServer};
+    use elo_proto::frame::{read_frame, write_frame};
+    let dir = std::env::temp_dir().join(format!("elo-wol-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
+    let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
+    // O computador que vai ser desligado se apresenta com o MAC dele e sai.
+    let mut c = elo_core::net::connect(&cfg).unwrap();
+    let hello = ToServer::Hello { token: [12u8; 32], name: "Desligado".into(), os: "Linux".into(), version: elo_proto::PROTOCOL_VERSION, mac: "aa:bb:cc:dd:ee:ff".into() };
+    write_frame(&mut c, &postcard::to_stdvec(&hello).unwrap()).unwrap();
+    let FromServer::Welcome { id: off } = postcard::from_bytes(&read_frame(&mut c).unwrap()).unwrap() else { panic!() };
+    drop(c);
+    let saved = std::fs::read_to_string(dir.join("dispositivos.json")).unwrap();
+    assert!(saved.contains("aa:bb:cc:dd:ee:ff"), "{saved}");
+    // Quem pede está na mesma rede (127.0.0.1): conta como repassador.
+    let b = client::start(cfg.clone(), [13u8; 32], "Pede".into());
+    let Some(Event::Online { id: b_id }) = wait(&b.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("offline") };
+    std::thread::sleep(Duration::from_millis(300));
+    b.tx.send(client::Command::Wake { target: off.clone() }).unwrap();
+    let Some(Event::WakeSent { target, relays }) = wait(&b.rx, 10, |e| matches!(e, Event::WakeSent { .. } | Event::Error(_))) else { panic!("sem resposta ao pedido de ligar") };
+    assert_eq!(target, off);
+    assert!(relays >= 1, "nenhum Elo da rede repassou");
+    // Computador já ligado: erro claro.
+    b.tx.send(client::Command::Wake { target: b_id }).unwrap();
+    let Some(Event::Error(m)) = wait(&b.rx, 10, |e| matches!(e, Event::Error(_))) else { panic!() };
+    assert!(m.contains("já está ligado"), "{m}");
+    drop(bg);
+    let _ = std::fs::remove_dir_all(dir);
+}

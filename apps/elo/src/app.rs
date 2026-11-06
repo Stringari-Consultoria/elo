@@ -501,6 +501,10 @@ impl EloApp {
                         self.error(m);
                     }
                 }
+                Event::WakeSent { target, relays } => {
+                    let via = if relays == 0 { "pelo servidor".to_string() } else { format!("pelo servidor e por {relays} computador(es) da rede dele") };
+                    self.toast(format!("Pedido para ligar {} enviado {via}. Pode levar um minuto; o computador precisa ter o Wake-on-LAN ligado.", elo_proto::ctrl::pretty_id(&target)));
+                }
                 Event::Declined => {
                     self.pending_connect = None;
                     self.error("O outro computador recusou a conexão.");

@@ -18,12 +18,16 @@ pub enum Event {
     SessionReady { session: u64, secret: [u8; 16], target_name: String, target_os: String },
     Declined,
     Error(String),
+    /// Pedido de Wake-on-LAN enviado (`relays`: computadores da rede do alvo que mandaram).
+    WakeSent { target: String, relays: u32 },
 }
 
 #[derive(Debug, Clone)]
 pub enum Command {
     Connect { target: String },
     Decline { session: u64 },
+    /// Ligar um computador desligado (Wake-on-LAN).
+    Wake { target: String },
     /// Troca de servidor.
     Reconfigure(ServerCfg),
     Quit,
@@ -38,7 +42,7 @@ pub struct Control {
 /// este dispositivo (igual ao atual = é o mesmo servidor). Bloqueia até 15 s.
 pub fn probe(cfg: &ServerCfg, token: &[u8; 32], name: &str) -> Result<String, String> {
     let mut c = connect(cfg)?;
-    let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION };
+    let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION, mac: crate::platform::mac_address() };
     write_frame(&mut c, &postcard::to_stdvec(&hello).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     c.set_read_timeout(Some(Duration::from_secs(10)));
     let f = elo_proto::frame::read_frame(&mut c).map_err(|e| format!("sem resposta do servidor: {e}"))?;
@@ -97,7 +101,7 @@ fn run(mut cfg: ServerCfg, token: [u8; 32], name: String, rx: Receiver<Command>,
 /// Uma conexão. `Ok(Some(cfg))` = reconectar em outro servidor; `Ok(None)` = sair.
 fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>, tx: &Sender<Event>) -> Result<Option<ServerCfg>, String> {
     let mut c = connect(cfg)?;
-    let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION };
+    let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION, mac: crate::platform::mac_address() };
     write_frame(&mut c, &postcard::to_stdvec(&hello).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     c.set_read_timeout(Some(Duration::from_millis(100)));
     let mut fr = Framer::new();
@@ -111,6 +115,7 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>
                 Command::Reconfigure(n) => return Ok(Some(n)),
                 Command::Connect { target } => send(&mut c, &ToServer::Connect { target, from_name: name.to_string() })?,
                 Command::Decline { session } => send(&mut c, &ToServer::Decline { session })?,
+                Command::Wake { target } => send(&mut c, &ToServer::Wake { target })?,
             }
         }
         match fr.poll(&mut c) {
@@ -128,6 +133,12 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>
                         }
                         Event::Error(message)
                     }
+                    FromServer::WakeRequest { mac } => {
+                        // Estamos na rede do computador desligado: manda o pacote mágico.
+                        let _ = elo_proto::ctrl::wake_on_lan(&mac);
+                        continue;
+                    }
+                    FromServer::WakeSent { target, relays } => Event::WakeSent { target, relays },
                     FromServer::Pong | FromServer::Paired => continue,
                 };
                 let _ = tx.send(ev);
