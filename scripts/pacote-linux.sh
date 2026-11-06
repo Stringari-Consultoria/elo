@@ -44,7 +44,8 @@ mkdir -p "$DIST"
 PKG="$TMP/deb"
 mkdir -m 755 "$PKG"
 mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/usr/share/applications" "$PKG/usr/share/icons/hicolor/scalable/apps" "$PKG/usr/share/icons/hicolor/256x256/apps" "$PKG/usr/share/doc/elo"
-install -m 755 "$REL/elo" "$REL/elo-server" "$PKG/usr/bin/"
+# O servidor avulso tem pacote próprio (elo-server); o app traz o servidor embutido.
+install -m 755 "$REL/elo" "$PKG/usr/bin/"
 install -m 644 "$RAIZ/packaging/icons/elo.svg" "$PKG/usr/share/icons/hicolor/scalable/apps/$ID.svg"
 install -m 644 "$RAIZ/packaging/icons/elo-256.png" "$PKG/usr/share/icons/hicolor/256x256/apps/$ID.png"
 cat > "$PKG/usr/share/applications/$ID.desktop" <<DESKTOP
@@ -71,6 +72,7 @@ Maintainer: Gabriel Stringari <gabriel@gabrielstringari.com>
 Installed-Size: $TAM
 Depends: libc6 (>= $GLIBC), libgcc-s1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0, libegl1 | libvulkan1, libasound2t64 | libasound2
 Recommends: pipewire-bin | pulseaudio-utils
+Suggests: elo-server
 Homepage: https://github.com/Stringari-Consultoria/elo
 Description: Acesso remoto com cifragem ponta a ponta
  Um computador vê, ouve e controla a tela de outro, com chat, área de

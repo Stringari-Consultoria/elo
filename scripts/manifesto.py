@@ -22,6 +22,9 @@ def main() -> int:
     versao, pasta = sys.argv[1], sys.argv[2]
     assets = {}
     for nome in sorted(os.listdir(pasta)):
+        # Os pacotes do servidor avulso (elo-server*) não são do app.
+        if nome.lower().startswith("elo-server"):
+            continue
         for chave, fim in TIPOS:
             if nome.endswith(fim) and versao in nome:
                 caminho = os.path.join(pasta, nome)

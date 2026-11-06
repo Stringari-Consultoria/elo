@@ -1,0 +1,28 @@
+[Unit]
+Description=Servidor do Elo (acesso remoto)
+Documentation=https://github.com/Stringari-Consultoria/elo#servidor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/default/elo-server
+ExecStart=/usr/bin/elo-server $ELO_SERVER_ARGS
+# Usuário próprio e temporário; os dados ficam em /var/lib/elo-server.
+DynamicUser=yes
+StateDirectory=elo-server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

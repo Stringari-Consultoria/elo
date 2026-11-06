@@ -59,6 +59,7 @@ Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Con
 | macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
 | Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
 | Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
+| Só o servidor (máquina dedicada, VPS, Docker) | `elo-server…` | Veja [Servidor avulso](#3-servidor-avulso) |
 
 Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
 e passar para o `.deb`, rode antes `./instalar.sh --remover`, porque a cópia em
@@ -185,7 +186,59 @@ apagado depois do prazo configurado (90 dias por padrão; no servidor avulso,
 
 ### 3. Servidor avulso
 
-O mesmo servidor também roda sozinho, para hospedar numa máquina dedicada:
+Para hospedar o servidor numa máquina dedicada (VPS, servidor da empresa,
+Raspberry Pi), sem o app, use os pacotes `elo-server` da página de
+[Releases](https://github.com/Stringari-Consultoria/elo/releases):
+
+| Onde | Arquivo | Como instalar |
+|---|---|---|
+| Debian, Ubuntu (x86_64 ou ARM) | `elo-server_<versão>_amd64.deb` / `_arm64.deb` | `sudo apt install ./elo-server_<versão>_amd64.deb` |
+| Outras distros Linux | `elo-server-<versão>-linux-x86_64.tar.gz` / `-aarch64` | Extraia e rode `sudo ./instalar.sh` |
+| Docker (amd64, arm64) | `ghcr.io/stringari-consultoria/elo-server` | Veja abaixo |
+| Windows / Windows Server | `elo-server-<versão>-windows-x64.zip` | Extraia; o `LEIA-ME.txt` mostra como iniciar com o Windows |
+| macOS | `elo-server-<versão>-macos.tar.gz` | Extraia; o `LEIA-ME.txt` traz o serviço do `launchd` |
+
+No Linux, o `.deb` e o `instalar.sh` deixam o servidor como **serviço do
+systemd** (`elo-server`): sobe com a máquina, roda com um usuário próprio e
+isolado e guarda os dados em `/var/lib/elo-server`. Ao terminar, mostram o
+endereço e a **impressão digital** para colar nos apps (em **Configurações →
+Servidor**, desligue "Rodar o servidor neste computador"). As opções ficam em
+`/etc/default/elo-server`. Libere a porta `21116/TCP` no firewall.
+
+```sh
+sudo systemctl status elo-server       # situação
+journalctl -u elo-server               # registros
+sudo elo-server --impressao --data /var/lib/elo-server   # impressão digital de novo
+```
+
+**Docker:**
+
+```sh
+docker run -d --name elo-server --restart unless-stopped \
+  -p 21116:21116 -v elo-dados:/dados ghcr.io/stringari-consultoria/elo-server
+docker exec elo-server elo-server --impressao --data /dados
+```
+
+Com o Cloudflare Tunnel no mesmo `docker compose`, nem é preciso publicar a
+porta: aponte o túnel para `https://elo-server:21116` (com **No TLS Verify**)
+e use `wss://seu-endereço` nos apps.
+
+```yaml
+services:
+  elo-server:
+    image: ghcr.io/stringari-consultoria/elo-server
+    restart: unless-stopped
+    volumes: [elo-dados:/dados]
+  cloudflared:
+    image: cloudflare/cloudflared
+    command: tunnel run
+    environment: [TUNNEL_TOKEN=seu-token]
+    restart: unless-stopped
+volumes:
+  elo-dados:
+```
+
+**À mão**, com qualquer um dos executáveis:
 
 ```sh
 # certificado público (Let's Encrypt etc.)
@@ -195,7 +248,8 @@ elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --cert fullchain.pem --key
 elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --self-signed
 ```
 
-O `elo-server` vem junto nos instaladores.
+O app de desktop já traz o servidor embutido (opção 1); o pacote do servidor
+é só para quem quer uma máquina dedicada.
 
 ## Segurança
 

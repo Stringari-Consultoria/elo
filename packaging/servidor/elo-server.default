@@ -1,0 +1,14 @@
+# Opções do servidor do Elo. Depois de mudar: sudo systemctl restart elo-server
+#
+#   --listen ENDEREÇO:PORTA   onde aceitar conexões (21116 é o padrão dos apps)
+#   --data PASTA              dados (o serviço usa /var/lib/elo-server)
+#   --retencao-dias N         dias de histórico de sessões (0 = para sempre; LGPD)
+#
+# TLS (escolha um):
+#   --self-signed             certificado autoassinado (padrão): nos apps, cole a
+#                             impressão digital (sudo elo-server --impressao
+#                             --data /var/lib/elo-server)
+#   --cert C.pem --key K.pem  certificado público (Let's Encrypt etc.)
+#   --no-tls                  só atrás de um túnel/proxy que já faz TLS
+#                             (Cloudflare Tunnel usa WebSocket na mesma porta)
+ELO_SERVER_ARGS="--listen 0.0.0.0:21116 --data /var/lib/elo-server --self-signed --retencao-dias 90"

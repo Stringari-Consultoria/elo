@@ -87,6 +87,62 @@ else
     hdiutil create -volname "Elo $VERSAO" -srcfolder "$TMP/dmg" -ov -format UDZO "$DMG" >/dev/null
 fi
 
+# ---- servidor avulso ----
+SRV="elo-server-$VERSAO-macos"
+mkdir -p "$TMP/$SRV"
+install -m 755 "$TMP/bin/elo-server" "$TMP/$SRV/"
+if [[ -n "${ASSINATURA:-}" ]]; then
+    codesign --force --options runtime --timestamp --sign "$ASSINATURA" "$TMP/$SRV/elo-server"
+else
+    codesign --force --sign - "$TMP/$SRV/elo-server"
+fi
+install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$TMP/$SRV/"
+cat > "$TMP/$SRV/br.com.stringari.elo-server.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>br.com.stringari.elo-server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/elo-server</string>
+        <string>--listen</string>
+        <string>0.0.0.0:21116</string>
+        <string>--data</string>
+        <string>/Library/Application Support/Elo Server</string>
+        <string>--self-signed</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/elo-server.log</string>
+</dict>
+</plist>
+PLIST
+cat > "$TMP/$SRV/LEIA-ME.txt" <<TXT
+Servidor do Elo $VERSAO para macOS 11+ (Intel e Apple Silicon)
+
+Só rodar:   ./elo-server --listen 0.0.0.0:21116 --data ./dados --self-signed
+(se o macOS bloquear: xattr -d com.apple.quarantine elo-server)
+
+Iniciar com o Mac (serviço do sistema):
+  sudo cp elo-server /usr/local/bin/
+  sudo cp br.com.stringari.elo-server.plist /Library/LaunchDaemons/
+  sudo launchctl bootstrap system /Library/LaunchDaemons/br.com.stringari.elo-server.plist
+Impressão digital para os apps:
+  sudo /usr/local/bin/elo-server --impressao --data "/Library/Application Support/Elo Server"
+Parar e remover:
+  sudo launchctl bootout system/br.com.stringari.elo-server
+  sudo rm /Library/LaunchDaemons/br.com.stringari.elo-server.plist /usr/local/bin/elo-server
+
+Detalhes: https://github.com/Stringari-Consultoria/elo#servidor
+TXT
+tar -C "$TMP" -czf "$DIST/$SRV.tar.gz" "$SRV"
+echo "Gerado: $DIST/$SRV.tar.gz"
+
 if [[ -n "${NOTARIZAR:-}" ]]; then
     [[ -n "${ASSINATURA:-}" ]] || { echo "NOTARIZAR exige ASSINATURA (Developer ID)."; exit 1; }
     codesign --force --timestamp --sign "$ASSINATURA" "$DMG"

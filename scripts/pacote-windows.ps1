@@ -29,6 +29,35 @@ Compress-Archive -Path "$tmp\*" -DestinationPath $zip
 Remove-Item -Recurse -Force $tmp
 Write-Host "Gerado: $zip"
 
+# ---- servidor avulso ----
+$snome = "elo-server-$versao-windows-x64"
+$stmp = Join-Path ([IO.Path]::GetTempPath()) $snome
+if (Test-Path $stmp) { Remove-Item -Recurse -Force $stmp }
+New-Item -ItemType Directory $stmp | Out-Null
+Copy-Item "$rel\elo-server.exe", "$raiz\LICENSE-MIT", "$raiz\LICENSE-APACHE" $stmp
+Copy-Item "$raiz\NOTICE" "$stmp\NOTICE.txt"
+@"
+Servidor do Elo $versao para Windows 10/11 e Windows Server (64 bits)
+
+So rodar (num terminal, nesta pasta):
+  .\elo-server.exe --listen 0.0.0.0:21116 --data .\dados --self-signed
+
+Iniciar com o Windows (PowerShell como administrador; ajuste a pasta):
+  schtasks /Create /TN "Elo Servidor" /SC ONSTART /RU SYSTEM /RL HIGHEST ``
+    /TR "\"C:\Elo\elo-server.exe\" --listen 0.0.0.0:21116 --data C:\Elo\dados --self-signed"
+Liberar a porta no firewall:
+  New-NetFirewallRule -DisplayName "Elo Servidor" -Direction Inbound -Protocol TCP -LocalPort 21116 -Action Allow
+Impressao digital para os apps:
+  C:\Elo\elo-server.exe --impressao --data C:\Elo\dados
+
+Detalhes: https://github.com/Stringari-Consultoria/elo#servidor
+"@ | Set-Content -Encoding UTF8 "$stmp\LEIA-ME.txt"
+$szip = Join-Path $dist "$snome.zip"
+if (Test-Path $szip) { Remove-Item $szip }
+Compress-Archive -Path "$stmp\*" -DestinationPath $szip
+Remove-Item -Recurse -Force $stmp
+Write-Host "Gerado: $szip"
+
 # ---- instalador ----
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) { $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe" }
