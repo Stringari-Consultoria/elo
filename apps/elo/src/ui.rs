@@ -116,7 +116,16 @@ impl eframe::App for EloApp {
         let mut closed = Vec::new();
         for (i, v) in self.views.iter().enumerate() {
             if let Some(r) = &v.ended {
-                closed.push((i, format!("{}: {r}", if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() })));
+                let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+                if r == elo_proto::msg::BYE_RESTART {
+                    // Reconecta quando voltar (o Elo de lá precisa iniciar com o computador).
+                    let now = std::time::Instant::now();
+                    self.reconnects.retain(|x| x.id != v.target_id);
+                    self.reconnects.push(crate::app::Reconnect { id: v.target_id.clone(), name: name.clone(), password: v.password.clone(), next_try: now + std::time::Duration::from_secs(20), until: now + std::time::Duration::from_secs(360) });
+                    closed.push((i, format!("{name} está reiniciando. O Elo reconecta sozinho quando ele voltar.")));
+                } else {
+                    closed.push((i, format!("{name}: {r}")));
+                }
             }
         }
         for (i, msg) in closed.into_iter().rev() {
@@ -288,6 +297,26 @@ impl EloApp {
             {
                 if self.update_banner(ui, &p) {
                     self.update_and_restart();
+                }
+                let mut cancel = None;
+                for r in &self.reconnects {
+                    egui::Frame::new().fill(theme::alpha(p.warning, 0.12)).stroke(Stroke::new(1.0, theme::alpha(p.warning, 0.4))).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            let left = r.until.saturating_duration_since(std::time::Instant::now()).as_secs();
+                            ui.label(RichText::new(format!("{} está reiniciando. Reconectando quando voltar… ({}:{:02})", r.name, left / 60, left % 60)).size(13.0).color(p.text));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if theme::secondary(ui, None, "Cancelar").clicked() {
+                                    cancel = Some(r.id.clone());
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(10.0);
+                }
+                if let Some(id) = cancel {
+                    self.reconnects.retain(|r| r.id != id);
                 }
                 ui.add_space(4.0);
                 // Cabeçalho.
@@ -607,6 +636,29 @@ impl EloApp {
                 ui.horizontal(|ui| session_info(ui, &p, v));
             }
         });
+        if v.confirm_restart {
+            let mut close = false;
+            let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+            egui::Modal::new(egui::Id::unique("reiniciar")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(22))).show(&ctx, |ui| {
+                ui.set_width(420.0);
+                ui.label(RichText::new(format!("Reiniciar {name}?")).font(theme::semibold(16.0)).color(p.text));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new("A sessão cai e o Elo tenta reconectar sozinho por até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa iniciar o Elo com o computador e ter o acesso não assistido ligado.").size(12.5).color(p.text2)).wrap());
+                ui.add_space(14.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::danger_button(ui, "Reiniciar").clicked() {
+                        let _ = v.handle.cmd.send(Cmd::Restart);
+                        close = true;
+                    }
+                    if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        close = true;
+                    }
+                });
+            });
+            if close {
+                v.confirm_restart = false;
+            }
+        }
         // Tela remota.
         if !v.connected {
             ui.centered_and_justified(|ui| {
@@ -1502,6 +1554,9 @@ fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: boo
     }
     if ui.add_enabled(v.permissions.control, egui::Button::new("Ctrl+Alt+Del")).clicked() {
         let _ = v.handle.cmd.send(Cmd::SecureAttention);
+    }
+    if ui.add_enabled(v.permissions.control, egui::Button::new("Reiniciar")).on_hover_text("Reinicia o outro computador e reconecta quando ele voltar").clicked() {
+        v.confirm_restart = true;
     }
     let mut cb = v.clipboard;
     if ui.checkbox(&mut cb, "Copiar/colar").changed() {

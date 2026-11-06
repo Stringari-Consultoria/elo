@@ -10,6 +10,13 @@ use elo_core::client::{self, Event};
 use elo_core::net::ServerCfg;
 use elo_core::session::{self, HostEvent, HostOptions, Remote, ViewerEvent};
 
+/// Reinício de mentira: marca que foi pedido (o teste não reinicia a máquina).
+static REINICIOS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn restart_simulado() -> Result<(), String> {
+    REINICIOS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
 struct Server(Child);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -64,7 +71,7 @@ fn session_through_relay() {
         assert_eq!(hs, vs);
         assert_eq!(from, viewer_id);
         let (htx, hrx) = channel();
-        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default() };
+        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
         let hh = session::host(cfg.clone(), hs, hsec, from.clone(), "Visualizador".into(), opt, htx);
         let remote = Arc::new(Mutex::new(Remote::default()));
         let (vtx, vrx) = channel();
@@ -129,8 +136,13 @@ fn session_through_relay() {
         let up = t.path.unwrap();
         assert!(up.starts_with(shared.join("sub")), "{}", up.display());
         assert_eq!(std::fs::metadata(&up).unwrap().len(), 500_000);
-        vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Reiniciar: o anfitrião responde com o motivo combinado (o visualizador reconecta).
+        let antes = REINICIOS.load(std::sync::atomic::Ordering::SeqCst);
+        vh.cmd.send(session::Cmd::Restart).unwrap();
+        let Some(ViewerEvent::Ended(r)) = wait(&vrx, 10, |e| matches!(e, ViewerEvent::Ended(_))) else { panic!("a sessão não terminou ao reiniciar") };
+        assert_eq!(r, elo_proto::msg::BYE_RESTART);
         assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::Ended(_))).is_some());
+        assert_eq!(REINICIOS.load(std::sync::atomic::Ordering::SeqCst), antes + 1);
         let _ = hh;
     }
     let _ = std::fs::remove_dir_all(dir);
@@ -222,7 +234,7 @@ fn websocket_like_cloudflare_tunnel() {
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     assert_eq!((hs, &from_id), (vs, &viewer_id));
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default() };
+    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado };
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();

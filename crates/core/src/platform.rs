@@ -34,6 +34,25 @@ pub fn os_name() -> String {
     }
 }
 
+/// Reinicia o computador (pedido de quem acessa, com permissão de controle).
+pub fn restart_computer() -> Result<(), String> {
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("shutdown");
+        c.args(["/r", "/t", "5", "/c", "Reiniciado pelo Elo"]);
+        c
+    } else if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("osascript");
+        c.args(["-e", "tell application \"System Events\" to restart"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("systemctl");
+        c.arg("reboot");
+        c
+    };
+    let st = cmd.status().map_err(|e| format!("não foi possível reiniciar: {e}"))?;
+    if st.success() { Ok(()) } else { Err(format!("não foi possível reiniciar ({st})")) }
+}
+
 pub fn computer_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok().filter(|s| !s.is_empty()).or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string())).unwrap_or_else(|| "Computador".into())
 }

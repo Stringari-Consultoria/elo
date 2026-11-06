@@ -106,6 +106,12 @@ podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
 abre na bandeja ao entrar no sistema, e o computador continua acessível depois
 de reiniciar.
 
+**Reiniciar e reconectar:** na sessão, "Reiniciar" reinicia o outro
+computador (com a permissão de controle). O Elo tenta reconectar sozinho por
+até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa iniciar o
+Elo com o computador e ter o acesso não assistido ligado (a senha temporária
+muda ao reiniciar).
+
 **Bandeja:** fechar a janela deixa o Elo rodando perto do relógio, aceitando
 conexões. O menu do ícone mostra o seu ID e tem "Abrir", "Copiar ID" e "Sair do
 Elo". Quando chega um pedido de acesso ou começa uma sessão, a janela aparece
@@ -281,9 +287,8 @@ o instalador e o `.zip` do Windows, e publica a release.
   (xdg-desktop-portal/PipeWire), que ainda não foi implementado.
 - **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
   Windows exige um serviço do sistema que o Elo ainda não tem.
-- **Ainda não há:** áudio remoto, gravação de sessão, impressão remota,
-  reconexão após reiniciar, lista de contatos, nem builds assinados pela Apple
-  ou pela Microsoft.
+- **Ainda não há:** áudio remoto, gravação de sessão, impressão remota, nem
+  builds assinados pela Apple ou pela Microsoft.
 - Com layouts de teclado diferentes nos dois lados, o texto chega certo, mas
   atalhos com teclas fora do ASCII podem não chegar.
 - O codec é JPEG por blocos (simples e robusto). Com vídeo em movimento na

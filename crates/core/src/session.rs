@@ -204,6 +204,8 @@ pub struct HostOptions {
     pub name: String,
     pub downloads: PathBuf,
     pub default_permissions: Permissions,
+    /// Como reiniciar o computador (testes trocam por uma função que não reinicia).
+    pub restart: fn() -> Result<(), String>,
 }
 
 pub enum HostEvent {
@@ -235,6 +237,8 @@ pub enum Cmd {
     ListDir(String),
     Download(String),
     Upload(PathBuf, String),
+    /// Reiniciar o computador do anfitrião.
+    Restart,
     Quality { jpeg: u8, fps: u8 },
     Monitor(u8),
     Refresh,
@@ -380,6 +384,15 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     if let Some(t) = files.end(id) {
                         let _ = ev.send(HostEvent::File(t));
                     }
+                }
+                Msg::Restart => {
+                    if perms.control {
+                        let _ = ch.send(&Msg::Bye(elo_proto::msg::BYE_RESTART.into()));
+                        let _ = ev.send(HostEvent::Chat(format!("[{} pediu para reiniciar este computador]", from_name)));
+                        (opt.restart)()?;
+                        return Err("reiniciando o computador a pedido de quem acessava".into());
+                    }
+                    ch.send(&Msg::Notice("sem permissão de controle para reiniciar".into()))?;
                 }
                 Msg::ListDir { path } => {
                     let reply = if perms.files { list_dir(&path) } else { Msg::DirListing { path, parent: None, entries: Vec::new(), error: Some("o outro lado não liberou a transferência de arquivos".into()) } };
@@ -657,6 +670,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 Cmd::SecureAttention => ch.send(&Msg::Input(Input::SecureAttention))?,
                 Cmd::Chat(t) => ch.send(&Msg::Chat(t))?,
                 Cmd::ListDir(path) => ch.send(&Msg::ListDir { path })?,
+                Cmd::Restart => ch.send(&Msg::Restart)?,
                 Cmd::Download(path) => ch.send(&Msg::FileRequest { path })?,
                 Cmd::Upload(p, dir) => match files.offer(&mut ch, &p, Some(dir)) {
                     Ok(t) => {

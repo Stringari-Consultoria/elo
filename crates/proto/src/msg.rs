@@ -121,7 +121,13 @@ pub enum Msg {
     FileRequest { path: String },
     /// Aviso curto para mostrar ao outro lado (ex.: arquivo não encontrado).
     Notice(String),
+    /// Visualizador pede para reiniciar o computador do anfitrião (exige
+    /// permissão de controle). O anfitrião responde `Bye(BYE_RESTART)`.
+    Restart,
 }
+
+/// Motivo do `Bye` quando o anfitrião vai reiniciar (o visualizador reconecta).
+pub const BYE_RESTART: &str = "o computador remoto está reiniciando";
 
 /// Item de uma pasta no gerenciador de arquivos.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

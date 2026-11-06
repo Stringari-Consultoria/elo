@@ -82,6 +82,15 @@ pub struct ChatLine {
     pub text: String,
 }
 
+/// Reconexão automática a um computador que está reiniciando.
+pub struct Reconnect {
+    pub id: String,
+    pub name: String,
+    pub password: String,
+    pub next_try: Instant,
+    pub until: Instant,
+}
+
 /// Gerenciador de arquivos de uma sessão: pastas do computador acessado.
 #[derive(Default)]
 pub struct FilesPanel {
@@ -97,6 +106,10 @@ pub struct FilesPanel {
 
 /// Sessão em que este computador acessa outro.
 pub struct ViewSession {
+    /// Senha usada (para reconectar depois de reiniciar o computador remoto).
+    pub password: String,
+    /// Confirmação do "Reiniciar" aberta.
+    pub confirm_restart: bool,
     pub target_id: String,
     pub target_name: String,
     pub os: String,
@@ -193,6 +206,8 @@ pub struct EloApp {
     pub tray: Option<crate::tray::Tray>,
     /// "Sair do Elo": fechar a janela encerra de verdade.
     pub quitting: bool,
+    /// Computadores reiniciando: reconecta quando voltarem.
+    pub reconnects: Vec<Reconnect>,
     /// Janela escondida na bandeja.
     pub hidden: bool,
 }
@@ -237,6 +252,7 @@ impl EloApp {
             tray: crate::tray::create(&cc.egui_ctx),
             quitting: false,
             hidden: false,
+            reconnects: Vec::new(),
         };
         if !app.settings.onboarded {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
@@ -285,7 +301,7 @@ impl EloApp {
         if self.settings.unattended && !self.settings.permanent_password.is_empty() {
             passwords.push(self.settings.permanent_password.clone());
         }
-        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions }
+        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer }
     }
 
     /// Servidor em uso: o local (se ligado) ou o configurado.
@@ -469,8 +485,12 @@ impl EloApp {
                 Event::Online { id } => self.status = Status::Online(id),
                 Event::Offline { reason } => self.status = Status::Offline(reason),
                 Event::Error(m) => {
+                    // Tentativa de reconexão: o computador ainda está voltando, sem alarde.
+                    let retry = self.pending_connect.as_ref().is_some_and(|(t, _)| self.reconnects.iter().any(|r| &r.id == t));
                     self.pending_connect = None;
-                    self.error(m);
+                    if !retry {
+                        self.error(m);
+                    }
                 }
                 Event::Declined => {
                     self.pending_connect = None;
@@ -478,6 +498,9 @@ impl EloApp {
                 }
                 Event::SessionReady { session, secret, target_name, target_os } => {
                     let Some((target_id, password)) = self.pending_connect.take() else { continue };
+                    // Reconexão que deu certo sai da fila.
+                    self.reconnects.retain(|r| r.id != target_id);
+                    let session_password = password.clone();
                     let remote = Arc::new(Mutex::new(Remote::default()));
                     let (tx, rx) = channel();
                     let my = self.my_id().unwrap_or_default().to_string();
@@ -488,6 +511,8 @@ impl EloApp {
                     self.settings.remember(&target_id, &target_name, &target_os);
                     self.settings.save();
                     self.views.push(ViewSession {
+                        password: session_password,
+                        confirm_restart: false,
                         target_id,
                         target_name,
                         os: target_os,
@@ -616,6 +641,24 @@ impl EloApp {
         }
         for t in notices {
             self.error(t);
+        }
+        // Reconexões: tenta de 10 em 10 s enquanto o computador reinicia.
+        let now = Instant::now();
+        let expired: Vec<String> = self.reconnects.iter().filter(|r| now > r.until).map(|r| r.name.clone()).collect();
+        self.reconnects.retain(|r| now <= r.until);
+        for n in expired {
+            self.error(format!("{n} não voltou depois de reiniciar. Confira se ele inicia o Elo com o computador."));
+        }
+        if matches!(self.status, Status::Online(_)) && self.pending_connect.is_none()
+            && let Some(r) = self.reconnects.iter_mut().find(|r| now >= r.next_try)
+        {
+            r.next_try = now + std::time::Duration::from_secs(10);
+            let (id, pw) = (r.id.clone(), r.password.clone());
+            self.pending_connect = Some((id.clone(), pw));
+            let _ = self.control.tx.send(Command::Connect { target: id });
+        }
+        if !self.reconnects.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         // Atualizações: instala sozinho só sem sessão nem pedido em andamento.
         let idle = self.views.is_empty() && self.hosts.is_empty() && self.asks.is_empty() && self.pending_connect.is_none();
