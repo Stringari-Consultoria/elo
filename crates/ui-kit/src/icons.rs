@@ -128,6 +128,10 @@ pub enum Icon {
     Versions,
     Library,
     Remote,
+    /// Tela cheia: quatro cantos para fora.
+    Expand,
+    /// Sair da tela cheia: quatro cantos para dentro.
+    Shrink,
 }
 
 struct Pen<'a> {
@@ -794,6 +798,18 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect(3.0, 4.0, 4.5, 16.0, 0.5);
             pen.rect(8.5, 4.0, 4.5, 16.0, 0.5);
             pen.closed(&[(14.5, 5.5), (18.5, 4.5), (21.5, 19.0), (17.5, 20.0)]);
+        }
+        Icon::Expand => {
+            pen.line(&[(4.0, 9.0), (4.0, 4.0), (9.0, 4.0)]);
+            pen.line(&[(15.0, 4.0), (20.0, 4.0), (20.0, 9.0)]);
+            pen.line(&[(20.0, 15.0), (20.0, 20.0), (15.0, 20.0)]);
+            pen.line(&[(9.0, 20.0), (4.0, 20.0), (4.0, 15.0)]);
+        }
+        Icon::Shrink => {
+            pen.line(&[(4.0, 9.0), (9.0, 9.0), (9.0, 4.0)]);
+            pen.line(&[(15.0, 4.0), (15.0, 9.0), (20.0, 9.0)]);
+            pen.line(&[(20.0, 15.0), (15.0, 15.0), (15.0, 20.0)]);
+            pen.line(&[(9.0, 20.0), (9.0, 15.0), (4.0, 15.0)]);
         }
         Icon::Remote => {
             pen.rect(2.0, 4.0, 13.0, 10.0, 1.5);

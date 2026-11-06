@@ -633,19 +633,8 @@ impl EloApp {
         let fs = self.fullscreen;
         let act = &mut self.session_act;
         let v = &mut self.views[idx];
-        // Barra da sessão.
-        egui::Frame::new().fill(p.chrome).inner_margin(Margin::symmetric(10, 5)).show(ui, |ui| {
-            // Larga: uma linha. Estreita (chat aberto, janela pequena): controles em cima, dados embaixo.
-            if ui.available_width() >= 1060.0 {
-                ui.horizontal(|ui| {
-                    session_info(ui, &p, v);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| *act = session_controls(ui, v, idx, fav, fs).or(act.take()));
-                });
-            } else {
-                ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| *act = session_controls(ui, v, idx, fav, fs).or(act.take())));
-                ui.horizontal(|ui| session_info(ui, &p, v));
-            }
-        });
+        // Barra da sessão: cápsula de vidro flutuando no alto.
+        *act = session_bar(ui, v, idx, fav, fs).or(act.take());
         if v.confirm_restart {
             let mut close = false;
             let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
@@ -1589,16 +1578,6 @@ fn chat_panel(ui: &mut egui::Ui, chat: &mut Vec<ChatLine>, input: &mut String, t
     });
 }
 
-fn session_info(ui: &mut egui::Ui, p: &Palette, v: &ViewSession) {
-    theme::dot(ui, if v.connected { p.success } else { p.warning }, 8.0);
-    ui.label(RichText::new(format!("{} · {}", if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() }, v.os)).size(12.5).color(p.text));
-    if !v.sas.is_empty() {
-        ui.label(RichText::new(format!("código {}", v.sas)).font(theme::mono(11.5)).color(p.text2)).on_hover_text("Confira com quem está do outro lado: se o código for igual nas duas telas, a conexão não foi interceptada.");
-    }
-    let fps = v.handle.fps.load(std::sync::atomic::Ordering::Relaxed);
-    ui.label(RichText::new(format!("{} min · {fps} qps · {}", v.started.elapsed().as_secs() / 60, human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed)))).size(11.5).color(p.muted)).on_hover_text("Duração · quadros por segundo · dados recebidos");
-}
-
 /// Botão principal largo (toda a largura), com o texto centralizado.
 fn big_button(ui: &mut egui::Ui, p: &Palette, text: &str, enabled: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), if enabled { Sense::click() } else { Sense::hover() });
@@ -1708,70 +1687,354 @@ pub enum SessAct {
     Favorite,
 }
 
-fn session_controls(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fullscreen: bool) -> Option<SessAct> {
+/// Cores da barra de vidro (sempre escura, sobre a tela remota, em qualquer tema).
+const GLASS_TEXT: Color32 = Color32::from_rgb(240, 242, 246);
+const GLASS_TEXT2: Color32 = Color32::from_rgb(196, 201, 212);
+const GLASS_MUTED: Color32 = Color32::from_rgb(138, 145, 160);
+const GLASS_RED: Color32 = Color32::from_rgb(235, 77, 75);
+const GLASS_BLUE: Color32 = Color32::from_rgb(52, 108, 250);
+const GLASS_GREEN: Color32 = Color32::from_rgb(52, 199, 89);
+const GLASS_AMBER: Color32 = Color32::from_rgb(255, 176, 32);
+/// Espaço reservado no alto para a barra (fora da tela cheia).
+const BAR_BAND: f32 = 68.0;
+
+/// Valor que desliza até o alvo (cúbica, desacelera no fim).
+fn ease_to(ctx: &egui::Context, id: egui::Id, target: f32, dur: f64) -> f32 {
+    let now = ctx.input(|i| i.time);
+    let at = |(from, to, t0): (f32, f32, f64)| from + (to - from) * egui::emath::easing::cubic_out(((now - t0) / dur).clamp(0.0, 1.0) as f32);
+    let st = match ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id)) {
+        Some(st) if st.1 == target => st,
+        Some(st) => (at(st), target, now),
+        None => (target, target, now - dur),
+    };
+    ctx.data_mut(|d| d.insert_temp(id, st));
+    if now - st.2 < dur {
+        ctx.request_repaint();
+    }
+    at(st)
+}
+
+/// Moldura de vidro escuro: barra e menu.
+fn glass_frame(radius: u8, margin: Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(30, 33, 41, 232))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(22)))
+        .corner_radius(CornerRadius::same(radius))
+        .shadow(egui::Shadow { offset: [0, 10], blur: 30, spread: 0, color: Color32::from_black_alpha(120) })
+        .inner_margin(margin)
+}
+
+/// Reflexo no alto de uma peça de vidro.
+fn glass_shine(painter: &egui::Painter, rect: egui::Rect, radius: f32) {
+    painter.line_segment([rect.left_top() + Vec2::new(radius, 1.0), rect.right_top() + Vec2::new(-radius, 1.0)], Stroke::new(1.0, Color32::from_white_alpha(34)));
+}
+
+/// Botão redondo de ícone da barra.
+fn glass_icon(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, enabled: bool, tint: Option<Color32>) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), if enabled { Sense::click() } else { Sense::hover() });
+    let hover = ui.ctx().animate_bool_with_time(resp.id, enabled && resp.hovered(), 0.12);
+    let fill = if active { Color32::from_white_alpha(38) } else { Color32::from_white_alpha((22.0 * hover) as u8) };
+    ui.painter().circle_filled(rect.center(), 18.0, fill);
+    let color = match (enabled, tint) {
+        (false, _) => Color32::from_white_alpha(56),
+        (true, Some(c)) => c,
+        (true, None) => GLASS_TEXT2.lerp_to_gamma(Color32::WHITE, if active { 1.0 } else { hover }),
+    };
+    icons::paint(ui.painter(), egui::Rect::from_center_size(rect.center(), Vec2::splat(18.0)), icon, color);
+    let resp = resp.on_hover_text(tip);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// Divisória vertical entre grupos da barra.
+fn glass_divider(ui: &mut egui::Ui) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(13.0, 24.0), Sense::hover());
+    ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, Color32::from_white_alpha(26)));
+}
+
+/// Controle segmentado com o destaque deslizando entre as opções.
+/// `width`: largura total fixa (as opções dividem igualmente) ou natural.
+fn glass_segments(ui: &mut egui::Ui, id: egui::Id, labels: &[String], tips: &[String], selected: usize, width: Option<f32>, h: f32) -> Option<usize> {
+    let font = theme::semibold(12.5);
+    let pad = 3.0;
+    let natural: Vec<f32> = labels.iter().map(|l| ui.painter().layout_no_wrap(l.clone(), font.clone(), GLASS_TEXT).size().x + 28.0).collect();
+    let ws: Vec<f32> = match width {
+        Some(w) => vec![(w - 2.0 * pad) / labels.len() as f32; labels.len()],
+        None => natural,
+    };
+    let (track, _) = ui.allocate_exact_size(Vec2::new(ws.iter().sum::<f32>() + 2.0 * pad, h), Sense::hover());
+    let painter = ui.painter();
+    let r = h / 2.0;
+    painter.rect(track, CornerRadius::same(r as u8), Color32::from_black_alpha(80), Stroke::new(1.0, Color32::from_white_alpha(12)), egui::StrokeKind::Inside);
+    let mut x = track.left() + pad;
+    let rects: Vec<egui::Rect> = ws
+        .iter()
+        .map(|w| {
+            let rr = egui::Rect::from_min_size(egui::pos2(x, track.top() + pad), Vec2::new(*w, h - 2.0 * pad));
+            x += w;
+            rr
+        })
+        .collect();
+    let cur = selected.min(rects.len().saturating_sub(1));
+    let px = ease_to(ui.ctx(), id.with("x"), rects[cur].left(), 0.32);
+    let pw = ease_to(ui.ctx(), id.with("w"), rects[cur].width(), 0.32);
+    let pill = egui::Rect::from_min_size(egui::pos2(px, rects[cur].top()), Vec2::new(pw, h - 2.0 * pad));
+    let pr = CornerRadius::same((r - pad) as u8);
+    painter.add(egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: theme::alpha(GLASS_BLUE, 0.45) }.as_shape(pill, pr));
+    painter.rect_filled(pill, pr, GLASS_BLUE);
+    glass_shine(painter, pill, r);
+    let mut pick = None;
+    for (i, rr) in rects.iter().enumerate() {
+        let resp = ui.interact(*rr, id.with(i), Sense::click());
+        // Texto branco onde o destaque está, mesmo no meio do deslize.
+        let over = (pill.intersect(*rr).width().max(0.0) / rr.width()).clamp(0.0, 1.0);
+        let base = if resp.hovered() { GLASS_TEXT } else { GLASS_MUTED };
+        ui.painter().text(rr.center(), Align2::CENTER_CENTER, &labels[i], font.clone(), base.lerp_to_gamma(Color32::WHITE, over));
+        let resp = match tips.get(i) {
+            Some(t) if !t.is_empty() => resp.on_hover_text(t),
+            _ => resp,
+        };
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && i != cur {
+            pick = Some(i);
+        }
+    }
+    pick
+}
+
+/// Linha do menu de vidro: ícone, texto e (opcional) chave à direita.
+fn glass_row(ui: &mut egui::Ui, icon: Icon, label: &str, enabled: bool, switch: Option<bool>, color: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), if enabled { Sense::click() } else { Sense::hover() });
+    let painter = ui.painter();
+    if enabled && resp.hovered() {
+        painter.rect_filled(rect, CornerRadius::same(10), Color32::from_white_alpha(18));
+    }
+    let c = if enabled { color } else { Color32::from_white_alpha(60) };
+    icons::paint(painter, egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), Vec2::splat(17.0)), icon, c);
+    painter.text(egui::pos2(rect.left() + 40.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), c);
+    if let Some(on) = switch {
+        let t = ui.ctx().animate_bool_with_time(resp.id.with("sw"), on, 0.16);
+        let track = egui::Rect::from_center_size(egui::pos2(rect.right() - 26.0, rect.center().y), Vec2::new(34.0, 20.0));
+        painter.rect_filled(track, CornerRadius::same(10), Color32::from_white_alpha(40).lerp_to_gamma(GLASS_BLUE, t));
+        let x = egui::lerp(track.left() + 10.0..=track.right() - 10.0, t);
+        painter.circle_filled(egui::pos2(x, track.center().y), 8.0, Color32::WHITE);
+    }
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// Barras de sinal (0 a 3) pela fluidez da imagem.
+fn signal(painter: &egui::Painter, at: egui::Pos2, level: usize, color: Color32) {
+    for i in 0..3 {
+        let h = 4.0 + i as f32 * 3.0;
+        let r = egui::Rect::from_min_size(egui::pos2(at.x + i as f32 * 4.5, at.y - h), Vec2::new(3.0, h));
+        painter.rect_filled(r, CornerRadius::same(1), if i < level { color } else { Color32::from_white_alpha(40) });
+    }
+}
+
+/// Barra da sessão: cápsula de vidro centralizada no alto. Fora da tela cheia
+/// fica numa faixa própria; na tela cheia flutua sobre a imagem e se recolhe
+/// quando o mouse sai de perto.
+fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fullscreen: bool) -> Option<SessAct> {
     let mut act = None;
-    if theme::danger_button(ui, "Encerrar").clicked() {
-        v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let ctx = ui.ctx().clone();
+    let area = ui.max_rect();
+    if !fullscreen {
+        ui.add_space(BAR_BAND);
     }
-    if ui.selectable_label(fullscreen, if fullscreen { "Sair da tela cheia" } else { "Tela cheia" }).clicked() {
-        act = Some(SessAct::Fullscreen);
+    let more_id = egui::Id::unique(("mais-opcoes", idx));
+    let menu_open = egui::Popup::is_id_open(&ctx, more_id);
+    // Recolher na tela cheia.
+    let seen_id = egui::Id::unique(("barra-vista", idx));
+    let now = ctx.input(|i| i.time);
+    let bar_rect_id = egui::Id::unique(("barra-rect", idx));
+    let last_rect = ctx.data(|d| d.get_temp::<egui::Rect>(bar_rect_id));
+    let near = ctx.pointer_hover_pos().is_some_and(|p| p.y < area.top() + 90.0 || last_rect.is_some_and(|r| r.expand(24.0).contains(p)));
+    if near || menu_open || !fullscreen || ctx.data(|d| d.get_temp::<f64>(seen_id)).is_none() {
+        ctx.data_mut(|d| d.insert_temp(seen_id, now));
     }
-    if theme::icon_button(ui, Icon::Star, if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" }, fav).clicked() {
-        act = Some(SessAct::Favorite);
+    let seen = ctx.data(|d| d.get_temp::<f64>(seen_id)).unwrap_or(now);
+    let shown = !fullscreen || now - seen < 2.5;
+    if fullscreen && shown {
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
-    if ui.selectable_label(v.chat_open, "Chat").clicked() {
-        v.chat_open = !v.chat_open;
-        v.files.open = false;
+    let t = ctx.animate_bool_with_time_and_easing(egui::Id::unique(("barra-mostra", idx)), shown, 0.28, egui::emath::easing::cubic_out);
+    if t < 0.02 {
+        // Alça para chamar a barra de volta.
+        // (Na camada da frente: a imagem remota é desenhada depois.)
+        let handle = egui::Rect::from_center_size(egui::pos2(area.center().x, area.top() + 7.0), Vec2::new(56.0, 5.0));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("barra-alca", idx))));
+        painter.rect_filled(handle.expand(1.0), CornerRadius::same(4), Color32::from_black_alpha(90));
+        painter.rect_filled(handle, CornerRadius::same(3), Color32::from_white_alpha(150));
+        return None;
     }
-    let files = ui.add_enabled_ui(v.permissions.files, |ui| ui.selectable_label(v.files.open, "Arquivos")).inner;
-    if files.on_hover_text("Ver as pastas do outro computador, baixar e enviar arquivos (dá para arrastar arquivos para a janela)").on_disabled_hover_text("O outro lado não liberou a transferência de arquivos").clicked() {
-        v.files.open = !v.files.open;
-        v.chat_open = false;
-        if v.files.open && v.files.listing.is_none() {
-            v.files.loading = true;
-            let _ = v.handle.cmd.send(Cmd::ListDir(String::new()));
-        }
-    }
-    if ui.add_enabled(v.permissions.control, egui::Button::new("Ctrl+Alt+Del")).clicked() {
-        let _ = v.handle.cmd.send(Cmd::SecureAttention);
-    }
-    if ui.add_enabled(v.permissions.control, egui::Button::new("Reiniciar")).on_hover_text("Reinicia o outro computador e reconecta quando ele voltar").clicked() {
-        v.confirm_restart = true;
-    }
-    let mut cb = v.clipboard;
-    if ui.checkbox(&mut cb, "Copiar/colar").changed() {
-        v.clipboard = cb;
-        let _ = v.handle.cmd.send(Cmd::Clipboard(cb));
-    }
-    let labels = ["Velocidade", "Equilibrado", "Qualidade"];
-    let mut q = v.quality;
-    egui::ComboBox::from_id_salt(("q", idx)).selected_text(labels[q.min(2)]).width(104.0).show_ui(ui, |ui| {
-        for (k, l) in labels.iter().enumerate() {
-            ui.selectable_value(&mut q, k, *l);
-        }
-    });
-    if q != v.quality {
-        v.quality = q;
-        let (jpeg, fps) = quality(q);
-        let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
-    }
-    if v.monitors.len() > 1 {
-        let cur = v.monitors.get(v.monitor as usize).map(|m| m.name.clone()).unwrap_or_default();
-        let mut pick = None;
-        egui::ComboBox::from_id_salt(("mon", idx)).selected_text(cur).width(120.0).show_ui(ui, |ui| {
-            for m in &v.monitors {
-                if ui.selectable_label(m.index == v.monitor, format!("{} ({}×{})", m.name, m.width, m.height)).clicked() {
-                    pick = Some(m.index);
-                }
+    let compact = area.width() < 820.0;
+    let tiny = area.width() < 560.0;
+    let top = area.top() + 10.0 - (1.0 - t) * 70.0;
+    egui::Area::new(egui::Id::unique(("barra", idx)))
+        .order(egui::Order::Foreground)
+        .pivot(Align2::CENTER_TOP)
+        .fixed_pos(egui::pos2(area.center().x, top))
+        .constrain_to(area)
+        .show(&ctx, |ui| {
+            ui.multiply_opacity(t);
+            let r = glass_frame(26, Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        // Quem está do outro lado.
+                        if !tiny {
+                            let fps = v.handle.fps.load(std::sync::atomic::Ordering::Relaxed);
+                            let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+                            let name_w = if compact { 110.0 } else { 190.0 };
+                            let mut job = egui::text::LayoutJob::simple_singleline(name, theme::semibold(13.0), GLASS_TEXT);
+                            job.wrap = egui::text::TextWrapping { max_width: name_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                            let g1 = ui.fonts_mut(|f| f.layout_job(job));
+                            let mins = v.started.elapsed().as_secs() / 60;
+                            let line2 = if !v.connected { "conectando…".to_string() } else if mins == 0 { format!("{} · agora", v.os) } else { format!("{} · {mins} min", v.os) };
+                            let g2 = ui.painter().layout_no_wrap(line2, egui::FontId::proportional(11.0), GLASS_MUTED);
+                            let w = 44.0 + g1.size().x.max(g2.size().x + 18.0) + 10.0;
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::hover());
+                            let p = ui.painter();
+                            let av = egui::pos2(rect.left() + 20.0, rect.center().y);
+                            p.circle_filled(av, 18.0, os_color(&v.os));
+                            p.circle_stroke(av, 18.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+                            icons::paint(p, egui::Rect::from_center_size(av, Vec2::splat(18.0)), Icon::Monitor, Color32::WHITE);
+                            let dot = av + Vec2::new(13.0, 13.0);
+                            p.circle_filled(dot, 5.5, Color32::from_rgb(30, 33, 41));
+                            p.circle_filled(dot, 4.0, if v.connected { GLASS_GREEN } else { GLASS_AMBER });
+                            let x = rect.left() + 46.0;
+                            p.galley(egui::pos2(x, rect.center().y - 16.0), g1, GLASS_TEXT);
+                            let (level, color) = match fps {
+                                _ if !v.connected => (0, GLASS_MUTED),
+                                20.. => (3, GLASS_GREEN),
+                                8..20 => (2, GLASS_AMBER),
+                                _ => (1, GLASS_RED),
+                            };
+                            signal(p, egui::pos2(x, rect.center().y + 13.0), level, color);
+                            p.galley(egui::pos2(x + 17.0, rect.center().y + 1.0), g2, GLASS_MUTED);
+                            let data = human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed));
+                            let code = if v.sas.is_empty() { String::new() } else { format!("Código de verificação: {}\nConfira com quem está do outro lado: se for igual nas duas telas, a conexão não foi interceptada.\n\n", v.sas) };
+                            resp.on_hover_text(format!("{code}ID {} · {fps} quadros por segundo · {data} recebidos", pretty_id(&v.target_id)));
+                            glass_divider(ui);
+                        }
+                        // Telas do outro computador.
+                        if v.monitors.len() > 1 {
+                            let n = v.monitors.len();
+                            let labels: Vec<String> = (1..=n).map(|k| if compact { k.to_string() } else { format!("Tela {k}") }).collect();
+                            let tips: Vec<String> = v.monitors.iter().map(|m| format!("{} · {}×{}{}", m.name, m.width, m.height, if m.primary { " · principal" } else { "" })).collect();
+                            let cur = v.monitors.iter().position(|m| m.index == v.monitor).unwrap_or(0);
+                            if let Some(i) = glass_segments(ui, egui::Id::unique(("telas", idx)), &labels, &tips, cur, None, 36.0) {
+                                v.monitor = v.monitors[i].index;
+                                let _ = v.handle.cmd.send(Cmd::Monitor(v.monitor));
+                            }
+                            glass_divider(ui);
+                        }
+                        // Ações.
+                        if glass_icon(ui, Icon::Comment, "Chat", v.chat_open, true, None).clicked() {
+                            v.chat_open = !v.chat_open;
+                            v.files.open = false;
+                        }
+                        let files = glass_icon(ui, Icon::Folder, "Arquivos: ver as pastas do outro computador, baixar e enviar (dá para arrastar arquivos para a janela)", v.files.open, v.permissions.files, None)
+                            .on_disabled_hover_text("O outro lado não liberou a transferência de arquivos");
+                        if files.clicked() {
+                            v.files.open = !v.files.open;
+                            v.chat_open = false;
+                            if v.files.open && v.files.listing.is_none() {
+                                v.files.loading = true;
+                                let _ = v.handle.cmd.send(Cmd::ListDir(String::new()));
+                            }
+                        }
+                        if glass_icon(ui, Icon::Star, if fav { "Tirar dos favoritos" } else { "Salvar nos favoritos" }, false, true, fav.then_some(Color32::from_rgb(252, 200, 64))).clicked() {
+                            act = Some(SessAct::Favorite);
+                        }
+                        if glass_icon(ui, if fullscreen { Icon::Shrink } else { Icon::Expand }, if fullscreen { "Sair da tela cheia" } else { "Tela cheia" }, fullscreen, true, None).clicked() {
+                            act = Some(SessAct::Fullscreen);
+                        }
+                        let more = glass_icon(ui, Icon::More, "Mais opções", menu_open, true, None);
+                        more_menu(&more, more_id, v);
+                        glass_divider(ui);
+                        // Encerrar.
+                        let label = if compact { String::new() } else { "Encerrar".to_string() };
+                        let g = ui.painter().layout_no_wrap(label, theme::semibold(13.0), Color32::WHITE);
+                        let w = if compact { 36.0 } else { g.size().x + 50.0 };
+                        let (rect, end) = ui.allocate_exact_size(Vec2::new(w, 36.0), Sense::click());
+                        let hover = ui.ctx().animate_bool_with_time(end.id, end.hovered(), 0.12);
+                        let p = ui.painter();
+                        p.add(egui::Shadow { offset: [0, 3], blur: 12, spread: 0, color: theme::alpha(GLASS_RED, 0.25 + 0.25 * hover) }.as_shape(rect, CornerRadius::same(18)));
+                        p.rect_filled(rect, CornerRadius::same(18), GLASS_RED.lerp_to_gamma(Color32::from_rgb(255, 104, 100), hover));
+                        glass_shine(p, rect, 18.0);
+                        let ic = if compact { rect.center() } else { egui::pos2(rect.left() + 21.0, rect.center().y) };
+                        icons::paint(p, egui::Rect::from_center_size(ic, Vec2::splat(16.0)), Icon::Power, Color32::WHITE);
+                        if !compact {
+                            p.galley(egui::pos2(rect.left() + 35.0, rect.center().y - g.size().y / 2.0), g, Color32::WHITE);
+                        }
+                        if end.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Encerrar a sessão").clicked() {
+                            v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                })
+                .response
+                .rect;
+            glass_shine(ui.painter(), r, 26.0);
+            ctx.data_mut(|d| d.insert_temp(bar_rect_id, r));
+        });
+    act
+}
+
+/// Menu "Mais opções": qualidade, ajustes e ações no outro computador.
+fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
+    egui::Popup::menu(button)
+        .id(id)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(12.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(glass_frame(18, Margin::same(10)))
+        .width(280.0)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let section = |ui: &mut egui::Ui, t: &str| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(t).font(theme::semibold(10.5)).color(GLASS_MUTED).extra_letter_spacing(0.6));
+                });
+                ui.add_space(4.0);
+            };
+            section(ui, "QUALIDADE DA IMAGEM");
+            let labels: Vec<String> = ["Fluida", "Equilibrada", "Nítida"].iter().map(|s| s.to_string()).collect();
+            let tips: Vec<String> = ["Menos dados por quadro: melhor em rede lenta", "Bom para a maioria das conexões", "Imagem mais nítida, usa mais rede"].iter().map(|s| s.to_string()).collect();
+            let w = ui.available_width();
+            if let Some(q) = glass_segments(ui, id.with("qualidade"), &labels, &tips, v.quality.min(2), Some(w), 34.0) {
+                v.quality = q;
+                let (jpeg, fps) = quality(q);
+                let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
+            }
+            ui.add_space(8.0);
+            section(ui, "VISUALIZAÇÃO");
+            if glass_row(ui, Icon::Expand, "Ajustar à janela", true, Some(v.fit), GLASS_TEXT).on_hover_text("Desligado: tamanho real, com rolagem").clicked() {
+                v.fit = !v.fit;
+            }
+            if glass_row(ui, Icon::Copy, "Copiar e colar entre os dois", true, Some(v.clipboard), GLASS_TEXT).clicked() {
+                v.clipboard = !v.clipboard;
+                let _ = v.handle.cmd.send(Cmd::Clipboard(v.clipboard));
+            }
+            ui.add_space(6.0);
+            let (sep, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(sep, CornerRadius::ZERO, Color32::from_white_alpha(20));
+            ui.add_space(6.0);
+            let ctrl = v.permissions.control;
+            let denied = "O outro lado não liberou o controle";
+            if glass_row(ui, Icon::Key, "Enviar Ctrl+Alt+Del", ctrl, None, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
+                let _ = v.handle.cmd.send(Cmd::SecureAttention);
+                egui::Popup::close_id(ui.ctx(), id);
+            }
+            if glass_row(ui, Icon::Refresh, "Reiniciar o computador…", ctrl, None, Color32::from_rgb(255, 128, 124))
+                .on_hover_text("Reinicia o outro computador e reconecta quando ele voltar")
+                .on_disabled_hover_text(denied)
+                .clicked()
+            {
+                v.confirm_restart = true;
+                egui::Popup::close_id(ui.ctx(), id);
             }
         });
-        if let Some(m) = pick {
-            v.monitor = m;
-            let _ = v.handle.cmd.send(Cmd::Monitor(m));
-        }
-    }
-    ui.checkbox(&mut v.fit, "Ajustar").on_hover_text("Ajustar a tela remota à janela (desligado = tamanho real)");
-    act
 }
 
 /// Seta do mouse (o cursor do computador remoto, que a captura não inclui).
