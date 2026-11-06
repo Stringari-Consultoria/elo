@@ -2,6 +2,8 @@
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
 pub static EN: &[(&str, &str)] = &[
+    ("Unidades e discos", "Drives and disks"),
+    ("Unidades", "Drives"),
     ("Sobre", "About"),
     ("O Elo é de código aberto (licenças MIT e Apache 2.0). O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.", "Elo is open source (MIT and Apache 2.0 licenses). The code is on GitHub: suggestions, issues and contributions are welcome."),
     (" Instala ao fim das sessões, ou agora (as sessões caem).", " Installs when sessions end, or now (sessions drop)."),

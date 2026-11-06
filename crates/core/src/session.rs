@@ -199,9 +199,80 @@ fn home_dir() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }))
 }
 
+/// Unidades e discos deste computador (caminho de cada um), a raiz primeiro.
+fn drives() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        // A: e B: são de disquete (consultar pode travar alguns segundos).
+        ('C'..='Z').map(|c| format!("{c}:\\")).filter(|d| Path::new(d).exists()).collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut v = vec!["/".to_string()];
+        if let Ok(rd) = std::fs::read_dir("/Volumes") {
+            let mut more: Vec<String> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                // "Macintosh HD" é um atalho para a raiz.
+                .filter(|p| std::fs::canonicalize(p).map(|c| c != Path::new("/")).unwrap_or(false))
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            more.sort_by_key(|x| x.to_lowercase());
+            v.extend(more);
+        }
+        v
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        mounts(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default())
+    }
+}
+
+/// Pontos de montagem que são discos de verdade (partições, pendrives, rede),
+/// a partir do conteúdo de `/proc/self/mounts`.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn mounts(table: &str) -> Vec<String> {
+    // Espaço e outros caracteres vêm em octal ("\040").
+    fn unescape(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\\' && i + 3 < b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+                out.push((b[i + 1] - b'0') * 64 + (b[i + 2] - b'0') * 8 + (b[i + 3] - b'0'));
+                i += 4;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+    const NET: &[&str] = &["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "fuse.rclone", "9p", "drvfs", "virtiofs"];
+    const SKIP: &[&str] = &["/proc", "/sys", "/dev", "/run", "/boot", "/efi", "/snap", "/var", "/tmp", "/usr", "/opt", "/srv", "/etc"];
+    let mut v: Vec<String> = Vec::new();
+    for line in table.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let [src, at, fs, ..] = f[..] else { continue };
+        let at = unescape(at);
+        let disk = (src.starts_with("/dev/") && !src.starts_with("/dev/loop") && fs != "squashfs") || fs == "fuseblk" || NET.contains(&fs);
+        // /run/media é onde o Fedora e outros montam os pendrives.
+        let hidden = SKIP.iter().any(|s| at == *s || at.starts_with(&format!("{s}/"))) && !at.starts_with("/run/media/");
+        if (at == "/" || (disk && !hidden)) && !v.contains(&at) {
+            v.push(at);
+        }
+    }
+    v.sort_by(|a, b| (a != "/").cmp(&(b != "/")).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())));
+    v
+}
+
 /// Lista uma pasta do anfitrião para o gerenciador de arquivos.
 fn list_dir(path: &str) -> Msg {
     const MAX: usize = 10_000;
+    if path.trim() == elo_proto::msg::DRIVES {
+        let entries = drives().into_iter().map(|name| DirEntry { name, dir: true, size: 0, modified: 0 }).collect();
+        return Msg::DirListing { path: elo_proto::msg::DRIVES.into(), parent: None, entries, error: None };
+    }
     let p = if path.trim().is_empty() { home_dir() } else { PathBuf::from(path.trim()) };
     let p = std::fs::canonicalize(&p).unwrap_or(p);
     // No Windows, canonicalize devolve "\\?\C:\..."; mostra o caminho comum.
@@ -874,5 +945,14 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
         if !got {
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+}
+
+#[cfg(all(test, not(any(windows, target_os = "macos"))))]
+mod tests {
+    #[test]
+    fn mounts_only_real_disks() {
+        let table = "/dev/nvme0n1p3 / ext4 rw 0 0\nproc /proc proc rw 0 0\n/dev/loop0 /snap/bare/5 squashfs ro 0 0\n/dev/nvme0n1p2 /boot/efi vfat rw 0 0\n/dev/sdb1 /media/gabriel/ARQUIVOS ext4 rw 0 0\n/dev/sda1 /media/gabriel/BACKUPS ext4 rw 0 0\nlxcfs /var/lib/lxcfs fuse.lxcfs rw 0 0\ntmpfs /run/user/1000 tmpfs rw 0 0\n/dev/sdc1 /run/media/ana/MEU\\040PENDRIVE vfat rw 0 0\n//nas/fotos /mnt/nas cifs rw 0 0\n/dev/nvme0n1p4 /home ext4 rw 0 0\n/dev/sdb1 /media/gabriel/ARQUIVOS ext4 rw 0 0\n";
+        assert_eq!(super::mounts(table), ["/", "/home", "/media/gabriel/ARQUIVOS", "/media/gabriel/BACKUPS", "/mnt/nas", "/run/media/ana/MEU PENDRIVE"]);
     }
 }

@@ -1672,8 +1672,10 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
     });
     ui.add_space(10.0);
     let f = &mut v.files;
-    let parent = f.listing.as_ref().and_then(|l| l.parent.clone());
     let current = f.listing.as_ref().map(|l| l.path.clone()).unwrap_or_default();
+    let in_drives = current == elo_proto::msg::DRIVES;
+    // Acima da raiz (/ ou C:\) ficam as unidades.
+    let parent = f.listing.as_ref().and_then(|l| l.parent.clone()).or_else(|| (f.drives && f.listing.is_some() && !in_drives).then(|| elo_proto::msg::DRIVES.to_string()));
     // Barra: voltar, início, atualizar e o caminho em migalhas (clique duplo edita).
     let edit_id = ui.scope_id().with("editar-caminho");
     let mut editing = ui.ctx().data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
@@ -1684,6 +1686,9 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
         }
         if mac::round_icon(ui, m, Icon::Home, t!("Pasta pessoal"), 28.0, true).clicked() {
             go = Some(String::new());
+        }
+        if f.drives && mac::round_icon(ui, m, Icon::Database, t!("Unidades e discos"), 28.0, true).clicked() {
+            go = Some(elo_proto::msg::DRIVES.into());
         }
         if mac::round_icon(ui, m, Icon::Refresh, t!("Atualizar"), 28.0, true).clicked() {
             go = Some(current.clone());
@@ -1710,10 +1715,14 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
             let sep = if win { '\\' } else { '/' };
             let parts: Vec<&str> = current.split(sep).filter(|x| !x.is_empty()).collect();
             let mut crumbs: Vec<(String, String)> = Vec::new();
-            if !win {
+            if f.drives {
+                crumbs.push((t!("Unidades").to_string(), elo_proto::msg::DRIVES.into()));
+            }
+            if !win && !in_drives {
                 crumbs.push(("/".into(), "/".into()));
             }
-            for i in 0..parts.len() {
+            let n = if in_drives { 0 } else { parts.len() };
+            for i in 0..n {
                 let path = if win { if i == 0 { format!("{}\\", parts[0]) } else { parts[..=i].join("\\") } } else { format!("/{}", parts[..=i].join("/")) };
                 crumbs.push((parts[i].to_string(), path));
             }
@@ -1796,7 +1805,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
                 let (text, sub) = if sel { (Color32::WHITE, Color32::from_white_alpha(210)) } else { (m.label, m.label2) };
                 let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(16.0));
                 let folder = Color32::from_rgb(100, 180, 250);
-                icons::paint(p, ic, if e.dir { Icon::Folder } else { Icon::File }, if sel { Color32::WHITE } else if e.dir { folder } else { m.label2 });
+                icons::paint(p, ic, if in_drives { Icon::Database } else if e.dir { Icon::Folder } else { Icon::File }, if sel { Color32::WHITE } else if e.dir { folder } else { m.label2 });
                 let mut job = egui::text::LayoutJob::simple_singleline(e.name.clone(), egui::FontId::proportional(12.5), text);
                 job.wrap = egui::text::TextWrapping { max_width: (size_x - 110.0).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                 let g = ui.fonts_mut(|fo| fo.layout_job(job));
@@ -1804,8 +1813,11 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
                 let size = if e.dir { "—".to_string() } else { human_bytes(e.size) };
                 p.text(egui::pos2(rect.left() + size_x, rect.center().y), Align2::RIGHT_CENTER, size, egui::FontId::proportional(11.5), sub);
                 p.text(egui::pos2(rect.left() + date_x, rect.center().y), Align2::RIGHT_CENTER, ago(e.modified), egui::FontId::proportional(11.5), sub);
-                if resp.double_clicked() {
-                    if e.dir {
+                if resp.double_clicked() || (in_drives && resp.clicked()) {
+                    if in_drives {
+                        // Nas unidades, o nome já é o caminho completo.
+                        go = Some(e.name.clone());
+                    } else if e.dir {
                         go = Some(remote_join(&l.path, &e.name));
                     } else {
                         let _ = cmd.send(Cmd::Download(remote_join(&l.path, &e.name)));
@@ -1838,7 +1850,7 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
                     let _ = cmd.send(Cmd::Download(remote_join(&current, &name)));
                 }
             }
-            if mac::button(ui, m, t!("Enviar…"), Kind::Secondary, None, !current.is_empty()).on_hover_text(t!("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.")).clicked()
+            if mac::button(ui, m, t!("Enviar…"), Kind::Secondary, None, !current.is_empty() && !in_drives).on_hover_text(t!("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.")).clicked()
                 && let Some(list) = rfd::FileDialog::new().pick_files()
             {
                 for path in list {

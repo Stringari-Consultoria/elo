@@ -112,6 +112,8 @@ pub struct FilesPanel {
     pub selected: Vec<String>,
     pub hidden: bool,
     pub loading: bool,
+    /// O anfitrião lista as unidades e discos (recurso "unidades").
+    pub drives: bool,
 }
 
 /// Sessão em que este computador acessa outro.
@@ -454,7 +456,8 @@ impl EloApp {
             self.error(t!("O outro lado não liberou a transferência de arquivos."));
             return;
         }
-        let dir = v.files.listing.as_ref().filter(|_| v.files.open).map(|l| l.path.clone());
+        // Na lista de unidades não há pasta aberta: vai para a de recebidos.
+        let dir = v.files.listing.as_ref().filter(|l| v.files.open && l.path != elo_proto::msg::DRIVES).map(|l| l.path.clone());
         let mut n = 0;
         for f in dropped {
             let path = f.path().to_path_buf();
@@ -847,7 +850,10 @@ impl EloApp {
                     }
                     ViewerEvent::Waiting => v.waiting = true,
                     ViewerEvent::Audio { available } => v.audio_available = available,
-                    ViewerEvent::Features(f) => { v.fine_scroll = f.iter().any(|x| x == "rolagem-fina")}
+                    ViewerEvent::Features(f) => {
+                        v.fine_scroll = f.iter().any(|x| x == "rolagem-fina");
+                        v.files.drives = f.iter().any(|x| x == "unidades");
+                    }
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });
                         v.chat_open = true;

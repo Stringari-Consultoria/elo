@@ -132,6 +132,11 @@ fn session_through_relay() {
         vh.cmd.send(session::Cmd::ListDir(shared.join("nao-existe").to_string_lossy().into_owned())).unwrap();
         let Some(ViewerEvent::Listing(l)) = wait(&vrx, 5, |e| matches!(e, ViewerEvent::Listing(_))) else { panic!() };
         assert!(l.error.is_some());
+        // Unidades e discos: lista da raiz de cada um, sem pasta de cima.
+        vh.cmd.send(session::Cmd::ListDir(elo_proto::msg::DRIVES.into())).unwrap();
+        let Some(ViewerEvent::Listing(l)) = wait(&vrx, 5, |e| matches!(e, ViewerEvent::Listing(_))) else { panic!() };
+        assert!(l.path == elo_proto::msg::DRIVES && l.parent.is_none() && l.error.is_none(), "{l:?}");
+        assert!(!l.entries.is_empty() && l.entries.iter().all(|e| e.dir && std::path::Path::new(&e.name).is_absolute()), "{:?}", l.entries);
         vh.cmd.send(session::Cmd::Download(shared.join("remoto.txt").to_string_lossy().into_owned())).unwrap();
         let Some(ViewerEvent::File(t)) = wait(&vrx, 10, |e| matches!(e, ViewerEvent::File(t) if t.incoming && t.finished)) else { panic!("download não chegou") };
         assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), vec![b'r'; 1000]);

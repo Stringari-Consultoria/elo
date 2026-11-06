@@ -138,7 +138,11 @@ pub enum Msg {
 /// Recursos que esta versão entende, além do básico. O anfitrião manda a
 /// lista logo depois do `Welcome`, no mesmo quadro: versões antigas ignoram
 /// os bytes a mais, as novas leem com `features_after`.
-pub const FEATURES: &[&str] = &["audio"];
+pub const FEATURES: &[&str] = &["audio", "unidades"];
+
+/// Caminho especial do `ListDir`: lista as unidades e discos do anfitrião
+/// (recurso "unidades"). Cada item vem com o caminho completo no nome.
+pub const DRIVES: &str = ":unidades";
 
 /// Codifica `Welcome` (ou outra mensagem) seguida da lista de recursos.
 /// `features`: os recursos deste anfitrião (os de `FEATURES` e os que
@@ -185,7 +189,7 @@ mod tests {
         // Versão nova: lê também os recursos.
         let (m, f) = features_after(&bytes).unwrap();
         assert_eq!(m, welcome());
-        assert_eq!(f, vec!["audio".to_string()]);
+        assert_eq!(f, FEATURES);
         // Anfitrião antigo (sem lista): nenhum recurso.
         let (_, f) = features_after(&postcard::to_stdvec(&welcome()).unwrap()).unwrap();
         assert!(f.is_empty());
