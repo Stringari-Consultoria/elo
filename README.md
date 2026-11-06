@@ -388,6 +388,21 @@ notariza quando estes *secrets* estão configurados no repositório (exige o
 
 Sem eles, o app sai com assinatura ad hoc (e o aviso acima).
 
+**Assinatura no Windows:** o workflow assina os instaladores e os executáveis
+dos `.zip` pela [SignPath](https://signpath.org) quando estes *secrets*
+existem. A SignPath Foundation assina projetos de código aberto de graça
+(peça em signpath.org; o projeto precisa estar no GitHub com licença aberta):
+
+| Secret | O que é |
+|---|---|
+| `SIGNPATH_API_TOKEN` | Token de API de um usuário de CI da SignPath |
+| `SIGNPATH_ORGANIZATION_ID` | ID da organização na SignPath |
+
+Na SignPath, crie o projeto `elo` com a política `release-signing`, ligue ao
+repositório do GitHub e use a configuração de artefato de
+[`packaging/windows/signpath-artefato.xml`](packaging/windows/signpath-artefato.xml).
+Sem os secrets, os pacotes saem sem assinatura (e o SmartScreen avisa).
+
 **Atualização automática:** cada release publica `latest.json` (versão e
 SHA-256 de cada pacote) e `latest.json.sig`, a assinatura Ed25519 do manifesto
 feita no CI com o secret `ELO_UPDATE_KEY`. O app só instala se a assinatura

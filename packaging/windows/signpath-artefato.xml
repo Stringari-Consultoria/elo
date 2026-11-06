@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Configuração do artefato na SignPath (projeto "elo"): o pacote enviado
+     pelo workflow é um .zip com os instaladores (.exe) e os .zip portáteis.
+     Assina os instaladores e os executáveis de dentro dos .zip. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="*.exe">
+      <authenticode-sign />
+    </pe-file>
+    <zip-file path="*.zip">
+      <pe-file path="*.exe">
+        <authenticode-sign />
+      </pe-file>
+    </zip-file>
+  </zip-file>
+</artifact-configuration>

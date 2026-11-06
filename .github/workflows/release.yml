@@ -136,6 +136,11 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    # Assinatura Authenticode pela SignPath (gratuita para código aberto):
+    # só acontece com os secrets configurados (veja o README). Sem eles, sai
+    # sem assinatura, como antes.
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -146,6 +151,26 @@ jobs:
         shell: pwsh
         env:
           VARIANTE: cliente
+      - name: Pacotes para assinar
+        if: env.SIGNPATH_API_TOKEN != ''
+        id: sem-assinatura
+        uses: actions/upload-artifact@v4
+        with:
+          name: elo-windows-sem-assinatura
+          path: |
+            dist/*.exe
+            dist/*.zip
+      - name: Assinatura (SignPath)
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: elo
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.sem-assinatura.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist
       - uses: actions/upload-artifact@v4
         with:
           name: elo-windows
