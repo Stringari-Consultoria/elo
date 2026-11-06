@@ -18,6 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb1-dev libxdo-dev libasound2-dev fakeroot
       - run: scripts/pacote-linux.sh
+      - run: scripts/pacote-linux.sh
+        env:
+          VARIANTE: cliente
       - uses: actions/upload-artifact@v4
         with:
           name: elo-linux
@@ -121,6 +124,9 @@ jobs:
             echo "NOTARIZAR_KEYCHAIN=$KC" >> "$GITHUB_ENV"
           fi
       - run: scripts/pacote-macos.sh
+      - run: scripts/pacote-macos.sh
+        env:
+          VARIANTE: cliente
       - uses: actions/upload-artifact@v4
         with:
           name: elo-macos
@@ -136,6 +142,10 @@ jobs:
       - run: choco install innosetup -y --no-progress
       - run: scripts/pacote-windows.ps1
         shell: pwsh
+      - run: scripts/pacote-windows.ps1
+        shell: pwsh
+        env:
+          VARIANTE: cliente
       - uses: actions/upload-artifact@v4
         with:
           name: elo-windows

@@ -110,15 +110,23 @@ pub enum Install {
 }
 
 impl Install {
-    pub fn asset_key(&self) -> Option<&'static str> {
-        match self {
-            Install::WindowsSetup { .. } => Some("windows-x64"),
-            Install::MacApp(_) => Some("macos"),
-            Install::LinuxDir(_) => Some("linux-x86_64"),
-            Install::LinuxDeb => Some("linux-x86_64-deb"),
-            Install::Manual(_) => None,
-        }
+    /// Chave do pacote no manifesto (o Elo Cliente tem os seus, com "-cliente").
+    pub fn asset_key(&self) -> Option<String> {
+        let k = match self {
+            Install::WindowsSetup { .. } => "windows-x64",
+            Install::MacApp(_) => "macos",
+            Install::LinuxDir(_) => "linux-x86_64",
+            Install::LinuxDeb => "linux-x86_64-deb",
+            Install::Manual(_) => return None,
+        };
+        Some(if crate::variant::client_build() { format!("{k}-cliente") } else { k.to_string() })
     }
+}
+
+/// Nome do executável (sem extensão): "elo" ou "elo-cliente".
+#[cfg(target_os = "linux")]
+fn exe_name() -> &'static str {
+    if crate::variant::client_build() { "elo-cliente" } else { "elo" }
 }
 
 pub fn detect() -> Install {
@@ -170,7 +178,7 @@ pub fn check(install: &Install) -> Result<Check, String> {
     if !newer(&m.version, CURRENT) {
         return Ok(Check::UpToDate);
     }
-    let asset = install.asset_key().and_then(|k| m.assets.get(k).cloned());
+    let asset = install.asset_key().and_then(|k| m.assets.get(&k).cloned());
     Ok(Check::Available(m, asset))
 }
 
@@ -263,7 +271,7 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
             run(Command::new("hdiutil").arg("attach").arg("-nobrowse").arg("-readonly").arg("-noautoopen").arg("-mountpoint").arg(&mnt).arg(file))?;
             let staging = app.with_extension("app.novo");
             let _ = std::fs::remove_dir_all(&staging);
-            let copied = run(Command::new("ditto").arg(mnt.join("Elo.app")).arg(&staging));
+            let copied = run(Command::new("ditto").arg(mnt.join(format!("{}.app", crate::variant::app_name()))).arg(&staging));
             let _ = run(Command::new("hdiutil").arg("detach").arg("-force").arg(&mnt));
             copied?;
             // Troca: o processo atual continua com os arquivos antigos até sair.
@@ -287,14 +295,14 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
             replace_binaries(&tmp, dir)?;
             let _ = std::fs::remove_dir_all(&tmp);
             let args = if background { format!(" {}", crate::autostart::ARG) } else { String::new() };
-            relaunch(&format!("exec {}{args}", sh_quote(&dir.join("elo"))))
+            relaunch(&format!("exec {}{args}", sh_quote(&dir.join(exe_name()))))
         }
         #[cfg(target_os = "linux")]
         Install::LinuxDeb => {
             // Pede a senha de administrador numa janela do sistema (polkit).
             run(Command::new("pkexec").arg("apt-get").arg("install").arg("-y").arg(file)).map_err(|e| format!("{e}. Instale manualmente: {}", file.display()))?;
             let args = if background { format!(" {}", crate::autostart::ARG) } else { String::new() };
-            relaunch(&format!("exec /usr/bin/elo{args}"))
+            relaunch(&format!("exec /usr/bin/{}{args}", exe_name()))
         }
         #[allow(unreachable_patterns)]
         _ => Err("atualização automática não disponível neste sistema".into()),
@@ -306,8 +314,9 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
 #[cfg(target_os = "linux")]
 pub fn replace_binaries(extracted: &Path, dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    let pkg = std::fs::read_dir(extracted).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("elo").is_file()).ok_or("pacote sem o executável elo")?;
-    for b in ["elo", "elo-server"] {
+    let main = exe_name();
+    let pkg = std::fs::read_dir(extracted).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join(main).is_file()).ok_or(format!("pacote sem o executável {main}"))?;
+    for b in [main, "elo-server"] {
         let src = pkg.join(b);
         if !src.is_file() {
             continue;

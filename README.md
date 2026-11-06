@@ -45,6 +45,7 @@ sessão**, nem o próprio servidor.
 - **Favoritos** com nome personalizado, **tela cheia** e **iniciar com o computador**.
 - **Atualização automática**, com pacotes assinados e conferidos antes de instalar.
 - **Wake-on-LAN**: liga um computador desligado da lista de favoritos ou recentes.
+- **Para empresas de suporte**: Elo Cliente (só recebe conexões, com aceite, e tem "Pedir ajuda"), contas de técnico, painel de clientes por empresa e convites.
 - **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
 - **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
 
@@ -59,6 +60,7 @@ Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Con
 | macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
 | Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
 | Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
+| Elo Cliente (computadores atendidos por uma empresa) | `Elo-Cliente-…` / `elo-cliente…` | Veja [Empresas e Elo Cliente](#empresas-e-elo-cliente) |
 | Só o servidor (máquina dedicada, VPS, Docker) | `elo-server…` | Veja [Servidor avulso](#3-servidor-avulso) |
 
 Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
@@ -250,6 +252,42 @@ elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --self-signed
 
 O app de desktop já traz o servidor embutido (opção 1); o pacote do servidor
 é só para quem quer uma máquina dedicada.
+
+## Empresas e Elo Cliente
+
+Para quem presta suporte a empresas: os computadores dos clientes ficam
+organizados por empresa, os clientes pedem ajuda por um botão e só os seus
+técnicos conseguem entrar, sempre com o aceite de quem está no computador.
+
+**Técnicos.** No Elo, em **Configurações → Conta de técnico**, entre com
+usuário e senha do servidor. Num servidor novo, a primeira conta vira
+administrador com o **código de primeiro acesso**: ele aparece nos registros
+do servidor (`journalctl -u elo-server`, `docker logs elo-server`) e no
+arquivo `primeiro-acesso.txt` da pasta de dados; com o servidor embutido no
+app, o próprio Elo já preenche. Administradores criam e removem técnicos na
+aba **Clientes → Técnicos**. O servidor guarda só o hash (Argon2) das senhas,
+e o app guarda só um token de entrada.
+
+**Aba Clientes.** Pedidos de ajuda (com a mensagem do cliente e quem está
+atendendo), empresas, computadores (online, visto pela última vez, nome e
+observações) e o botão para conectar. Um pedido novo aparece na hora, com
+aviso, mesmo com o Elo na bandeja.
+
+**Convidar um computador.** Na empresa, **Convidar computador** gera um código
+de convite (endereço do servidor, impressão digital e a chave da empresa) e
+uma mensagem pronta com o link de download. O cliente instala o **Elo
+Cliente**, cola o código e pronto. Para instalar em muitas máquinas, salve o
+código em `convite.txt` em `C:\ProgramData\Elo\` (Windows), `/etc/elo/`
+(Linux) ou `/Library/Application Support/Elo/` (macOS): o Elo Cliente lê
+sozinho na primeira abertura. **Trocar o convite** invalida o código antigo
+para instalações novas, sem derrubar os computadores já ligados.
+
+**Elo Cliente.** É o mesmo programa, com outro nome e configuração própria (os
+dois convivem na mesma máquina). Mostra o ID e o botão **Pedir ajuda**; não
+conecta em outros computadores e não aceita senhas: todo acesso é aceito na
+tela, e quem aceita vê o nome do técnico. O servidor também garante isso:
+computadores de empresa só recebem conexões, e só de técnicos logados. O
+histórico de sessões registra qual técnico fez cada acesso.
 
 ## Segurança
 

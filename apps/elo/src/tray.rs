@@ -32,11 +32,11 @@ fn icon() -> Option<tray_icon::Icon> {
 pub fn create(ctx: &egui::Context) -> Option<Tray> {
     let menu = Menu::new();
     let id_item = MenuItem::new("Seu ID: —", false, None);
-    let open = MenuItem::new("Abrir o Elo", true, None);
+    let open = MenuItem::new(format!("Abrir o {}", crate::variant::app_name()), true, None);
     let copy = MenuItem::new("Copiar ID", true, None);
-    let quit = MenuItem::new("Sair do Elo", true, None);
+    let quit = MenuItem::new(format!("Sair do {}", crate::variant::app_name()), true, None);
     menu.append_items(&[&id_item, &PredefinedMenuItem::separator(), &open, &copy, &PredefinedMenuItem::separator(), &quit]).ok()?;
-    let icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Elo").with_icon(icon()?).build().ok()?;
+    let icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(crate::variant::app_name()).with_icon(icon()?).build().ok()?;
 
     // Os eventos chegam em outra thread: repassa e acorda o app (que roda
     // `logic` mesmo com a janela escondida).

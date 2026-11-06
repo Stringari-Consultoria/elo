@@ -14,6 +14,7 @@
 #   NOTARIZAR=perfil            notariza com `xcrun notarytool` usando um perfil
 #                               salvo com `notarytool store-credentials`
 #   NOTARIZAR_KEYCHAIN=arquivo  keychain do perfil, se não for o padrão (CI)
+#   VARIANTE=cliente            gera o Elo Cliente (Elo-Cliente-<versão>-macos.dmg)
 set -euo pipefail
 
 [[ "$(uname)" == Darwin ]] || { echo "pacote-macos.sh só roda no macOS (use o workflow de release do GitHub)."; exit 1; }
@@ -22,6 +23,11 @@ RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 VERSAO="$(sed -n 's/^version = "\(.*\)"/\1/p' "$RAIZ/Cargo.toml" | head -1)"
 DIST="$RAIZ/dist"
 export PATH="$HOME/.cargo/bin:$PATH"
+if [[ "${VARIANTE:-}" == cliente ]]; then
+    APPNOME="Elo Cliente"; EXE=elo-cliente; BUNDLE=br.com.stringari.elo-cliente; ARQUIVO="Elo-Cliente"
+else
+    APPNOME="Elo"; EXE=elo; BUNDLE=br.com.stringari.elo; ARQUIVO="Elo"
+fi
 export MACOSX_DEPLOYMENT_TARGET=11.0
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -43,10 +49,11 @@ else
 fi
 
 # ---- Elo.app ----
-APP="$TMP/dmg/Elo.app"
+APP="$TMP/dmg/$APPNOME.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-install -m 755 "$TMP/bin/elo" "$TMP/bin/elo-server" "$APP/Contents/MacOS/"
-sed "s/@VERSAO@/$VERSAO/g" "$RAIZ/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
+install -m 755 "$TMP/bin/elo" "$APP/Contents/MacOS/$EXE"
+if [[ "$EXE" == elo ]]; then install -m 755 "$TMP/bin/elo-server" "$APP/Contents/MacOS/"; fi
+sed -e "s/@VERSAO@/$VERSAO/g" -e "s#<string>Elo</string>#<string>$APPNOME</string>#g" -e "s#<string>br.com.stringari.elo</string>#<string>$BUNDLE</string>#" -e "s#<string>elo</string>#<string>$EXE</string>#" "$RAIZ/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 ICONSET="$TMP/Elo.iconset"
@@ -56,14 +63,14 @@ for s in 16 32 128 256 512; do
     sips -z $s $s "$PNG" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
     sips -z $((s * 2)) $((s * 2)) "$PNG" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Elo.icns"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$APPNOME.icns"
 
 # ---- assinatura ----
 if [[ -n "${ASSINATURA:-}" ]]; then
-    codesign --force --options runtime --timestamp --sign "$ASSINATURA" "$APP/Contents/MacOS/elo-server"
+    if [[ -f "$APP/Contents/MacOS/elo-server" ]]; then codesign --force --options runtime --timestamp --sign "$ASSINATURA" "$APP/Contents/MacOS/elo-server"; fi
     codesign --force --options runtime --timestamp --sign "$ASSINATURA" "$APP"
 else
-    codesign --force --sign - "$APP/Contents/MacOS/elo-server"
+    if [[ -f "$APP/Contents/MacOS/elo-server" ]]; then codesign --force --sign - "$APP/Contents/MacOS/elo-server"; fi
     codesign --force --sign - "$APP"
 fi
 
@@ -71,7 +78,7 @@ fi
 # Janela com fundo e posições (dmgbuild, sem depender do Finder). Se não der
 # para instalar o dmgbuild, gera um .dmg simples com hdiutil.
 mkdir -p "$DIST"
-DMG="$DIST/Elo-$VERSAO-macos.dmg"
+DMG="$DIST/$ARQUIVO-$VERSAO-macos.dmg"
 rm -f "$DMG"
 DMGBUILD="$(command -v dmgbuild || true)"
 if [[ -z "$DMGBUILD" ]] && python3 -m venv "$TMP/venv" >/dev/null 2>&1 && "$TMP/venv/bin/pip" install -q dmgbuild >/dev/null 2>&1; then
@@ -79,15 +86,16 @@ if [[ -z "$DMGBUILD" ]] && python3 -m venv "$TMP/venv" >/dev/null 2>&1 && "$TMP/
 fi
 if [[ -n "$DMGBUILD" ]]; then
     "$DMGBUILD" -s "$RAIZ/packaging/macos/dmg.py" \
-        -D app="$APP" -D fundo="$RAIZ/packaging/macos/dmg-fundo.png" -D icone="$APP/Contents/Resources/Elo.icns" \
-        "Elo $VERSAO" "$DMG"
+        -D app="$APP" -D fundo="$RAIZ/packaging/macos/dmg-fundo.png" -D icone="$APP/Contents/Resources/$APPNOME.icns" \
+        "$APPNOME $VERSAO" "$DMG"
 else
     echo "aviso: dmgbuild indisponível; gerando .dmg simples" >&2
     ln -s /Applications "$TMP/dmg/Aplicativos"
-    hdiutil create -volname "Elo $VERSAO" -srcfolder "$TMP/dmg" -ov -format UDZO "$DMG" >/dev/null
+    hdiutil create -volname "$APPNOME $VERSAO" -srcfolder "$TMP/dmg" -ov -format UDZO "$DMG" >/dev/null
 fi
 
-# ---- servidor avulso ----
+# ---- servidor avulso (só no pacote do Elo) ----
+if [[ "$EXE" == elo ]]; then
 SRV="elo-server-$VERSAO-macos"
 mkdir -p "$TMP/$SRV"
 install -m 755 "$TMP/bin/elo-server" "$TMP/$SRV/"
@@ -142,6 +150,7 @@ Detalhes: https://github.com/Stringari-Consultoria/elo#servidor
 TXT
 tar -C "$TMP" -czf "$DIST/$SRV.tar.gz" "$SRV"
 echo "Gerado: $DIST/$SRV.tar.gz"
+fi
 
 if [[ -n "${NOTARIZAR:-}" ]]; then
     [[ -n "${ASSINATURA:-}" ]] || { echo "NOTARIZAR exige ASSINATURA (Developer ID)."; exit 1; }

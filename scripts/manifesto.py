@@ -2,7 +2,7 @@
 """Gera o latest.json da atualização automática (o CI assina em seguida).
 
 Uso: scripts/manifesto.py <versão> <pasta com os pacotes> > latest.json
-Exige os cinco pacotes da release; falta algum = erro (não publica pela metade).
+Exige os dez pacotes da release (Elo e Elo Cliente); falta algum = erro (não publica pela metade).
 """
 import hashlib
 import json
@@ -16,6 +16,8 @@ TIPOS = [
     ("linux-x86_64", "-linux-x86_64.tar.gz"),
     ("linux-x86_64-deb", "_amd64.deb"),
 ]
+# O Elo Cliente tem os mesmos tipos, com "-cliente" na chave.
+TODOS = TIPOS + [(c + "-cliente", f) for c, f in TIPOS]
 
 
 def main() -> int:
@@ -25,13 +27,15 @@ def main() -> int:
         # Os pacotes do servidor avulso (elo-server*) não são do app.
         if nome.lower().startswith("elo-server"):
             continue
+        cliente = nome.lower().startswith("elo-cliente") or nome.lower().startswith("elo_cliente")
         for chave, fim in TIPOS:
+            chave = chave + "-cliente" if cliente else chave
             if nome.endswith(fim) and versao in nome:
                 caminho = os.path.join(pasta, nome)
                 with open(caminho, "rb") as f:
                     dados = f.read()
                 assets[chave] = {"name": nome, "sha256": hashlib.sha256(dados).hexdigest(), "size": len(dados)}
-    faltando = [c for c, _ in TIPOS if c not in assets]
+    faltando = [c for c, _ in TODOS if c not in assets]
     if faltando:
         print(f"pacotes faltando para {versao}: {', '.join(faltando)}", file=sys.stderr)
         return 1

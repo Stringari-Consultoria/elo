@@ -12,7 +12,10 @@ use std::path::PathBuf;
 pub const ARG: &str = "--segundo-plano";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const ID: &str = "br.com.stringari.elo";
+/// Identificador (o Elo Cliente tem o seu: os dois podem iniciar com o sistema).
+fn id() -> &'static str {
+    if crate::variant::client_build() { "br.com.stringari.elo-cliente" } else { "br.com.stringari.elo" }
+}
 
 fn exe() -> Result<PathBuf, String> {
     let p = std::env::current_exe().map_err(|e| format!("caminho do Elo: {e}"))?;
@@ -50,7 +53,7 @@ mod imp {
 
     fn file() -> Option<PathBuf> {
         let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().join(".config")))?;
-        Some(base.join("autostart").join(format!("{ID}.desktop")))
+        Some(base.join("autostart").join(format!("{}.desktop", id())))
     }
 
     /// Aspas da especificação de .desktop (Exec).
@@ -77,8 +80,10 @@ mod imp {
         }
         let exe = exe()?;
         let data = format!(
-            "[Desktop Entry]\nType=Application\nName=Elo\nComment=Acesso remoto\nExec={} {ARG}\nIcon={ID}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
-            quote(&exe.to_string_lossy())
+            "[Desktop Entry]\nType=Application\nName={}\nComment=Acesso remoto\nExec={} {ARG}\nIcon={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            crate::variant::app_name(),
+            quote(&exe.to_string_lossy()),
+            id()
         );
         if let Some(d) = f.parent() {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
@@ -96,7 +101,7 @@ mod imp {
     use super::*;
 
     fn file() -> Option<PathBuf> {
-        directories::BaseDirs::new().map(|d| d.home_dir().join("Library/LaunchAgents").join(format!("{ID}.plist")))
+        directories::BaseDirs::new().map(|d| d.home_dir().join("Library/LaunchAgents").join(format!("{}.plist", id())))
     }
 
     fn xml(s: &str) -> String {
@@ -113,13 +118,14 @@ mod imp {
             };
         }
         let exe = exe()?;
+        let id = id();
         let data = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{ID}</string>
+    <string>{id}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
@@ -152,23 +158,23 @@ mod imp {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 
     const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const NAME: &str = "Elo";
 
     pub fn set(on: bool) -> Result<(), String> {
+        let name = crate::variant::app_name();
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN).map_err(|e| format!("registro: {e}"))?;
         if !on {
-            return match key.delete_value(NAME) {
+            return match key.delete_value(name) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(format!("registro: {e}")),
             };
         }
         let value = format!("\"{}\" {ARG}", exe()?.display());
-        key.set_value(NAME, &value).map_err(|e| format!("registro: {e}"))
+        key.set_value(name, &value).map_err(|e| format!("registro: {e}"))
     }
 
     pub fn enabled() -> bool {
-        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_READ).and_then(|k| k.get_value::<String, _>(NAME)).is_ok()
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_READ).and_then(|k| k.get_value::<String, _>(crate::variant::app_name())).is_ok()
     }
 }
 

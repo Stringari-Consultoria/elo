@@ -10,21 +10,27 @@
 #      instalar-linux.sh --remover  desinstala (mantém as configurações)
 set -euo pipefail
 
-ID=br.com.stringari.elo
 AQUI="$(cd "$(dirname "$0")" && pwd)"
+# Pacote do Elo Cliente: tem o executável elo-cliente (e não o elo).
+if [[ -x "$AQUI/elo-cliente" || "${VARIANTE:-}" == cliente ]]; then
+    COMENTARIO="Receba suporte remoto da sua empresa"; APP="Elo Cliente"; EXE=elo-cliente; ID=br.com.stringari.elo-cliente
+else
+    COMENTARIO="Acesse e controle outro computador"; APP="Elo"; EXE=elo; ID=br.com.stringari.elo
+fi
 BIN="$HOME/.local/bin"
 DADOS="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS="$DADOS/applications"
 ICONES="$DADOS/icons/hicolor/scalable/apps"
 
 if [[ "${1:-}" == "--remover" ]]; then
-    rm -f "$BIN/elo" "$BIN/elo-server" "$APPS/$ID.desktop" "$ICONES/$ID.svg"
+    rm -f "$BIN/$EXE" "$APPS/$ID.desktop" "$ICONES/$ID.svg"
+    if [[ "$EXE" == elo ]]; then rm -f "$BIN/elo-server"; fi
     update-desktop-database "$APPS" 2>/dev/null || true
-    echo "Elo removido (as configurações continuam em ~/.config/elo)."
+    echo "$APP removido (as configurações continuam em ~/.config)."
     exit 0
 fi
 
-if [[ -x "$AQUI/elo" && -f "$AQUI/elo.svg" ]]; then
+if [[ -x "$AQUI/$EXE" && -f "$AQUI/elo.svg" ]]; then
     # Pacote pronto.
     ORIGEM="$AQUI"
     ICONE="$AQUI/elo.svg"
@@ -41,23 +47,23 @@ else
     ICONE="$RAIZ/packaging/icons/elo.svg"
 fi
 
-if [[ -x /usr/bin/elo ]]; then
-    echo "Aviso: o Elo também está instalado pelo .deb (/usr/bin/elo)."
+if [[ -x /usr/bin/$EXE ]]; then
+    echo "Aviso: o $APP também está instalado pelo .deb (/usr/bin/$EXE)."
     echo "A cópia em $BIN e o atalho dela passam na frente. Para usar só o .deb:"
     echo "  $0 --remover"
     echo
 fi
 mkdir -p "$BIN" "$APPS" "$ICONES"
-install -m 755 "$ORIGEM/elo" "$BIN/elo"
-install -m 755 "$ORIGEM/elo-server" "$BIN/elo-server"
+if [[ -x "$ORIGEM/$EXE" ]]; then install -m 755 "$ORIGEM/$EXE" "$BIN/$EXE"; else install -m 755 "$ORIGEM/elo" "$BIN/$EXE"; fi
+if [[ "$EXE" == elo ]]; then install -m 755 "$ORIGEM/elo-server" "$BIN/elo-server"; fi
 install -m 644 "$ICONE" "$ICONES/$ID.svg"
 cat > "$APPS/$ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Elo
+Name=$APP
 GenericName=Acesso remoto
-Comment=Acesse e controle outro computador
-Exec=$BIN/elo
+Comment=$COMENTARIO
+Exec=$BIN/$EXE
 Icon=$ID
 Terminal=false
 Categories=Network;RemoteAccess;
@@ -67,6 +73,6 @@ update-desktop-database "$APPS" 2>/dev/null || true
 
 echo
 echo "Instalado:"
-echo "  $BIN/elo         (app, com o servidor embutido)"
-echo "  $BIN/elo-server  (servidor avulso, opcional)"
-echo "Abra pelo menu de aplicativos (\"Elo\") ou rodando: elo"
+echo "  $BIN/$EXE"
+if [[ "$EXE" == elo ]]; then echo "  $BIN/elo-server  (servidor avulso, opcional)"; fi
+echo "Abra pelo menu de aplicativos (\"$APP\") ou rodando: $EXE"
