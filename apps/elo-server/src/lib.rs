@@ -21,13 +21,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use elo_proto::ctrl::{ErrorCode, FromServer, ToServer};
+use elo_proto::ctrl::{ErrorCode, FromServer, HelpRequest, Manage, Overview, ToServer};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+mod gestao;
+
+use gestao::{CompanyRec, Gestao, TechRec};
 
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
@@ -47,8 +51,12 @@ async fn read_frame(s: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Vec<u8>
 
 async fn write_msg(s: &mut (impl AsyncWrite + Unpin), m: &FromServer) -> std::io::Result<()> {
     let data = postcard::to_stdvec(m).map_err(std::io::Error::other)?;
+    write_raw(s, &data).await
+}
+
+async fn write_raw(s: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> std::io::Result<()> {
     s.write_all(&(data.len() as u32).to_le_bytes()).await?;
-    s.write_all(&data).await?;
+    s.write_all(data).await?;
     s.flush().await
 }
 
@@ -67,6 +75,15 @@ struct Pending {
     created: Instant,
     /// Primeiro lado que chegou esperando o outro.
     waiting: Option<(bool, oneshot::Sender<BoxStream>)>,
+    /// Técnico que pediu a conexão (vai para o histórico).
+    tech: Option<String>,
+}
+
+/// Técnico logado numa conexão de controle.
+struct TechConn {
+    conn: u64,
+    user: String,
+    tx: mpsc::UnboundedSender<FromServer>,
 }
 
 #[derive(Default)]
@@ -94,6 +111,9 @@ struct Known {
     os: String,
     mac: String,
     ip: String,
+    /// Visto pela última vez (segundos desde 1970).
+    #[serde(default)]
+    seen: u64,
 }
 
 struct State {
@@ -111,6 +131,13 @@ struct State {
     known: Mutex<HashMap<String, Known>>,
     /// Dias que o histórico de sessões é guardado (0 = para sempre).
     retention_days: std::sync::atomic::AtomicU32,
+    /// Empresas, técnicos e computadores das empresas (`gestao.json`).
+    gestao: Mutex<Gestao>,
+    /// Código de primeiro acesso (enquanto não há técnicos).
+    setup: Mutex<Option<String>>,
+    /// Pedidos de ajuda abertos, por computador.
+    help: Mutex<HashMap<String, HelpRequest>>,
+    techs_online: Mutex<Vec<TechConn>>,
 }
 
 impl State {
@@ -132,6 +159,58 @@ impl State {
                 let _ = tokio::fs::rename(&tmp, self.data.join("dispositivos.json")).await;
             }
         }
+    }
+
+    /// O que o técnico vê no painel (`None` se a conta não existe mais).
+    async fn overview(&self, user: &str) -> Option<Overview> {
+        let online: HashMap<String, (String, String, String)> = self.online.lock().await.iter().filter_map(|(id, v)| v.last().map(|d| (id.clone(), (d.name.clone(), d.os.clone(), d.ip.clone())))).collect();
+        let known = self.known.lock().await.clone();
+        let g = self.gestao.lock().await.clone();
+        let mut requests: Vec<HelpRequest> = self.help.lock().await.values().cloned().collect();
+        let me = g.tech(user)?;
+        let tech = |t: &TechRec| elo_proto::ctrl::Tech { user: t.user.clone(), name: t.name.clone(), admin: t.admin };
+        let mut companies: Vec<elo_proto::ctrl::Company> = g.companies.iter().map(|c| elo_proto::ctrl::Company { id: c.id.clone(), name: c.name.clone(), key: c.key.clone() }).collect();
+        companies.sort_by_key(|c| c.name.to_lowercase());
+        let mut ids: Vec<&String> = known.keys().chain(g.devices.keys()).collect();
+        ids.sort();
+        ids.dedup();
+        let now = now_secs();
+        let mut devices: Vec<elo_proto::ctrl::DeviceEntry> = ids
+            .into_iter()
+            .map(|id| {
+                let k = known.get(id).cloned().unwrap_or_default();
+                let d = g.devices.get(id).cloned().unwrap_or_default();
+                let on = online.get(id);
+                elo_proto::ctrl::DeviceEntry {
+                    id: id.clone(),
+                    name: on.map(|o| o.0.clone()).unwrap_or(k.name),
+                    os: on.map(|o| o.1.clone()).unwrap_or(k.os),
+                    alias: d.alias,
+                    notes: d.notes,
+                    company: g.company_of(id),
+                    online: on.is_some(),
+                    last_seen: if on.is_some() { now } else { k.seen },
+                    ip: on.map(|o| o.2.clone()).unwrap_or(k.ip),
+                }
+            })
+            .collect();
+        devices.sort_by_key(|d| (d.company.as_ref().and_then(|c| g.company_name(c)).unwrap_or_default().to_lowercase(), if d.alias.is_empty() { d.name.to_lowercase() } else { d.alias.to_lowercase() }));
+        requests.sort_by_key(|r| r.since);
+        Some(Overview { me: tech(me), companies, devices, requests, techs: if me.admin { g.techs.iter().map(tech).collect() } else { Vec::new() } })
+    }
+
+    /// Manda o painel atualizado a todos os técnicos logados.
+    async fn notify_techs(&self) {
+        let list: Vec<(String, mpsc::UnboundedSender<FromServer>)> = self.techs_online.lock().await.iter().map(|t| (t.user.clone(), t.tx.clone())).collect();
+        for (user, tx) in list {
+            if let Some(o) = self.overview(&user).await {
+                let _ = tx.send(FromServer::Overview(o));
+            }
+        }
+    }
+
+    fn save_gestao(&self, g: &Gestao) {
+        g.save(&self.data);
     }
 
     async fn log_session(&self, line: serde_json::Value) {
@@ -199,7 +278,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     {
         let mut on = state.online.lock().await;
         on.entry(id.clone()).or_default().push(Device { tx: tx.clone(), name: name.clone(), os: os.clone(), ip: peer.ip().to_string(), since: now_secs() });
-        let k = Known { name: name.clone(), os: os.clone(), mac: if elo_proto::ctrl::magic_packet(&mac).is_some() { mac.clone() } else { String::new() }, ip: peer.ip().to_string() };
+        let k = Known { name: name.clone(), os: os.clone(), mac: if elo_proto::ctrl::magic_packet(&mac).is_some() { mac.clone() } else { String::new() }, ip: peer.ip().to_string(), seen: now_secs() };
         let changed = {
             let mut known = state.known.lock().await;
             let old = known.get(&id).map(|o| (o.name.clone(), o.os.clone(), o.mac.clone(), o.ip.clone()));
@@ -214,9 +293,23 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
         }
     }
     eprintln!("[+] {id} ({name}, {os}) de {peer}");
-    if write_msg(&mut wr, &FromServer::Welcome { id: id.clone() }).await.is_err() {
+    // Welcome + recursos deste servidor (apps antigos ignoram o resto do quadro).
+    let welcome = postcard::to_stdvec(&FromServer::Welcome { id: id.clone() }).and_then(|mut v| postcard::to_stdvec(&elo_proto::ctrl::SERVER_FEATURES).map(|f| {
+        v.extend(f);
+        v
+    }));
+    let Ok(welcome) = welcome else { return };
+    if write_raw(&mut wr, &welcome).await.is_err() {
         return;
     }
+    state.notify_techs().await;
+    // Desta conexão: técnico logado (usuário, nome) e o token usado.
+    let conn: u64 = rand::thread_rng().r#gen();
+    let mut tech: Option<(String, String)> = None;
+    let mut token_h: Option<String> = None;
+    let err = |code: ErrorCode, m: &str| {
+        let _ = tx.send(FromServer::Error { code, message: m.into() });
+    };
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
             if write_msg(&mut wr, &m).await.is_err() {
@@ -246,6 +339,23 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     let _ = tx.send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse é o ID deste computador".into() });
                     continue;
                 }
+                // Computadores de empresa (Elo Cliente): só recebem, e só de técnicos.
+                let (mine, theirs) = {
+                    let g = state.gestao.lock().await;
+                    (g.company_of(&id), g.company_of(&target))
+                };
+                if mine.is_some() {
+                    err(ErrorCode::BadRequest, "este computador é de uma empresa (Elo Cliente): ele só recebe conexões");
+                    continue;
+                }
+                if theirs.is_some() && tech.is_none() {
+                    err(ErrorCode::BadRequest, "esse computador é atendido por uma empresa e só aceita conexões dos técnicos dela (entre com a sua conta de técnico)");
+                    continue;
+                }
+                let from_name = match &tech {
+                    Some((_, tname)) => format!("{tname} (técnico)"),
+                    None => from_name,
+                };
                 let on = state.online.lock().await;
                 let Some(host) = on.get(&target).and_then(|v| v.last()) else {
                     let known = state.ids.lock().await.values().any(|v| *v == target);
@@ -257,12 +367,26 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let _ = host.tx.send(FromServer::Incoming { session, secret, from_id: id.clone(), from_name: from_name.clone() });
                 let _ = tx.send(FromServer::SessionReady { session, secret, target_name: host.name.clone(), target_os: host.os.clone() });
                 drop(on);
-                state.pending.lock().await.insert(session, Pending { secret, host_id: target, viewer_id: id.clone(), created: Instant::now(), waiting: None });
+                state.pending.lock().await.insert(session, Pending { secret, host_id: target.clone(), viewer_id: id.clone(), created: Instant::now(), waiting: None, tech: tech.as_ref().map(|t| t.0.clone()) });
+                // Técnico entrando num computador que pediu ajuda: o pedido é dele.
+                if let Some((_, tname)) = &tech {
+                    let taken = state.help.lock().await.get_mut(&target).map(|r| r.taken_by = Some(tname.clone())).is_some();
+                    if taken {
+                        if let Some(d) = state.online.lock().await.get(&target).and_then(|v| v.last()) {
+                            let _ = d.tx.send(FromServer::HelpStatus { taken_by: Some(tname.clone()) });
+                        }
+                        state.notify_techs().await;
+                    }
+                }
             }
             ToServer::Wake { target } => {
                 let target = elo_proto::ctrl::clean_id(&target);
                 if !state.limits.lock().await.allow(&format!("wake:{}", peer.ip()), 10) {
                     let _ = tx.send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitos pedidos para ligar computadores; aguarde um minuto".into() });
+                    continue;
+                }
+                if tech.is_none() && state.gestao.lock().await.company_of(&target).is_some() {
+                    err(ErrorCode::BadRequest, "só os técnicos da empresa podem ligar esse computador");
                     continue;
                 }
                 if state.online.lock().await.contains_key(&target) {
@@ -297,18 +421,338 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     let _ = v.tx.send(FromServer::Declined { session });
                 }
             }
+            ToServer::JoinCompany { company, key } => {
+                if !state.limits.lock().await.allow(&format!("convite:{}", peer.ip()), 10) {
+                    err(ErrorCode::RateLimited, "muitas tentativas; aguarde um minuto");
+                    continue;
+                }
+                let joined = {
+                    let mut g = state.gestao.lock().await;
+                    let c = g.companies.iter().find(|c| c.id == company).cloned();
+                    // Quem já é da empresa continua mesmo se a chave do convite mudou.
+                    let already = g.company_of(&id).as_deref() == Some(company.as_str());
+                    match c {
+                        Some(c) if already || c.key == key => {
+                            g.devices.entry(id.clone()).or_default().company = Some(c.id.clone());
+                            state.save_gestao(&g);
+                            Some(c.name)
+                        }
+                        _ => None,
+                    }
+                };
+                match joined {
+                    Some(name) => {
+                        let _ = tx.send(FromServer::Company { name });
+                        state.notify_techs().await;
+                    }
+                    None => err(ErrorCode::BadRequest, "código de convite inválido ou trocado: peça um novo à empresa de suporte"),
+                }
+            }
+            ToServer::Login { user, password, setup, name: display } => {
+                if !state.limits.lock().await.allow(&format!("login:{}", peer.ip()), 10) {
+                    err(ErrorCode::RateLimited, "muitas tentativas de entrar; aguarde um minuto");
+                    continue;
+                }
+                let user = gestao::norm_user(&user);
+                if user.is_empty() || password.chars().count() < 8 {
+                    err(ErrorCode::Auth, "informe o usuário e uma senha de 8 caracteres ou mais");
+                    continue;
+                }
+                let has_techs = !state.gestao.lock().await.techs.is_empty();
+                if let Some(code) = setup {
+                    let valid = !has_techs && state.setup.lock().await.as_deref() == Some(code.trim().to_lowercase().as_str());
+                    if !valid {
+                        err(ErrorCode::Auth, "código de primeiro acesso inválido (ou o servidor já tem técnicos)");
+                        continue;
+                    }
+                    let pw = password.clone();
+                    let Ok(Ok(hash)) = tokio::task::spawn_blocking(move || gestao::hash_password(&pw)).await else {
+                        err(ErrorCode::BadRequest, "não foi possível guardar a senha");
+                        continue;
+                    };
+                    {
+                        let mut g = state.gestao.lock().await;
+                        let name = if display.trim().is_empty() { user.clone() } else { display.trim().to_string() };
+                        g.techs.push(TechRec { user: user.clone(), name, hash, admin: true, tokens: Vec::new() });
+                        state.save_gestao(&g);
+                    }
+                    *state.setup.lock().await = None;
+                    gestao::remove_setup_file(&state.data);
+                    eprintln!("[técnico] administrador {user} criado");
+                } else {
+                    if !has_techs {
+                        let _ = tx.send(FromServer::NeedsSetup);
+                        continue;
+                    }
+                    let hash = state.gestao.lock().await.tech(&user).map(|t| t.hash.clone());
+                    let pw = password.clone();
+                    // Sem o usuário, gasta o mesmo tempo (não revela quem existe).
+                    let ok = tokio::task::spawn_blocking(move || match hash {
+                        Some(h) => gestao::verify_password(&h, &pw),
+                        None => {
+                            let _ = gestao::hash_password(&pw);
+                            false
+                        }
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !ok {
+                        eprintln!("[técnico] senha errada para {user} de {peer}");
+                        err(ErrorCode::Auth, "usuário ou senha incorretos");
+                        continue;
+                    }
+                }
+                let token = gestao::random_text(32);
+                let me = {
+                    let mut g = state.gestao.lock().await;
+                    let me = g.techs.iter_mut().find(|t| t.user == user).map(|t| {
+                        t.tokens.push(gestao::token_hash(&token));
+                        let n = t.tokens.len();
+                        if n > 20 {
+                            t.tokens.drain(..n - 20);
+                        }
+                        (t.user.clone(), t.name.clone(), t.admin)
+                    });
+                    state.save_gestao(&g);
+                    me
+                };
+                let Some((user, name, admin)) = me else { continue };
+                token_h = Some(gestao::token_hash(&token));
+                enter_tech(&state, conn, &tx, &user, &name, admin, token).await;
+                tech = Some((user, name));
+            }
+            ToServer::Resume { token } => {
+                if !state.limits.lock().await.allow(&format!("login:{}", peer.ip()), 30) {
+                    err(ErrorCode::RateLimited, "muitas tentativas de entrar; aguarde um minuto");
+                    continue;
+                }
+                let me = state.gestao.lock().await.by_token(&token).map(|t| (t.user.clone(), t.name.clone(), t.admin));
+                match me {
+                    Some((user, name, admin)) => {
+                        token_h = Some(gestao::token_hash(&token));
+                        enter_tech(&state, conn, &tx, &user, &name, admin, token).await;
+                        tech = Some((user, name));
+                    }
+                    None => err(ErrorCode::Auth, "a entrada de técnico expirou: entre de novo com usuário e senha"),
+                }
+            }
+            ToServer::Logout => {
+                if let (Some((user, _)), Some(h)) = (tech.take(), token_h.take()) {
+                    let mut g = state.gestao.lock().await;
+                    if let Some(t) = g.techs.iter_mut().find(|t| t.user == user) {
+                        t.tokens.retain(|x| *x != h);
+                    }
+                    state.save_gestao(&g);
+                }
+                state.techs_online.lock().await.retain(|t| t.conn != conn);
+            }
+            ToServer::RequestHelp { message } => {
+                let company = state.gestao.lock().await.company_of(&id);
+                if company.is_none() {
+                    err(ErrorCode::BadRequest, "este computador não está ligado a uma empresa de suporte");
+                    continue;
+                }
+                let message: String = message.trim().chars().take(500).collect();
+                eprintln!("[ajuda] {id} ({name}) pediu ajuda");
+                state.help.lock().await.insert(id.clone(), HelpRequest { device: id.clone(), name: name.clone(), company, message, since: now_secs(), taken_by: None });
+                let _ = tx.send(FromServer::HelpStatus { taken_by: None });
+                state.notify_techs().await;
+            }
+            ToServer::CancelHelp => {
+                if state.help.lock().await.remove(&id).is_some() {
+                    state.notify_techs().await;
+                }
+            }
+            ToServer::Manage(m) => {
+                let Some((me, me_name)) = tech.clone() else {
+                    err(ErrorCode::Auth, "entre com a sua conta de técnico");
+                    continue;
+                };
+                let Some(admin) = state.gestao.lock().await.tech(&me).map(|t| t.admin) else {
+                    tech = None;
+                    state.techs_online.lock().await.retain(|t| t.conn != conn);
+                    err(ErrorCode::Auth, "sua conta de técnico foi removida");
+                    continue;
+                };
+                match manage(&state, &me, &me_name, admin, m).await {
+                    Ok(true) => state.notify_techs().await,
+                    Ok(false) => {
+                        if let Some(o) = state.overview(&me).await {
+                            let _ = tx.send(FromServer::Overview(o));
+                        }
+                    }
+                    Err(e) => err(ErrorCode::BadRequest, &e),
+                }
+            }
             _ => {}
         }
     }
     writer.abort();
-    let mut on = state.online.lock().await;
-    if let Some(v) = on.get_mut(&id) {
-        v.retain(|d| !d.tx.same_channel(&tx));
-        if v.is_empty() {
-            on.remove(&id);
+    state.techs_online.lock().await.retain(|t| t.conn != conn);
+    let gone = {
+        let mut on = state.online.lock().await;
+        let mut gone = false;
+        if let Some(v) = on.get_mut(&id) {
+            v.retain(|d| !d.tx.same_channel(&tx));
+            if v.is_empty() {
+                on.remove(&id);
+                gone = true;
+            }
+        }
+        gone
+    };
+    if gone {
+        // Saiu: o pedido de ajuda (se havia) cai, e fica a hora em que foi visto.
+        state.help.lock().await.remove(&id);
+        if let Some(k) = state.known.lock().await.get_mut(&id) {
+            k.seen = now_secs();
+        }
+        state.save_known().await;
+    }
+    state.notify_techs().await;
+    eprintln!("[-] {id}");
+}
+
+/// Técnico entrou nesta conexão: registra e manda o painel.
+async fn enter_tech(state: &Arc<State>, conn: u64, tx: &mpsc::UnboundedSender<FromServer>, user: &str, name: &str, admin: bool, token: String) {
+    {
+        let mut t = state.techs_online.lock().await;
+        t.retain(|x| x.conn != conn);
+        t.push(TechConn { conn, user: user.to_string(), tx: tx.clone() });
+    }
+    eprintln!("[técnico] {user} entrou");
+    let _ = tx.send(FromServer::LoggedIn { user: user.to_string(), name: name.to_string(), admin, token });
+    if let Some(o) = state.overview(user).await {
+        let _ = tx.send(FromServer::Overview(o));
+    }
+}
+
+/// Uma ação do painel. `Ok(true)` = mudou algo (avisa todos os técnicos).
+async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Manage) -> Result<bool, String> {
+    let need_admin = || if admin { Ok(()) } else { Err("só administradores podem fazer isso".to_string()) };
+    let clean = |s: &str, max: usize| -> String { s.trim().chars().take(max).collect() };
+    match m {
+        Manage::Refresh => return Ok(false),
+        Manage::CreateCompany { name } => {
+            let name = clean(&name, 80);
+            if name.is_empty() {
+                return Err("dê um nome à empresa".into());
+            }
+            let mut g = state.gestao.lock().await;
+            g.companies.push(CompanyRec { id: gestao::random_text(10), name, key: gestao::random_text(22), created: now_secs() });
+            state.save_gestao(&g);
+        }
+        Manage::RenameCompany { id, name } => {
+            let name = clean(&name, 80);
+            let mut g = state.gestao.lock().await;
+            let c = g.companies.iter_mut().find(|c| c.id == id).ok_or("empresa não encontrada")?;
+            if name.is_empty() {
+                return Err("dê um nome à empresa".into());
+            }
+            c.name = name;
+            state.save_gestao(&g);
+        }
+        Manage::DeleteCompany { id } => {
+            let mut g = state.gestao.lock().await;
+            g.companies.retain(|c| c.id != id);
+            for d in g.devices.values_mut() {
+                if d.company.as_deref() == Some(id.as_str()) {
+                    d.company = None;
+                }
+            }
+            state.save_gestao(&g);
+        }
+        Manage::NewKey { id } => {
+            let mut g = state.gestao.lock().await;
+            let c = g.companies.iter_mut().find(|c| c.id == id).ok_or("empresa não encontrada")?;
+            c.key = gestao::random_text(22);
+            state.save_gestao(&g);
+        }
+        Manage::SetDevice { id, company, alias, notes } => {
+            let mut g = state.gestao.lock().await;
+            if let Some(c) = &company
+                && !g.companies.iter().any(|x| x.id == *c)
+            {
+                return Err("empresa não encontrada".into());
+            }
+            let d = g.devices.entry(id).or_default();
+            d.company = company;
+            d.alias = clean(&alias, 80);
+            d.notes = clean(&notes, 2000);
+            state.save_gestao(&g);
+        }
+        Manage::ForgetDevice { id } => {
+            {
+                let mut g = state.gestao.lock().await;
+                g.devices.remove(&id);
+                state.save_gestao(&g);
+            }
+            state.known.lock().await.remove(&id);
+            state.save_known().await;
+        }
+        Manage::CreateTech { user, name, password, admin: is_admin } => {
+            need_admin()?;
+            let user = gestao::norm_user(&user);
+            if user.is_empty() || user.contains(char::is_whitespace) {
+                return Err("usuário sem espaços".into());
+            }
+            if password.chars().count() < 8 {
+                return Err("a senha precisa de 8 caracteres ou mais".into());
+            }
+            if state.gestao.lock().await.tech(&user).is_some() {
+                return Err("já existe um técnico com esse usuário".into());
+            }
+            let hash = tokio::task::spawn_blocking(move || gestao::hash_password(&password)).await.map_err(|e| e.to_string())??;
+            let mut g = state.gestao.lock().await;
+            let name = if name.trim().is_empty() { user.clone() } else { clean(&name, 80) };
+            g.techs.push(TechRec { user: user.clone(), name, hash, admin: is_admin, tokens: Vec::new() });
+            state.save_gestao(&g);
+            eprintln!("[técnico] {me} criou a conta {user}");
+        }
+        Manage::DeleteTech { user } => {
+            need_admin()?;
+            if user == me {
+                return Err("você não pode remover a própria conta".into());
+            }
+            {
+                let mut g = state.gestao.lock().await;
+                g.techs.retain(|t| t.user != user);
+                state.save_gestao(&g);
+            }
+            // Quem estava logado com essa conta sai na hora.
+            let mut on = state.techs_online.lock().await;
+            for t in on.iter().filter(|t| t.user == user) {
+                let _ = t.tx.send(FromServer::Error { code: ErrorCode::Auth, message: "sua conta de técnico foi removida".into() });
+            }
+            on.retain(|t| t.user != user);
+            eprintln!("[técnico] {me} removeu a conta {user}");
+        }
+        Manage::SetPassword { user, password } => {
+            if user != me {
+                need_admin()?;
+            }
+            if password.chars().count() < 8 {
+                return Err("a senha precisa de 8 caracteres ou mais".into());
+            }
+            let hash = tokio::task::spawn_blocking(move || gestao::hash_password(&password)).await.map_err(|e| e.to_string())??;
+            let mut g = state.gestao.lock().await;
+            let t = g.techs.iter_mut().find(|t| t.user == user).ok_or("técnico não encontrado")?;
+            t.hash = hash;
+            // Senha nova: as outras entradas dessa conta caem.
+            t.tokens.clear();
+            state.save_gestao(&g);
+        }
+        Manage::TakeRequest { device } => {
+            let ok = state.help.lock().await.get_mut(&device).map(|r| r.taken_by = Some(me_name.to_string())).is_some();
+            if !ok {
+                return Err("esse pedido de ajuda não existe mais".into());
+            }
+            if let Some(d) = state.online.lock().await.get(&device).and_then(|v| v.last()) {
+                let _ = d.tx.send(FromServer::HelpStatus { taken_by: Some(me_name.to_string()) });
+            }
         }
     }
-    eprintln!("[-] {id}");
+    Ok(true)
 }
 
 /// Repassa bytes nos dois sentidos até um dos lados fechar ou falhar.
@@ -365,7 +809,7 @@ async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16
         /// Segundo a chegar: entrega o stream a quem espera.
         Second(oneshot::Sender<BoxStream>),
         /// Primeiro a chegar: espera o outro e faz o relay.
-        First(oneshot::Receiver<BoxStream>, (String, String)),
+        First(oneshot::Receiver<BoxStream>, (String, String, Option<String>)),
     }
     // Verificar e registrar a espera na mesma trava: se os dois lados chegam
     // juntos, um deles é sempre o segundo (antes, os dois podiam se achar o
@@ -385,7 +829,7 @@ async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16
                 None => {
                     let (tx, rx) = oneshot::channel();
                     pd.waiting = Some((host, tx));
-                    Step::First(rx, (pd.host_id.clone(), pd.viewer_id.clone()))
+                    Step::First(rx, (pd.host_id.clone(), pd.viewer_id.clone(), pd.tech.clone()))
                 }
             },
             _ => Step::Expired,
@@ -413,7 +857,11 @@ async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16
             let (a, b) = relay(s, other).await;
             state.active.lock().await.remove(&session);
             eprintln!("[x] sessão {session:x}: {} bytes", a + b);
-            state.log_session(serde_json::json!({"sessao": format!("{session:x}"), "anfitriao": ids.0, "visualizador": ids.1, "inicio": start, "fim": now_secs(), "bytes": a + b})).await;
+            let mut line = serde_json::json!({"sessao": format!("{session:x}"), "anfitriao": ids.0, "visualizador": ids.1, "inicio": start, "fim": now_secs(), "bytes": a + b});
+            if let Some(t) = ids.2 {
+                line["tecnico"] = t.into();
+            }
+            state.log_session(line).await;
         }
     }
 }
@@ -631,6 +1079,17 @@ impl Server {
         let local_addr = listener.local_addr()?;
         prune_log(&cfg.data, cfg.retention_days);
         let known: HashMap<String, Known> = std::fs::read(cfg.data.join("dispositivos.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let gestao = Gestao::load(&cfg.data);
+        // Sem técnicos: código de primeiro acesso para criar o administrador.
+        let setup = if gestao.techs.is_empty() {
+            let code = gestao::setup_code();
+            gestao::write_setup_file(&cfg.data, &code);
+            eprintln!("Primeiro acesso: no app do Elo, em Configurações → Conta de técnico, crie o administrador com o código {code}");
+            Some(code)
+        } else {
+            gestao::remove_setup_file(&cfg.data);
+            None
+        };
         let state = Arc::new(State {
             data: cfg.data,
             ids: Mutex::new(ids),
@@ -640,6 +1099,10 @@ impl Server {
             active: Mutex::new(HashMap::new()),
             known: Mutex::new(known),
             retention_days: std::sync::atomic::AtomicU32::new(cfg.retention_days),
+            gestao: Mutex::new(gestao),
+            setup: Mutex::new(setup),
+            help: Mutex::new(HashMap::new()),
+            techs_online: Mutex::new(Vec::new()),
         });
         Ok(Server { listener, tls, state, local_addr, fingerprint })
     }
@@ -796,6 +1259,11 @@ impl Background {
                 Err(std::io::Error::other("o servidor local não iniciou"))
             }
         }
+    }
+
+    /// Código de primeiro acesso, enquanto o servidor não tem técnicos.
+    pub fn setup_code(&self) -> Option<String> {
+        self.state.setup.blocking_lock().clone()
     }
 
     /// Ainda rodando (falso se a thread terminou por erro).

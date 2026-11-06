@@ -11,7 +11,7 @@ use elo_core::net::ServerCfg;
 use elo_core::session::{self, Handle, HostEvent, HostOptions, Listing, Remote, Transfer, ViewerEvent};
 use elo_proto::msg::{Monitor, Permissions};
 
-use crate::settings::{LocalServer, Settings};
+use crate::settings::{CompanyCfg, LocalServer, Settings, TechCfg};
 
 /// Servidor embutido no app.
 pub struct Local {
@@ -237,17 +237,55 @@ pub struct EloApp {
     pub panel: Option<(Instant, elo_server::Stats)>,
     /// Janela escondida na bandeja.
     pub hidden: bool,
+    /// Recursos do servidor ("empresas"…).
+    pub features: Vec<String>,
+    /// Técnico logado: empresas, computadores, pedidos de ajuda.
+    pub overview: Option<Box<elo_proto::ctrl::Overview>>,
+    /// Aba "Clientes" aberta (no lugar da tela inicial).
+    pub clients_open: bool,
+    pub tech_form: TechForm,
+    pub clients: crate::empresa::ClientsUi,
+    /// Elo Cliente: pedido de ajuda (`None` = nenhum; `Some(None)` = na fila;
+    /// `Some(Some(nome))` = um técnico vai atender).
+    pub help: Option<Option<String>>,
+    pub help_text: String,
+    /// Elo Cliente: código de convite sendo colado.
+    pub invite_input: String,
+}
+
+/// Formulário de entrada do técnico.
+#[derive(Default)]
+pub struct TechForm {
+    pub user: String,
+    pub password: String,
+    pub name: String,
+    pub setup: String,
+    /// O servidor não tem técnicos: criar o administrador.
+    pub needs_setup: bool,
+    pub busy: bool,
 }
 
 impl EloApp {
     pub fn new(cc: &eframe::CreationContext, background: bool) -> Self {
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        // Elo Cliente instalado pela TI com o convite num arquivo.
+        if crate::variant::client_build()
+            && settings.company.is_none()
+            && let Some(text) = crate::variant::invite_file()
+            && let Some(inv) = elo_proto::ctrl::Invite::decode(&text)
+        {
+            settings.company = Some(CompanyCfg { invite: text.trim().to_string(), name: inv.name });
+            settings.onboarded = true;
+            settings.save();
+        }
+        let client_mode = crate::variant::client_build() || settings.company.is_some();
         crate::autostart::refresh();
         stringari_ui::theme::install_fonts(&cc.egui_ctx);
         stringari_ui::theme::apply(&cc.egui_ctx, settings.dark);
         // O servidor local sobe antes do cliente, que já conecta nele.
-        let local = Local::start(&settings.local_server);
-        let control = client::start(server_cfg(&settings, &local), settings.token, settings.device_name.clone());
+        // O Elo Cliente não roda servidor: usa o da empresa.
+        let local = Local::start(&if client_mode { LocalServer { enabled: false, ..settings.local_server.clone() } } else { settings.local_server.clone() });
+        let control = client::start_with(server_cfg(&settings, &local), settings.token, settings.device_name.clone(), identity(&settings, client_mode));
         let local_error = local.error.clone();
         let mut app = Self {
             settings,
@@ -281,8 +319,16 @@ impl EloApp {
             hidden: false,
             reconnects: Vec::new(),
             panel: None,
+            features: Vec::new(),
+            overview: None,
+            clients_open: false,
+            tech_form: TechForm::default(),
+            clients: Default::default(),
+            help: None,
+            help_text: String::new(),
+            invite_input: String::new(),
         };
-        if !app.settings.onboarded {
+        if !app.settings.onboarded && !app.client_mode() {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
         }
         if let Some(e) = local_error {
@@ -326,9 +372,45 @@ impl EloApp {
         let _ = self.control.tx.send(Command::Connect { target: t });
     }
 
+    /// Elo Cliente: só recebe conexões, pede ajuda e aceita na tela.
+    pub fn client_mode(&self) -> bool {
+        crate::variant::client_build() || self.settings.company.is_some()
+    }
+
+    /// Liga este computador à empresa do convite (Elo Cliente).
+    pub fn join_invite(&mut self, text: &str) -> Result<(), String> {
+        let inv = elo_proto::ctrl::Invite::decode(text).ok_or("código de convite inválido: confira se copiou inteiro (começa com ELO1-)")?;
+        self.settings.company = Some(CompanyCfg { invite: text.split_whitespace().collect(), name: inv.name });
+        self.settings.onboarded = true;
+        self.settings.tech = None;
+        self.settings.save();
+        // Sem servidor local: o da empresa.
+        self.local.server = None;
+        self.local = Local::start(&LocalServer { enabled: false, ..self.settings.local_server.clone() });
+        self.restart_control();
+        Ok(())
+    }
+
+    /// Técnico: entra (ou cria o primeiro administrador).
+    pub fn tech_login(&mut self) {
+        let f = &mut self.tech_form;
+        f.busy = true;
+        let setup = f.needs_setup.then(|| f.setup.trim().to_string());
+        let _ = self.control.tx.send(Command::Login { user: f.user.trim().to_string(), password: f.password.clone(), setup, name: f.name.trim().to_string() });
+    }
+
+    pub fn tech_logout(&mut self) {
+        let _ = self.control.tx.send(Command::Logout);
+        self.settings.tech = None;
+        self.settings.save();
+        self.overview = None;
+        self.clients_open = false;
+    }
+
     pub fn host_options(&self) -> HostOptions {
-        let mut passwords = vec![self.temp_password.clone()];
-        if self.settings.unattended && !self.settings.permanent_password.is_empty() {
+        // Elo Cliente: nenhuma senha vale; todo acesso é aceito na tela.
+        let mut passwords = if self.client_mode() { Vec::new() } else { vec![self.temp_password.clone()] };
+        if !self.client_mode() && self.settings.unattended && !self.settings.permanent_password.is_empty() {
             passwords.push(self.settings.permanent_password.clone());
         }
         HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, audio: true }
@@ -480,8 +562,10 @@ impl EloApp {
     /// e ele só é enviado ao conectar).
     pub fn restart_control(&mut self) {
         let _ = self.control.tx.send(Command::Quit);
-        self.control = client::start(self.server_cfg(), self.settings.token, self.settings.device_name.clone());
+        self.control = client::start_with(self.server_cfg(), self.settings.token, self.settings.device_name.clone(), identity(&self.settings, self.client_mode()));
         self.status = Status::Connecting;
+        self.overview = None;
+        self.help = None;
     }
 
     pub fn reconnect_server(&mut self) {
@@ -518,8 +602,86 @@ impl EloApp {
                         self.status = Status::Connecting;
                     }
                 }
-                Event::Online { id } => self.status = Status::Online(id),
-                Event::Offline { reason } => self.status = Status::Offline(reason),
+                Event::Online { id } => {
+                    self.status = Status::Online(id);
+                    // O servidor esquece o pedido de ajuda quando a conexão cai.
+                    self.help = None;
+                }
+                Event::Offline { reason } => {
+                    self.status = Status::Offline(reason);
+                    self.help = None;
+                }
+                Event::Features(f) => self.features = f,
+                Event::Company { name } => {
+                    if let Some(c) = self.settings.company.as_mut()
+                        && c.name != name
+                    {
+                        c.name = name;
+                        self.settings.save();
+                    }
+                }
+                Event::LoggedIn { user, name, admin, token } => {
+                    let first = self.settings.tech.as_ref().is_none_or(|t| t.user != user);
+                    self.settings.tech = Some(TechCfg { user, name: name.clone(), admin, token });
+                    self.settings.save();
+                    self.tech_form = TechForm::default();
+                    if first {
+                        self.toast(format!("Você entrou como {name}. A aba Clientes mostra as empresas, os computadores e os pedidos de ajuda."));
+                    }
+                }
+                Event::NeedsSetup => {
+                    let f = &mut self.tech_form;
+                    f.busy = false;
+                    f.needs_setup = true;
+                    // Servidor embutido: o código está aqui mesmo.
+                    if let Some(code) = self.local.server.as_ref().and_then(|s| s.setup_code()) {
+                        f.setup = code;
+                    }
+                }
+                Event::AuthError(m) => {
+                    self.tech_form.busy = false;
+                    // Entrada guardada que não vale mais: pede usuário e senha de novo.
+                    if self.overview.is_none() && self.settings.tech.is_some() {
+                        self.settings.tech = None;
+                        self.settings.save();
+                    }
+                    if m.contains("removida") {
+                        self.settings.tech = None;
+                        self.settings.save();
+                        self.overview = None;
+                        self.clients_open = false;
+                    }
+                    self.error(m);
+                }
+                Event::HelpStatus { taken_by } => {
+                    if let Some(n) = &taken_by
+                        && self.help != Some(taken_by.clone())
+                    {
+                        self.toast(format!("{n} vai atender você. Aceite quando o pedido de acesso aparecer."));
+                        self.show_window(ctx);
+                    }
+                    self.help = Some(taken_by);
+                }
+                Event::Overview(o) => {
+                    // Pedido de ajuda novo: avisa e mostra a janela.
+                    let old: Vec<String> = self.overview.as_ref().map(|o| o.requests.iter().map(|r| r.device.clone()).collect()).unwrap_or_default();
+                    let fresh: Vec<String> = o
+                        .requests
+                        .iter()
+                        .filter(|r| !old.contains(&r.device) && r.taken_by.is_none())
+                        .map(|r| {
+                            let company = r.company.as_ref().and_then(|c| o.companies.iter().find(|x| x.id == *c)).map(|c| format!(" ({})", c.name)).unwrap_or_default();
+                            format!("{}{company} pediu ajuda{}", r.name, if r.message.is_empty() { String::new() } else { format!(": {}", r.message) })
+                        })
+                        .collect();
+                    if self.overview.is_some() && !fresh.is_empty() {
+                        for t in fresh {
+                            self.toast(t);
+                        }
+                        self.show_window(ctx);
+                    }
+                    self.overview = Some(o);
+                }
                 Event::Error(m) => {
                     // Tentativa de reconexão: o computador ainda está voltando, sem alarde.
                     let retry = self.pending_connect.as_ref().is_some_and(|(t, _)| self.reconnects.iter().any(|r| &r.id == t));
@@ -742,8 +904,20 @@ impl EloApp {
     }
 }
 
+/// O que o servidor deve saber deste app além do ID.
+fn identity(s: &Settings, client_mode: bool) -> client::Identity {
+    client::Identity {
+        company: s.company.as_ref().and_then(|c| c.decoded()).map(|i| (i.company, i.key)),
+        tech_token: if client_mode { None } else { s.tech.as_ref().map(|t| t.token.clone()) },
+    }
+}
+
 fn server_cfg(s: &Settings, local: &Local) -> ServerCfg {
-    if s.local_server.enabled {
+    // Elo Cliente: o servidor da empresa, do convite.
+    if let Some(i) = s.company.as_ref().and_then(|c| c.decoded()) {
+        return ServerCfg { address: i.address, tls: i.tls, pin: i.pin };
+    }
+    if s.local_server.enabled && !crate::variant::client_build() {
         ServerCfg { address: format!("127.0.0.1:{}", s.local_server.port), tls: true, pin: local.fingerprint.clone() }
     } else {
         s.server.clone()

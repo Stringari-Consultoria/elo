@@ -105,6 +105,32 @@ pub struct Settings {
     pub auto_update: bool,
     /// Fechar a janela deixa o Elo rodando na bandeja.
     pub close_to_tray: bool,
+    /// Conta de técnico neste servidor (painel de clientes).
+    pub tech: Option<TechCfg>,
+    /// Elo Cliente: empresa a que este computador pertence (código de convite).
+    pub company: Option<CompanyCfg>,
+}
+
+/// Entrada de técnico guardada: só o token, nunca a senha.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TechCfg {
+    pub user: String,
+    pub name: String,
+    pub admin: bool,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanyCfg {
+    /// Código de convite completo ("ELO1-…").
+    pub invite: String,
+    pub name: String,
+}
+
+impl CompanyCfg {
+    pub fn decoded(&self) -> Option<elo_proto::ctrl::Invite> {
+        elo_proto::ctrl::Invite::decode(&self.invite)
+    }
 }
 
 impl Default for Settings {
@@ -127,6 +153,8 @@ impl Default for Settings {
             onboarded: false,
             auto_update: true,
             close_to_tray: true,
+            tech: None,
+            company: None,
         }
     }
 }
@@ -135,7 +163,9 @@ pub fn config_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("ELO_CONFIG_DIR") {
         return PathBuf::from(d);
     }
-    directories::ProjectDirs::from("br.com", "Stringari", "Elo").map(|d| d.config_dir().to_path_buf()).unwrap_or_else(|| std::env::temp_dir().join("elo"))
+    // O Elo Cliente tem configuração própria (os dois podem estar na mesma máquina).
+    let name = crate::variant::app_name();
+    directories::ProjectDirs::from("br.com", "Stringari", name).map(|d| d.config_dir().to_path_buf()).unwrap_or_else(|| std::env::temp_dir().join(name.to_lowercase().replace(' ', "-")))
 }
 
 /// Dados do servidor local (IDs, sessões, certificado autoassinado).

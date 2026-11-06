@@ -368,3 +368,85 @@ fn cancelled_request_disappears() {
     assert_eq!(r, session::GAVE_UP);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Empresas: primeiro administrador, empresa, Elo Cliente pelo convite,
+/// regras de quem conecta em quem, pedido de ajuda e entrada do técnico.
+#[test]
+fn companies_techs_and_help_requests() {
+    use elo_proto::ctrl::Manage;
+    let port = 25000 + (std::process::id() % 1000) as u16;
+    let dir = std::env::temp_dir().join(format!("elo-e2e-empresas-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    let cfg = ServerCfg { address: format!("127.0.0.1:{port}"), tls: false, pin: String::new() };
+    let setup = std::fs::read_to_string(dir.join("primeiro-acesso.txt")).unwrap();
+    let code = setup.split_whitespace().find(|w| w.len() == 9 && w.contains('-')).expect("código no arquivo").to_string();
+
+    // Técnico: sem técnicos ainda, o servidor pede o primeiro acesso.
+    let tech = client::start(cfg.clone(), [11u8; 32], "Notebook do técnico".into());
+    let Some(Event::Online { id: tech_id }) = wait(&tech.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("técnico offline") };
+    assert!(matches!(wait(&tech.rx, 5, |e| matches!(e, Event::Features(_))), Some(Event::Features(f)) if f.contains(&"empresas".to_string())));
+    let login = |password: &str, setup: Option<String>| client::Command::Login { user: "Ana".into(), password: password.into(), setup, name: "Ana Souza".into() };
+    tech.tx.send(login("s3nha-da-ana", None)).unwrap();
+    assert!(wait(&tech.rx, 5, |e| matches!(e, Event::NeedsSetup)).is_some(), "devia pedir o primeiro acesso");
+    tech.tx.send(login("s3nha-da-ana", Some(code.clone()))).unwrap();
+    let Some(Event::LoggedIn { user, admin, token, .. }) = wait(&tech.rx, 10, |e| matches!(e, Event::LoggedIn { .. })) else { panic!("não entrou") };
+    assert_eq!(user, "ana");
+    assert!(admin);
+    assert!(!dir.join("primeiro-acesso.txt").exists(), "o código de primeiro acesso devia sumir");
+    let gestao = std::fs::read_to_string(dir.join("gestao.json")).unwrap();
+    assert!(!gestao.contains("s3nha-da-ana") && gestao.contains("$argon2"), "a senha não pode ficar em texto");
+
+    // Empresa nova.
+    tech.tx.send(client::Command::Manage(Manage::CreateCompany { name: "Padaria Pão Quente".into() })).unwrap();
+    let Some(Event::Overview(o)) = wait(&tech.rx, 5, |e| matches!(e, Event::Overview(o) if !o.companies.is_empty())) else { panic!("empresa não apareceu") };
+    let company = o.companies[0].clone();
+
+    // Elo Cliente com o convite.
+    let ident = client::Identity { company: Some((company.id.clone(), company.key.clone())), tech_token: None };
+    let cli = client::start_with(cfg.clone(), [12u8; 32], "Caixa da padaria".into(), ident);
+    let Some(Event::Online { id: cli_id }) = wait(&cli.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("cliente offline") };
+    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::Company { .. })), Some(Event::Company { name }) if name == "Padaria Pão Quente"));
+    let Some(Event::Overview(o)) = wait(&tech.rx, 5, |e| matches!(e, Event::Overview(o) if o.devices.iter().any(|d| d.company.is_some()))) else { panic!("cliente não apareceu no painel") };
+    let d = o.devices.iter().find(|d| d.id == cli_id).unwrap();
+    assert!(d.online && d.company.as_deref() == Some(company.id.as_str()));
+
+    // Convite errado é recusado.
+    let bad = client::start_with(cfg.clone(), [13u8; 32], "Intruso".into(), client::Identity { company: Some((company.id.clone(), "chave-errada".into())), tech_token: None });
+    assert!(matches!(wait(&bad.rx, 10, |e| matches!(e, Event::Error(_))), Some(Event::Error(m)) if m.contains("convite")));
+
+    // Regras: computador comum não conecta no cliente; o cliente não conecta em ninguém.
+    bad.tx.send(client::Command::Connect { target: cli_id.clone() }).unwrap();
+    assert!(matches!(wait(&bad.rx, 5, |e| matches!(e, Event::Error(_))), Some(Event::Error(m)) if m.contains("técnicos")));
+    cli.tx.send(client::Command::Connect { target: tech_id.clone() }).unwrap();
+    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::Error(_))), Some(Event::Error(m)) if m.contains("só recebe")));
+
+    // Pedido de ajuda → painel; técnico assume → cliente sabe quem vai atender.
+    cli.tx.send(client::Command::RequestHelp("a impressora parou".into())).unwrap();
+    assert!(wait(&cli.rx, 5, |e| matches!(e, Event::HelpStatus { taken_by: None })).is_some());
+    assert!(wait(&tech.rx, 5, |e| matches!(e, Event::Overview(o) if o.requests.iter().any(|r| r.message == "a impressora parou"))).is_some());
+    tech.tx.send(client::Command::Manage(Manage::TakeRequest { device: cli_id.clone() })).unwrap();
+    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::HelpStatus { taken_by: Some(_) })), Some(Event::HelpStatus { taken_by: Some(n) }) if n == "Ana Souza"));
+
+    // Técnico conecta: o convite chega ao cliente com o nome do técnico.
+    tech.tx.send(client::Command::Connect { target: cli_id.clone() }).unwrap();
+    assert!(wait(&tech.rx, 5, |e| matches!(e, Event::SessionReady { .. })).is_some());
+    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::Incoming { .. })), Some(Event::Incoming { from_name, .. }) if from_name == "Ana Souza (técnico)"));
+
+    // Senha errada; e retomar com o token noutro app.
+    let other = client::start(cfg.clone(), [14u8; 32], "Outro".into());
+    assert!(wait(&other.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
+    other.tx.send(client::Command::Login { user: "ana".into(), password: "errada-errada".into(), setup: None, name: String::new() }).unwrap();
+    assert!(wait(&other.rx, 10, |e| matches!(e, Event::AuthError(_))).is_some());
+    other.tx.send(client::Command::SetIdentity(client::Identity { company: None, tech_token: Some(token.clone()) })).unwrap();
+    other.tx.send(client::Command::Quit).unwrap();
+    let again = client::start_with(cfg.clone(), [14u8; 32], "Outro".into(), client::Identity { company: None, tech_token: Some(token) });
+    assert!(matches!(wait(&again.rx, 10, |e| matches!(e, Event::LoggedIn { .. })), Some(Event::LoggedIn { user, .. }) if user == "ana"));
+
+    // O histórico guarda qual técnico fez o acesso (quando a sessão abre e fecha).
+    for c in [&tech, &cli, &bad, &again] {
+        let _ = c.tx.send(client::Command::Quit);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

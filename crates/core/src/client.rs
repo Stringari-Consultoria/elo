@@ -4,7 +4,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use elo_proto::ctrl::{FromServer, ToServer};
+use elo_proto::ctrl::{FromServer, Manage, Overview, ToServer};
 use elo_proto::frame::write_frame;
 
 use crate::net::{Framer, ServerCfg, connect};
@@ -20,6 +20,29 @@ pub enum Event {
     Error(String),
     /// Pedido de Wake-on-LAN enviado (`relays`: computadores da rede do alvo que mandaram).
     WakeSent { target: String, relays: u32 },
+    /// Recursos do servidor (logo depois de `Online`; vazio em servidores antigos).
+    Features(Vec<String>),
+    /// Elo Cliente: ligado à empresa.
+    Company { name: String },
+    /// Técnico: entrou (guarde o token).
+    LoggedIn { user: String, name: String, admin: bool, token: String },
+    /// O servidor ainda não tem técnicos: crie o administrador com o código de primeiro acesso.
+    NeedsSetup,
+    /// Usuário/senha errados, conta removida ou entrada expirada.
+    AuthError(String),
+    /// Elo Cliente: situação do pedido de ajuda (`None` = na fila).
+    HelpStatus { taken_by: Option<String> },
+    Overview(Box<Overview>),
+}
+
+/// Quem é este app para o servidor, além do ID: computador de uma empresa
+/// (Elo Cliente) e/ou técnico logado. Vale também para as reconexões.
+#[derive(Debug, Clone, Default)]
+pub struct Identity {
+    /// Empresa e chave do convite.
+    pub company: Option<(String, String)>,
+    /// Token de uma entrada de técnico.
+    pub tech_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +54,15 @@ pub enum Command {
     /// Troca de servidor.
     Reconfigure(ServerCfg),
     Quit,
+    /// Técnico: entrar (com `setup`, cria o primeiro administrador).
+    Login { user: String, password: String, setup: Option<String>, name: String },
+    Logout,
+    Manage(Manage),
+    /// Elo Cliente: pedir ajuda / desistir.
+    RequestHelp(String),
+    CancelHelp,
+    /// Troca a identidade (empresa do convite, token de técnico).
+    SetIdentity(Identity),
 }
 
 pub struct Control {
@@ -55,20 +87,25 @@ pub fn probe(cfg: &ServerCfg, token: &[u8; 32], name: &str) -> Result<String, St
 
 /// Inicia a thread de controle.
 pub fn start(cfg: ServerCfg, token: [u8; 32], name: String) -> Control {
+    start_with(cfg, token, name, Identity::default())
+}
+
+/// Como `start`, já com a identidade (empresa e/ou técnico).
+pub fn start_with(cfg: ServerCfg, token: [u8; 32], name: String, ident: Identity) -> Control {
     let (ctx, crx) = channel::<Command>();
     let (etx, erx) = channel::<Event>();
     std::thread::Builder::new()
         .name("elo-controle".into())
-        .spawn(move || run(cfg, token, name, crx, etx))
+        .spawn(move || run(cfg, token, name, ident, crx, etx))
         .expect("thread");
     Control { tx: ctx, rx: erx }
 }
 
-fn run(mut cfg: ServerCfg, token: [u8; 32], name: String, rx: Receiver<Command>, tx: Sender<Event>) {
+fn run(mut cfg: ServerCfg, token: [u8; 32], name: String, mut ident: Identity, rx: Receiver<Command>, tx: Sender<Event>) {
     let mut backoff = 1u64;
     loop {
         let _ = tx.send(Event::Connecting);
-        match session(&cfg, &token, &name, &rx, &tx) {
+        match session(&cfg, &token, &name, &mut ident, &rx, &tx) {
             Ok(Some(new)) => {
                 cfg = new;
                 backoff = 1;
@@ -88,9 +125,11 @@ fn run(mut cfg: ServerCfg, token: [u8; 32], name: String, rx: Receiver<Command>,
                     cfg = c;
                     break;
                 }
-                Ok(Command::Connect { .. }) => {
+                Ok(Command::Connect { .. }) | Ok(Command::Login { .. }) | Ok(Command::RequestHelp(_)) => {
                     let _ = tx.send(Event::Error("sem conexão com o servidor".into()));
                 }
+                Ok(Command::SetIdentity(i)) => ident = i,
+                Ok(Command::Logout) => ident.tech_token = None,
                 _ => {}
             }
         }
@@ -99,7 +138,7 @@ fn run(mut cfg: ServerCfg, token: [u8; 32], name: String, rx: Receiver<Command>,
 }
 
 /// Uma conexão. `Ok(Some(cfg))` = reconectar em outro servidor; `Ok(None)` = sair.
-fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>, tx: &Sender<Event>) -> Result<Option<ServerCfg>, String> {
+fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, ident: &mut Identity, rx: &Receiver<Command>, tx: &Sender<Event>) -> Result<Option<ServerCfg>, String> {
     let mut c = connect(cfg)?;
     let hello = ToServer::Hello { token: *token, name: name.to_string(), os: crate::platform::os_name(), version: elo_proto::PROTOCOL_VERSION, mac: crate::platform::mac_address() };
     write_frame(&mut c, &postcard::to_stdvec(&hello).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -108,22 +147,68 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>
     let mut last_ping = Instant::now();
     let mut last_rx = Instant::now();
     let send = |c: &mut crate::net::Conn, m: &ToServer| -> Result<(), String> { write_frame(c, &postcard::to_stdvec(m).map_err(|e| e.to_string())?).map_err(|e| e.to_string()) };
+    // Servidor com "empresas"? (só então as mensagens novas podem ir).
+    let mut enterprise = false;
     loop {
         while let Ok(cmd) = rx.try_recv() {
+            let needs = |what: &str| -> Result<(), String> {
+                let _ = tx.send(Event::Error(format!("este servidor do Elo é de uma versão antiga e não tem {what}: atualize-o")));
+                Ok(())
+            };
             match cmd {
                 Command::Quit => return Ok(None),
                 Command::Reconfigure(n) => return Ok(Some(n)),
                 Command::Connect { target } => send(&mut c, &ToServer::Connect { target, from_name: name.to_string() })?,
                 Command::Decline { session } => send(&mut c, &ToServer::Decline { session })?,
                 Command::Wake { target } => send(&mut c, &ToServer::Wake { target })?,
+                Command::SetIdentity(i) => {
+                    if enterprise && let Some((company, key)) = i.company.clone().filter(|_| i.company != ident.company) {
+                        send(&mut c, &ToServer::JoinCompany { company, key })?;
+                    }
+                    *ident = i;
+                }
+                Command::Login { user, password, setup, name } if enterprise => send(&mut c, &ToServer::Login { user, password, setup, name })?,
+                Command::Login { .. } => needs("contas de técnico")?,
+                Command::Logout => {
+                    ident.tech_token = None;
+                    if enterprise {
+                        send(&mut c, &ToServer::Logout)?;
+                    }
+                }
+                Command::Manage(m) if enterprise => send(&mut c, &ToServer::Manage(m))?,
+                Command::RequestHelp(message) if enterprise => send(&mut c, &ToServer::RequestHelp { message })?,
+                Command::CancelHelp if enterprise => send(&mut c, &ToServer::CancelHelp)?,
+                Command::Manage(_) | Command::RequestHelp(_) | Command::CancelHelp => needs("empresas")?,
             }
         }
         match fr.poll(&mut c) {
             Ok(Some(f)) => {
                 last_rx = Instant::now();
-                let Ok(m) = postcard::from_bytes::<FromServer>(&f) else { continue };
+                let Ok((m, rest)) = postcard::take_from_bytes::<FromServer>(&f) else { continue };
                 let ev = match m {
-                    FromServer::Welcome { id } => Event::Online { id },
+                    FromServer::Welcome { id } => {
+                        let features: Vec<String> = if rest.is_empty() { Vec::new() } else { postcard::from_bytes(rest).unwrap_or_default() };
+                        enterprise = features.iter().any(|f| f == "empresas");
+                        let _ = tx.send(Event::Online { id });
+                        let _ = tx.send(Event::Features(features));
+                        if enterprise {
+                            if let Some((company, key)) = ident.company.clone() {
+                                send(&mut c, &ToServer::JoinCompany { company, key })?;
+                            }
+                            if let Some(token) = ident.tech_token.clone() {
+                                send(&mut c, &ToServer::Resume { token })?;
+                            }
+                        }
+                        continue;
+                    }
+                    FromServer::Company { name } => Event::Company { name },
+                    FromServer::LoggedIn { user, name, admin, token } => {
+                        ident.tech_token = Some(token.clone());
+                        Event::LoggedIn { user, name, admin, token }
+                    }
+                    FromServer::NeedsSetup => Event::NeedsSetup,
+                    FromServer::HelpStatus { taken_by } => Event::HelpStatus { taken_by },
+                    FromServer::Overview(o) => Event::Overview(Box::new(o)),
                     FromServer::Incoming { session, secret, from_id, from_name } => Event::Incoming { session, secret, from_id, from_name },
                     FromServer::SessionReady { session, secret, target_name, target_os } => Event::SessionReady { session, secret, target_name, target_os },
                     FromServer::Declined { .. } => Event::Declined,
@@ -131,7 +216,11 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, rx: &Receiver<Command>
                         if code == elo_proto::ctrl::ErrorCode::Version {
                             return Err(message);
                         }
-                        Event::Error(message)
+                        if code == elo_proto::ctrl::ErrorCode::Auth {
+                            Event::AuthError(message)
+                        } else {
+                            Event::Error(message)
+                        }
                     }
                     FromServer::WakeRequest { mac } => {
                         // Estamos na rede do computador desligado: manda o pacote mágico.

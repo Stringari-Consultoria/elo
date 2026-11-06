@@ -20,6 +20,141 @@ pub enum ToServer {
     Ping,
     /// Pede para ligar um computador desligado (Wake-on-LAN).
     Wake { target: String },
+    // Daqui para baixo: só para servidores que anunciam "empresas" (ver
+    // `SERVER_FEATURES`). Variantes novas entram sempre no fim.
+    /// Elo Cliente: liga este computador à empresa do código de convite.
+    JoinCompany { company: String, key: String },
+    /// Técnico: entra com usuário e senha. Com `setup` (código de primeiro
+    /// acesso do servidor), cria a conta como administrador.
+    Login { user: String, password: String, setup: Option<String>, name: String },
+    /// Técnico: volta a entrar com o token de uma entrada anterior.
+    Resume { token: String },
+    Logout,
+    /// Elo Cliente: pede ajuda aos técnicos.
+    RequestHelp { message: String },
+    CancelHelp,
+    /// Técnico: gestão de empresas, computadores, técnicos e pedidos.
+    Manage(Manage),
+}
+
+/// Recursos que o servidor anuncia logo depois do `Welcome` (no mesmo
+/// quadro; versões antigas do app ignoram os bytes a mais).
+pub const SERVER_FEATURES: &[&str] = &["empresas"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Manage {
+    /// Pede a fotografia atual (`Overview`).
+    Refresh,
+    CreateCompany { name: String },
+    RenameCompany { id: String, name: String },
+    DeleteCompany { id: String },
+    /// Troca a chave do convite (os convites antigos deixam de valer para
+    /// computadores novos; os já ligados continuam).
+    NewKey { id: String },
+    /// Empresa, apelido e observações de um computador.
+    SetDevice { id: String, company: Option<String>, alias: String, notes: String },
+    /// Tira o computador da lista (e da empresa).
+    ForgetDevice { id: String },
+    CreateTech { user: String, name: String, password: String, admin: bool },
+    DeleteTech { user: String },
+    SetPassword { user: String, password: String },
+    /// "Vou atender": marca o pedido de ajuda como meu.
+    TakeRequest { device: String },
+}
+
+/// O que o técnico vê no painel de clientes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Overview {
+    pub me: Tech,
+    pub companies: Vec<Company>,
+    pub devices: Vec<DeviceEntry>,
+    pub requests: Vec<HelpRequest>,
+    /// Só para administradores.
+    pub techs: Vec<Tech>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Company {
+    pub id: String,
+    pub name: String,
+    /// Chave do convite (o app junta com o endereço do servidor).
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tech {
+    pub user: String,
+    pub name: String,
+    pub admin: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeviceEntry {
+    pub id: String,
+    /// Nome que o computador informa.
+    pub name: String,
+    pub os: String,
+    /// Nome dado pelos técnicos.
+    pub alias: String,
+    pub notes: String,
+    pub company: Option<String>,
+    pub online: bool,
+    /// Visto pela última vez (segundos desde 1970).
+    pub last_seen: u64,
+    pub ip: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HelpRequest {
+    pub device: String,
+    pub name: String,
+    pub company: Option<String>,
+    pub message: String,
+    pub since: u64,
+    /// Técnico que disse que vai atender.
+    pub taken_by: Option<String>,
+}
+
+/// Convite do Elo Cliente: onde fica o servidor e de que empresa é.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Invite {
+    pub address: String,
+    pub tls: bool,
+    pub pin: String,
+    pub company: String,
+    pub key: String,
+    pub name: String,
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+impl Invite {
+    /// Texto para copiar e colar: "ELO1-" + base64 (URL) do conteúdo.
+    pub fn encode(&self) -> String {
+        let data = postcard::to_stdvec(self).unwrap_or_default();
+        let mut out = String::from("ELO1-");
+        for c in data.chunks(3) {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+            for i in 0..=c.len() {
+                out.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Option<Invite> {
+        let t: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
+        let body = t.strip_prefix("ELO1-")?;
+        let mut bytes = Vec::new();
+        let vals: Vec<u32> = body.bytes().map(|b| B64.iter().position(|x| *x == b).map(|p| p as u32)).collect::<Option<_>>()?;
+        for c in vals.chunks(4) {
+            let n = c.iter().enumerate().fold(0u32, |n, (i, v)| n | v << (18 - 6 * i));
+            for i in 0..c.len().saturating_sub(1) {
+                bytes.push((n >> (16 - 8 * i)) as u8);
+            }
+        }
+        postcard::from_bytes(&bytes).ok()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +174,17 @@ pub enum FromServer {
     WakeRequest { mac: String },
     /// Resposta ao `Wake`: quantos computadores da rede do alvo mandaram o pacote.
     WakeSent { target: String, relays: u32 },
+    // Só para quem usou os recursos de "empresas".
+    /// Elo Cliente: ligado à empresa.
+    Company { name: String },
+    /// Técnico: entrou. Guarde o `token` para `Resume`.
+    LoggedIn { user: String, name: String, admin: bool, token: String },
+    /// O servidor ainda não tem técnicos: crie o administrador com o código
+    /// de primeiro acesso (aparece nos registros do servidor).
+    NeedsSetup,
+    /// Elo Cliente: situação do pedido de ajuda (`None` = na fila).
+    HelpStatus { taken_by: Option<String> },
+    Overview(Overview),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +195,8 @@ pub enum ErrorCode {
     BadRequest,
     Version,
     Expired,
+    /// Usuário ou senha do técnico errados (ou sem permissão).
+    Auth,
 }
 
 /// Pacote mágico do Wake-on-LAN: 6 × 0xFF e 16 × o MAC.
@@ -88,6 +236,19 @@ pub fn clean_id(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn invite_round_trip() {
+        let i = super::Invite { address: "wss://elo.exemplo.com".into(), tls: true, pin: String::new(), company: "c1".into(), key: "k".repeat(22), name: "Padaria Pão Quente".into() };
+        let t = i.encode();
+        assert!(t.starts_with("ELO1-"));
+        assert_eq!(super::Invite::decode(&t), Some(i.clone()));
+        // Colado com espaços/quebras de linha no meio.
+        let spaced: String = t.chars().enumerate().flat_map(|(n, c)| if n % 20 == 19 { vec![c, '\n'] } else { vec![c] }).collect();
+        assert_eq!(super::Invite::decode(&spaced), Some(i));
+        assert!(super::Invite::decode("ELO1-@@@").is_none());
+        assert!(super::Invite::decode("qualquer coisa").is_none());
+    }
+
     #[test]
     fn magic_packet() {
         let p = super::magic_packet("AA:bb:cc:01:02:03").unwrap();

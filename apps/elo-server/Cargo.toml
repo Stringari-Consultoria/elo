@@ -29,6 +29,8 @@ rustls-pemfile = "2"
 rcgen = "0.13"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Senhas dos técnicos.
+argon2 = "0.5"
 
 [dev-dependencies]
 elo-core = { workspace = true }
