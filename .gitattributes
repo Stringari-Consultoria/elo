@@ -1,0 +1,6 @@
+# Arquivos assinados: os bytes não podem mudar (o Git no Windows converteria
+# as quebras de linha e a assinatura deixaria de conferir).
+apps/elo/src/testdata/** -text
+*.sig binary
+# Scripts de shell sempre com LF (rodam no macOS e no Linux).
+*.sh text eol=lf
