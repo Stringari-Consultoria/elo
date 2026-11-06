@@ -872,8 +872,109 @@ impl EloApp {
                 }
             }
         }
-        if self.show_settings {
+        if self.show_settings && self.panel.is_none() {
             self.settings_dialog(ctx);
+        }
+        if self.panel.is_some() {
+            self.server_panel(ctx);
+        }
+    }
+
+    /// Painel do servidor embutido: online, sessões em andamento e histórico.
+    fn server_panel(&mut self, ctx: &egui::Context) {
+        let p = if self.settings.dark { theme::DARK } else { theme::LIGHT };
+        // Atualiza a cada 2 s.
+        if let (Some((at, _)), Some(srv)) = (&self.panel, &self.local.server)
+            && at.elapsed().as_secs() >= 2
+        {
+            self.panel = Some((std::time::Instant::now(), srv.stats()));
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        let Some((_, st)) = &self.panel else { return };
+        let mut close = false;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let ago = |t: u64| -> String {
+            let d = now.saturating_sub(t);
+            match d {
+                0..60 => "agora".into(),
+                60..3600 => format!("há {} min", d / 60),
+                3600..86_400 => format!("há {} h", d / 3600),
+                _ => format!("há {} dias", d / 86_400),
+            }
+        };
+        let dur = |s: u64| -> String { if s < 60 { format!("{s} s") } else if s < 3600 { format!("{} min", s / 60) } else { format!("{} h {:02} min", s / 3600, (s % 3600) / 60) } };
+        let who = |name: &str, id: &str| if name.is_empty() { pretty_id(id) } else { format!("{name} ({})", pretty_id(id)) };
+        let max_h = (ctx.content_rect().height() - 160.0).max(240.0);
+        egui::Modal::new(egui::Id::unique("painel")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(14)).inner_margin(Margin::same(22))).show(ctx, |ui| {
+            ui.set_width(640.0);
+            ui.horizontal(|ui| {
+                icons::icon(ui, Icon::Globe, 18.0, p.accent);
+                ui.label(RichText::new("Painel do servidor").font(theme::semibold(17.0)).color(p.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::icon_button(ui, Icon::Close, "Fechar", false).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                for (n, label) in [(st.online.len(), "online agora"), (st.active.len(), "sessões em andamento"), (st.recent.len(), "no histórico recente")] {
+                    egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(n.to_string()).font(theme::semibold(20.0)).color(p.text));
+                            ui.label(RichText::new(label).size(11.5).color(p.muted));
+                        });
+                    });
+                }
+            });
+            ui.add_space(12.0);
+            egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.label(RichText::new("Online agora").font(theme::semibold(13.5)).color(p.text));
+                egui::Grid::new("online").num_columns(4).spacing([18.0, 6.0]).striped(true).show(ui, |ui| {
+                    for h in ["Computador", "Sistema", "IP", "Conectado"] {
+                        ui.label(RichText::new(h).size(11.5).color(p.muted));
+                    }
+                    ui.end_row();
+                    for d in &st.online {
+                        ui.label(RichText::new(who(&d.name, &d.id)).size(12.5).color(p.text));
+                        ui.label(RichText::new(&d.os).size(12.0).color(p.text2));
+                        ui.label(RichText::new(&d.ip).font(theme::mono(11.5)).color(p.text2));
+                        ui.label(RichText::new(ago(d.since)).size(12.0).color(p.text2));
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(14.0);
+                ui.label(RichText::new("Sessões em andamento").font(theme::semibold(13.5)).color(p.text));
+                if st.active.is_empty() {
+                    ui.label(RichText::new("Nenhuma agora.").size(12.0).color(p.muted));
+                }
+                for x in &st.active {
+                    ui.label(RichText::new(format!("{} acessando {} · começou {}", who(&x.viewer_name, &x.viewer_id), who(&x.host_name, &x.host_id), ago(x.start))).size(12.5).color(p.text));
+                }
+                ui.add_space(14.0);
+                ui.label(RichText::new("Histórico").font(theme::semibold(13.5)).color(p.text));
+                if st.recent.is_empty() {
+                    ui.label(RichText::new("Nenhuma sessão registrada.").size(12.0).color(p.muted));
+                }
+                egui::Grid::new("historico").num_columns(4).spacing([18.0, 6.0]).striped(true).show(ui, |ui| {
+                    for h in ["Quem acessou", "Computador acessado", "Quando", "Duração · volume"] {
+                        ui.label(RichText::new(h).size(11.5).color(p.muted));
+                    }
+                    ui.end_row();
+                    for x in &st.recent {
+                        ui.label(RichText::new(who(&x.viewer_name, &x.viewer_id)).size(12.0).color(p.text));
+                        ui.label(RichText::new(who(&x.host_name, &x.host_id)).size(12.0).color(p.text));
+                        ui.label(RichText::new(ago(x.start)).size(12.0).color(p.text2));
+                        ui.label(RichText::new(format!("{} · {}", dur(x.end.saturating_sub(x.start)), human_bytes(x.bytes))).size(12.0).color(p.text2));
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.add_space(10.0);
+            ui.label(RichText::new(if st.retention_days == 0 { "O histórico é guardado para sempre. Defina um prazo nas configurações (LGPD).".to_string() } else { format!("O histórico é apagado depois de {} dias. Nomes aparecem para quem se conectou desde que o servidor abriu.", st.retention_days) }).size(11.5).color(p.muted));
+        });
+        if close {
+            self.panel = None;
         }
     }
 
@@ -886,6 +987,7 @@ impl EloApp {
         let mut renamed = false;
         let mut update_go = false;
         let mut update_restart = false;
+        let mut open_panel = false;
         self.poll_probe();
         if self.probe.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -994,10 +1096,19 @@ impl EloApp {
             if self.settings.local_server.enabled {
                 let probing = self.probe.is_some();
                 let probe_result = self.probe_result.clone();
+                let local_running = self.local.server.is_some();
                 let ls = &mut self.settings.local_server;
                 ui.horizontal(|ui| {
                     theme::field_label(ui, "Porta");
                     ui.add(egui::DragValue::new(&mut ls.port).range(1024..=65535).speed(0.0));
+                    ui.add_space(12.0);
+                    theme::field_label(ui, "Histórico");
+                    ui.add(egui::DragValue::new(&mut ls.retention_days).range(0..=3650).suffix(" dias").speed(1.0)).on_hover_text("Por quantos dias o servidor guarda o histórico de sessões (quem acessou quem, quando e quanto). 0 = para sempre. Esses dados são pessoais (LGPD).");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add_enabled(local_running, egui::Button::new("Painel do servidor")).on_hover_text("Quem está online, sessões em andamento e histórico").clicked() {
+                            open_panel = true;
+                        }
+                    });
                 });
                 ui.checkbox(&mut ls.lan, "Aceitar conexões diretas da rede").on_hover_text("Desligado, só aceita conexões deste computador (ex.: cloudflared instalado aqui), sem deixar a porta aberta na rede. Com o cloudflared no Docker, deixe ligado.");
                 theme::field_label(ui, "Endereço público (opcional)");
@@ -1107,6 +1218,9 @@ impl EloApp {
         }
         if update_go {
             self.updater.download_now();
+        }
+        if open_panel {
+            self.panel = self.local.server.as_ref().map(|s| (std::time::Instant::now(), s.stats()));
         }
         if update_restart {
             self.settings.save();

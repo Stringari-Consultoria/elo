@@ -11,6 +11,7 @@ fn args() -> Config {
     let mut listen = format!("0.0.0.0:{}", elo_proto::DEFAULT_PORT);
     let mut data = PathBuf::from("elo-dados");
     let (mut cert, mut key, mut no_tls) = (None, None, false);
+    let mut retention_days = 90;
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -19,9 +20,10 @@ fn args() -> Config {
             "--cert" => cert = it.next().map(PathBuf::from),
             "--key" => key = it.next().map(PathBuf::from),
             "--no-tls" => no_tls = true,
+            "--retencao-dias" => retention_days = it.next().and_then(|d| d.parse().ok()).unwrap_or(retention_days),
             "--self-signed" => {}
             "-h" | "--help" => {
-                println!("elo-server --listen 0.0.0.0:21116 --data DIR [--cert C.pem --key K.pem | --self-signed | --no-tls]");
+                println!("elo-server --listen 0.0.0.0:21116 --data DIR [--cert C.pem --key K.pem | --self-signed | --no-tls] [--retencao-dias 90]");
                 std::process::exit(0);
             }
             other => eprintln!("opção desconhecida: {other}"),
@@ -32,7 +34,7 @@ fn args() -> Config {
         (false, Some(cert), Some(key)) => Tls::Files { cert, key },
         _ => Tls::SelfSigned,
     };
-    Config { listen, data, tls }
+    Config { listen, data, tls, retention_days }
 }
 
 #[tokio::main]

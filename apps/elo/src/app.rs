@@ -33,7 +33,7 @@ impl Local {
         }
         let data = crate::settings::server_data_dir();
         let host = if cfg.lan { "0.0.0.0" } else { "127.0.0.1" };
-        let c = elo_server::Config { listen: format!("{host}:{}", cfg.port), data: data.clone(), tls: elo_server::Tls::SelfSigned };
+        let c = elo_server::Config { listen: format!("{host}:{}", cfg.port), data: data.clone(), tls: elo_server::Tls::SelfSigned, retention_days: cfg.retention_days };
         match elo_server::Background::start(c) {
             Ok(b) => {
                 l.fingerprint = b.fingerprint.clone().unwrap_or_default();
@@ -208,6 +208,8 @@ pub struct EloApp {
     pub quitting: bool,
     /// Computadores reiniciando: reconecta quando voltarem.
     pub reconnects: Vec<Reconnect>,
+    /// Painel do servidor aberto, com a última leitura.
+    pub panel: Option<(Instant, elo_server::Stats)>,
     /// Janela escondida na bandeja.
     pub hidden: bool,
 }
@@ -253,6 +255,7 @@ impl EloApp {
             quitting: false,
             hidden: false,
             reconnects: Vec::new(),
+            panel: None,
         };
         if !app.settings.onboarded {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
@@ -465,6 +468,12 @@ impl EloApp {
             }
         }
         self.local.started.public = self.settings.local_server.public.clone();
+        if self.local.started.retention_days != self.settings.local_server.retention_days {
+            self.local.started.retention_days = self.settings.local_server.retention_days;
+            if let Some(s) = &self.local.server {
+                s.set_retention_days(self.settings.local_server.retention_days);
+            }
+        }
         let _ = self.control.tx.send(Command::Reconfigure(self.server_cfg()));
     }
 

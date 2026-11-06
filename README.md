@@ -160,6 +160,14 @@ do `cloudflared`. O servidor usa o IP real do cliente (`CF-Connecting-IP`) nos
 limites de tentativas. Atenção: a sessão inteira, tela incluída, passa pelo
 Cloudflare. Uso pesado de banda pode esbarrar nos termos do plano gratuito.
 
+### Painel do servidor
+
+Com o servidor rodando neste computador, **Configurações → Servidor → Painel do
+servidor** mostra quem está online (nome, sistema, IP), as sessões em andamento
+e o histórico (quem acessou quem, quando, duração e volume). O histórico é
+apagado depois do prazo configurado (90 dias por padrão; no servidor avulso,
+`--retencao-dias`).
+
 ### 3. Servidor avulso
 
 O mesmo servidor também roda sozinho, para hospedar numa máquina dedicada:

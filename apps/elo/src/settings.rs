@@ -50,11 +50,13 @@ pub struct LocalServer {
     /// Endereço pelo qual os outros chegam aqui (ex.: "wss://elo.dominio.com"
     /// do Cloudflare Tunnel). Vazio = IP da rede local.
     pub public: String,
+    /// Dias que o histórico de sessões fica guardado (LGPD); 0 = para sempre.
+    pub retention_days: u32,
 }
 
 impl Default for LocalServer {
     fn default() -> Self {
-        Self { enabled: true, port: elo_proto::DEFAULT_PORT, lan: true, public: String::new() }
+        Self { enabled: true, port: elo_proto::DEFAULT_PORT, lan: true, public: String::new(), retention_days: 90 }
     }
 }
 

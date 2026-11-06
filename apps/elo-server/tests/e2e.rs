@@ -180,7 +180,7 @@ fn tls_with_pinned_certificate() {
 #[test]
 fn background_server_restarts_on_same_port() {
     let dir = std::env::temp_dir().join(format!("elo-bg-{}", std::process::id()));
-    let cfg = |listen: String| elo_server::Config { listen, data: dir.clone(), tls: elo_server::Tls::SelfSigned };
+    let cfg = |listen: String| elo_server::Config { listen, data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 };
     let bg = elo_server::Background::start(cfg("127.0.0.1:0".into())).unwrap();
     assert!(bg.running());
     let port = bg.local_addr.port();
@@ -208,7 +208,7 @@ fn background_server_restarts_on_same_port() {
 #[test]
 fn websocket_like_cloudflare_tunnel() {
     let dir = std::env::temp_dir().join(format!("elo-ws-{}", std::process::id()));
-    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned }).unwrap();
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
     let port = bg.local_addr.port();
     let fp = bg.fingerprint.clone().unwrap();
     let direct = ServerCfg { address: format!("127.0.0.1:{port}"), tls: true, pin: fp.clone() };
@@ -238,7 +238,7 @@ fn websocket_like_cloudflare_tunnel() {
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();
-    let vh = session::viewer(ws, vs, vsec, "s3nha-ws".into(), viewer_id, "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx);
+    let vh = session::viewer(ws, vs, vsec, "s3nha-ws".into(), viewer_id.clone(), "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx);
     assert!(wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. })).is_some(), "sessão por WebSocket não conectou");
     let end = Instant::now() + Duration::from_secs(15);
     while remote.lock().unwrap().version == 0 {
@@ -252,8 +252,49 @@ fn websocket_like_cloudflare_tunnel() {
     vh.cmd.send(session::Cmd::SendFile(f.clone())).unwrap();
     let Some(HostEvent::File(t)) = wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.finished)) else { panic!("arquivo não chegou") };
     assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), std::fs::read(&f).unwrap());
+    // Painel do servidor: os dois online e a sessão em andamento.
+    let st = bg.stats();
+    assert!(st.online.iter().any(|d| d.id == host_id && d.name == "Anfitrião"));
+    assert!(st.online.iter().any(|d| d.id == viewer_id));
+    assert!(st.active.iter().any(|x| x.host_id == host_id && x.viewer_name == "Visualizador"));
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::Ended(_))).is_some());
+    // Ao terminar, vai para o histórico (com nomes e volume).
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        let st = bg.stats();
+        if let Some(x) = st.recent.iter().find(|x| x.host_id == host_id) {
+            assert_eq!(x.host_name, "Anfitrião");
+            assert!(x.bytes > 500_000 && x.end >= x.start);
+            assert!(st.active.is_empty());
+            break;
+        }
+        assert!(Instant::now() < end, "a sessão não entrou no histórico");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(bg);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Retenção do histórico (LGPD): sessões mais antigas que o prazo são apagadas.
+#[test]
+fn session_log_retention() {
+    let dir = std::env::temp_dir().join(format!("elo-retencao-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let agora = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let velha = agora - 100 * 86_400;
+    let nova = agora - 86_400;
+    std::fs::write(dir.join("sessoes.jsonl"), format!("{{\"anfitriao\":\"111111111\",\"visualizador\":\"222222222\",\"inicio\":{velha},\"fim\":{velha},\"bytes\":1}}\n{{\"anfitriao\":\"333333333\",\"visualizador\":\"444444444\",\"inicio\":{nova},\"fim\":{nova},\"bytes\":2}}\n")).unwrap();
+    // Na subida, com 90 dias: some só a de 100 dias atrás.
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
+    let ids: Vec<String> = bg.stats().recent.iter().map(|x| x.host_id.clone()).collect();
+    assert_eq!(ids, vec!["333333333".to_string()]);
+    // Prazo menor que a idade da que sobrou: o histórico fica vazio.
+    bg.set_retention_days(0);
+    assert_eq!(bg.stats().recent.len(), 1, "0 = guardar para sempre");
+    std::fs::write(dir.join("sessoes.jsonl"), format!("{{\"anfitriao\":\"333333333\",\"visualizador\":\"444444444\",\"inicio\":{nova},\"fim\":{velha},\"bytes\":2}}\n")).unwrap();
+    bg.set_retention_days(30);
+    assert!(bg.stats().recent.is_empty());
     drop(bg);
     let _ = std::fs::remove_dir_all(dir);
 }

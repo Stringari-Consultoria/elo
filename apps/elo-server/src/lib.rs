@@ -56,6 +56,8 @@ struct Device {
     tx: mpsc::UnboundedSender<FromServer>,
     name: String,
     os: String,
+    ip: String,
+    since: u64,
 }
 
 struct Pending {
@@ -94,6 +96,12 @@ struct State {
     online: Mutex<HashMap<String, Vec<Device>>>,
     pending: Mutex<HashMap<u64, Pending>>,
     limits: Mutex<Limits>,
+    /// Sessões no relay agora: id → (anfitrião, visualizador, início).
+    active: Mutex<HashMap<u64, (String, String, u64)>>,
+    /// Último nome e sistema vistos de cada ID (só em memória, para o painel).
+    names: Mutex<HashMap<String, (String, String)>>,
+    /// Dias que o histórico de sessões é guardado (0 = para sempre).
+    retention_days: std::sync::atomic::AtomicU32,
 }
 
 impl State {
@@ -112,6 +120,25 @@ impl State {
         if let Ok(mut f) = tokio::fs::OpenOptions::new().create(true).append(true).open(self.data.join("sessoes.jsonl")).await {
             let _ = f.write_all(format!("{line}\n").as_bytes()).await;
         }
+    }
+}
+
+/// Apaga do histórico as sessões terminadas há mais de `days` dias.
+fn prune_log(data: &Path, days: u32) {
+    if days == 0 {
+        return;
+    }
+    let p = data.join("sessoes.jsonl");
+    let Ok(text) = std::fs::read_to_string(&p) else { return };
+    let limit = now_secs().saturating_sub(days as u64 * 86_400);
+    let keep: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["fim"].as_u64()).is_none_or(|fim| fim >= limit)).collect();
+    if keep.len() == text.lines().count() {
+        return;
+    }
+    let tmp = data.join("sessoes.jsonl.tmp");
+    let body = if keep.is_empty() { String::new() } else { format!("{}\n", keep.join("\n")) };
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, &p);
     }
 }
 
@@ -152,7 +179,8 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     let (tx, mut rx) = mpsc::unbounded_channel::<FromServer>();
     {
         let mut on = state.online.lock().await;
-        on.entry(id.clone()).or_default().push(Device { tx: tx.clone(), name: name.clone(), os: os.clone() });
+        on.entry(id.clone()).or_default().push(Device { tx: tx.clone(), name: name.clone(), os: os.clone(), ip: peer.ip().to_string(), since: now_secs() });
+        state.names.lock().await.insert(id.clone(), (name.clone(), os.clone()));
     }
     eprintln!("[+] {id} ({name}, {os}) de {peer}");
     if write_msg(&mut wr, &FromServer::Welcome { id: id.clone() }).await.is_err() {
@@ -221,6 +249,50 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     eprintln!("[-] {id}");
 }
 
+/// Repassa bytes nos dois sentidos até um dos lados fechar ou falhar.
+/// Devolve o volume de cada sentido (contado mesmo quando termina com erro,
+/// que é o normal ao fechar uma sessão).
+///
+/// Quando um lado fecha, o outro ganha até 2 s para ler o que já chegou (ex.:
+/// o `Bye` de quem fechou). Se a escrita falhar, a leitura continua e descarta,
+/// para quem ainda está mandando não levar "broken pipe" antes de ler o aviso.
+async fn relay(a: BoxStream, b: BoxStream) -> (u64, u64) {
+    async fn pipe(mut r: impl AsyncRead + Unpin, mut w: impl AsyncWrite + Unpin, n: &mut u64) {
+        let mut buf = vec![0u8; 32 * 1024];
+        let mut open = true;
+        loop {
+            let k = match r.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(k) => k,
+            };
+            if open {
+                if w.write_all(&buf[..k]).await.is_err() || w.flush().await.is_err() {
+                    open = false;
+                    continue;
+                }
+                *n += k as u64;
+            }
+        }
+        if open {
+            let _ = w.shutdown().await;
+        }
+    }
+    let (ar, aw) = tokio::io::split(a);
+    let (br, bw) = tokio::io::split(b);
+    let (mut up, mut down) = (0u64, 0u64);
+    {
+        let fa = pipe(ar, bw, &mut up);
+        let fb = pipe(br, aw, &mut down);
+        tokio::pin!(fa, fb);
+        let grace = Duration::from_secs(2);
+        tokio::select! {
+            _ = &mut fa => { let _ = tokio::time::timeout(grace, &mut fb).await; }
+            _ = &mut fb => { let _ = tokio::time::timeout(grace, &mut fa).await; }
+        }
+    }
+    (up, down)
+}
+
 /// Pareamento: o primeiro a chegar espera; o segundo entrega seu stream e o
 /// primeiro faz o relay entre os dois.
 async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16], host: bool) {
@@ -275,8 +347,9 @@ async fn join(state: Arc<State>, mut s: BoxStream, session: u64, secret: [u8; 16
             }
             let start = now_secs();
             eprintln!("[=] sessão {session:x}: {} ← {}", ids.0, ids.1);
-            let r = tokio::io::copy_bidirectional(&mut s, &mut other).await;
-            let (a, b) = r.unwrap_or((0, 0));
+            state.active.lock().await.insert(session, (ids.0.clone(), ids.1.clone(), start));
+            let (a, b) = relay(s, other).await;
+            state.active.lock().await.remove(&session);
             eprintln!("[x] sessão {session:x}: {} bytes", a + b);
             state.log_session(serde_json::json!({"sessao": format!("{session:x}"), "anfitriao": ids.0, "visualizador": ids.1, "inicio": start, "fim": now_secs(), "bytes": a + b})).await;
         }
@@ -407,6 +480,8 @@ pub struct Config {
     /// Pasta de dados (IDs, sessões, certificado autoassinado).
     pub data: PathBuf,
     pub tls: Tls,
+    /// Dias que o histórico de sessões (`sessoes.jsonl`) é guardado; 0 = para sempre.
+    pub retention_days: u32,
 }
 
 /// Impressão digital SHA-256 (hex) de um certificado DER.
@@ -492,7 +567,17 @@ impl Server {
         };
         let listener = TcpListener::bind(&cfg.listen).await.map_err(|e| std::io::Error::new(e.kind(), format!("porta {}: {e}", cfg.listen)))?;
         let local_addr = listener.local_addr()?;
-        let state = Arc::new(State { data: cfg.data, ids: Mutex::new(ids), online: Mutex::new(HashMap::new()), pending: Mutex::new(HashMap::new()), limits: Mutex::new(Limits::default()) });
+        prune_log(&cfg.data, cfg.retention_days);
+        let state = Arc::new(State {
+            data: cfg.data,
+            ids: Mutex::new(ids),
+            online: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            limits: Mutex::new(Limits::default()),
+            active: Mutex::new(HashMap::new()),
+            names: Mutex::new(HashMap::new()),
+            retention_days: std::sync::atomic::AtomicU32::new(cfg.retention_days),
+        });
         Ok(Server { listener, tls, state, local_addr, fingerprint })
     }
 
@@ -506,8 +591,14 @@ impl Server {
         // Limpeza de convites expirados.
         let st = state.clone();
         let cleanup = tokio::spawn(async move {
+            let mut last_prune = Instant::now();
             loop {
                 tokio::time::sleep(Duration::from_secs(30)).await;
+                // Retenção do histórico: uma vez por hora.
+                if last_prune.elapsed() > Duration::from_secs(3600) {
+                    last_prune = Instant::now();
+                    prune_log(&st.data, st.retention_days.load(std::sync::atomic::Ordering::Relaxed));
+                }
                 st.pending.lock().await.retain(|_, p| p.created.elapsed() < Duration::from_secs(150));
                 st.limits.lock().await.hits.retain(|_, v| v.last().is_some_and(|t| t.elapsed() < Duration::from_secs(60)));
             }
@@ -559,11 +650,44 @@ impl Server {
     }
 }
 
+/// Computador conectado ao servidor agora.
+#[derive(Debug, Clone)]
+pub struct OnlineDevice {
+    pub id: String,
+    pub name: String,
+    pub os: String,
+    pub ip: String,
+    /// Conectado desde (segundos desde 1970).
+    pub since: u64,
+}
+
+/// Sessão em andamento (`end == 0`) ou do histórico.
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub host_id: String,
+    pub host_name: String,
+    pub viewer_id: String,
+    pub viewer_name: String,
+    pub start: u64,
+    pub end: u64,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Stats {
+    pub online: Vec<OnlineDevice>,
+    pub active: Vec<SessionInfo>,
+    /// Mais recentes primeiro (até 50).
+    pub recent: Vec<SessionInfo>,
+    pub retention_days: u32,
+}
+
 /// Servidor rodando numa thread própria (para apps sem tokio, como o Elo).
 /// Para ao ser descartado.
 pub struct Background {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    state: Arc<State>,
     pub local_addr: SocketAddr,
     pub fingerprint: Option<String>,
 }
@@ -571,7 +695,7 @@ pub struct Background {
 impl Background {
     /// Sobe o servidor e espera a porta abrir (erros de porta em uso aparecem aqui).
     pub fn start(cfg: Config) -> std::io::Result<Background> {
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::io::Result<(SocketAddr, Option<String>)>>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::io::Result<(SocketAddr, Option<String>, Arc<State>)>>();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
         let thread = std::thread::Builder::new().name("elo-servidor".into()).spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("elo-servidor-rt").enable_all().build() {
@@ -589,7 +713,7 @@ impl Background {
                         return;
                     }
                 };
-                let _ = ready_tx.send(Ok((server.local_addr, server.fingerprint.clone())));
+                let _ = ready_tx.send(Ok((server.local_addr, server.fingerprint.clone(), server.state.clone())));
                 tokio::select! {
                     r = server.run() => if let Err(e) = r { eprintln!("servidor local parou: {e}") },
                     _ = stop_rx => {}
@@ -599,7 +723,7 @@ impl Background {
             rt.shutdown_timeout(Duration::from_secs(2));
         })?;
         match ready_rx.recv() {
-            Ok(Ok((local_addr, fingerprint))) => Ok(Background { stop: Some(stop_tx), thread: Some(thread), local_addr, fingerprint }),
+            Ok(Ok((local_addr, fingerprint, state))) => Ok(Background { stop: Some(stop_tx), thread: Some(thread), state, local_addr, fingerprint }),
             Ok(Err(e)) => {
                 let _ = thread.join();
                 Err(e)
@@ -614,6 +738,37 @@ impl Background {
     /// Ainda rodando (falso se a thread terminou por erro).
     pub fn running(&self) -> bool {
         self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// Muda o prazo do histórico (vale na próxima limpeza, de hora em hora, e já limpa agora).
+    pub fn set_retention_days(&self, days: u32) {
+        self.state.retention_days.store(days, std::sync::atomic::Ordering::Relaxed);
+        prune_log(&self.state.data, days);
+    }
+
+    /// Fotografia do servidor para o painel: quem está online, sessões em
+    /// andamento e as últimas do histórico. Não chame de dentro do tokio.
+    pub fn stats(&self) -> Stats {
+        let st = &self.state;
+        let names = st.names.blocking_lock().clone();
+        let name = |id: &str| names.get(id).map(|x| x.0.clone()).unwrap_or_default();
+        let mut online: Vec<OnlineDevice> = st.online.blocking_lock().iter().filter_map(|(id, v)| v.last().map(|d| OnlineDevice { id: id.clone(), name: d.name.clone(), os: d.os.clone(), ip: d.ip.clone(), since: d.since })).collect();
+        online.sort_by_key(|d| d.name.to_lowercase());
+        let mut active: Vec<SessionInfo> = st.active.blocking_lock().values().map(|(h, v, start)| SessionInfo { host_id: h.clone(), host_name: name(h), viewer_id: v.clone(), viewer_name: name(v), start: *start, end: 0, bytes: 0 }).collect();
+        active.sort_by_key(|s| std::cmp::Reverse(s.start));
+        let text = std::fs::read_to_string(st.data.join("sessoes.jsonl")).unwrap_or_default();
+        let recent: Vec<SessionInfo> = text
+            .lines()
+            .rev()
+            .take(50)
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .map(|v| {
+                let h = v["anfitriao"].as_str().unwrap_or_default().to_string();
+                let w = v["visualizador"].as_str().unwrap_or_default().to_string();
+                SessionInfo { host_name: name(&h), viewer_name: name(&w), host_id: h, viewer_id: w, start: v["inicio"].as_u64().unwrap_or(0), end: v["fim"].as_u64().unwrap_or(0), bytes: v["bytes"].as_u64().unwrap_or(0) }
+            })
+            .collect();
+        Stats { online, active, recent, retention_days: st.retention_days.load(std::sync::atomic::Ordering::Relaxed) }
     }
 }
 
