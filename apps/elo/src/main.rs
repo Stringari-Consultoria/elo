@@ -5,6 +5,7 @@ mod autostart;
 mod onboarding;
 mod settings;
 mod ui;
+mod update;
 
 fn main() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default().with_title("Elo").with_app_id("br.com.stringari.elo").with_inner_size([1100.0, 720.0]).with_min_inner_size([760.0, 520.0]);

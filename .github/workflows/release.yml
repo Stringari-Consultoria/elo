@@ -83,10 +83,26 @@ jobs:
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # Manifesto da atualização automática, assinado (Ed25519). A tag tem de
+      # bater com a versão do Cargo.toml: senão o app atualizaria em loop.
+      - name: Manifesto assinado das atualizações
+        env:
+          ELO_UPDATE_KEY: ${{ secrets.ELO_UPDATE_KEY }}
+        run: |
+          VERSAO="${GITHUB_REF_NAME#v}"
+          CARGO="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "$VERSAO" = "$CARGO" ] || { echo "tag v$VERSAO diferente do Cargo.toml ($CARGO)"; exit 1; }
+          [ -n "$ELO_UPDATE_KEY" ] || { echo "secret ELO_UPDATE_KEY ausente"; exit 1; }
+          python3 scripts/manifesto.py "$VERSAO" dist > dist/latest.json
+          printf '%s\n' "$ELO_UPDATE_KEY" > "$RUNNER_TEMP/chave.pem"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/chave.pem" -in dist/latest.json -out dist/latest.json.sig
+          rm -f "$RUNNER_TEMP/chave.pem"
+          cat dist/latest.json
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

@@ -1,0 +1,31 @@
+{
+  "assets": {
+    "linux-x86_64": {
+      "name": "elo-9.9.9-linux-x86_64.tar.gz",
+      "sha256": "e93ac01cd5f1f413d04a1b035bcacae2a8d4a2658d3b0572fa40f195f81e44a8",
+      "size": 37
+    },
+    "linux-x86_64-deb": {
+      "name": "elo_9.9.9_amd64.deb",
+      "sha256": "36fa2872423e3be7f76408fc0fe77e96ac5bf3f56bc22807e942ebb41d3ca6a8",
+      "size": 27
+    },
+    "macos": {
+      "name": "Elo-9.9.9-macos.dmg",
+      "sha256": "1693657eadf933c1207439f6a0232b6440f4940bb9e7a702858f892b6f5eb14a",
+      "size": 27
+    },
+    "windows-x64": {
+      "name": "Elo-9.9.9-windows-x64-setup.exe",
+      "sha256": "66205f055454640924eda91b06160dc529182718883b2d1f874e519bc76e610c",
+      "size": 39
+    },
+    "windows-x64-zip": {
+      "name": "Elo-9.9.9-windows-x64.zip",
+      "sha256": "5ef3a9dedda2a8befe451f6f7badfc504259fa08e393ec446a754bf823fce58f",
+      "size": 33
+    }
+  },
+  "base_url": "https://github.com/Stringari-Consultoria/elo/releases/download/v9.9.9/",
+  "version": "9.9.9"
+}

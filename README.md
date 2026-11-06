@@ -41,6 +41,7 @@ sessão**, nem o próprio servidor.
 - **Servidor embutido**: o app já sobe o servidor ao abrir, sem configurar nada.
 - **Assistente na primeira abertura**: escolha entre ser o servidor ou conectar a um, com teste.
 - **Favoritos** com nome personalizado, **tela cheia** e **iniciar com o computador**.
+- **Atualização automática**, com pacotes assinados e conferidos antes de instalar.
 - **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
 - **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
 
@@ -85,6 +86,11 @@ Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
 **Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
 configurações e ligue a opção na tela inicial. A conexão então entra sem
 ninguém do outro lado.
+
+**Atualizações:** o Elo procura versão nova ao abrir e a cada 6 horas. Com
+"Atualizar automaticamente" ligado (padrão), baixa sozinho e instala quando não
+há sessão em andamento, reabrindo em seguida. No Linux instalado pelo `.deb`,
+pede a senha de administrador; o `.zip` portátil do Windows só avisa.
 
 **Arquivos:** na sessão, clique em **Arquivos** para ver as pastas do outro
 computador. Clique duplo abre a pasta ou baixa o arquivo; **Enviar para cá**
@@ -244,6 +250,14 @@ notariza quando estes *secrets* estão configurados no repositório (exige o
 | `APPLE_APP_PASSWORD` | Senha de app gerada em [account.apple.com](https://account.apple.com) |
 
 Sem eles, o app sai com assinatura ad hoc (e o aviso acima).
+
+**Atualização automática:** cada release publica `latest.json` (versão e
+SHA-256 de cada pacote) e `latest.json.sig`, a assinatura Ed25519 do manifesto
+feita no CI com o secret `ELO_UPDATE_KEY`. O app só instala se a assinatura
+conferir com a chave pública embutida (`apps/elo/src/update.rs`) e se o pacote
+baixado bater com o SHA-256. Guarde um backup da chave privada: sem ela, as
+versões instaladas não aceitam novas atualizações. A tag precisa ser igual à
+versão do `Cargo.toml` (o CI confere).
 
 **Releases:** ao enviar uma tag `v*`, o workflow
 [`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`

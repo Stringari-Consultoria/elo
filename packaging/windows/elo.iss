@@ -59,3 +59,5 @@ Name: "{autodesktop}\Elo"; Filename: "{app}\elo.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\elo.exe"; Description: "{cm:LaunchProgram,Elo}"; Flags: nowait postinstall skipifsilent
+; Atualizacao automatica (instalacao silenciosa): reabre o Elo.
+Filename: "{app}\elo.exe"; Flags: nowait; Check: WizardSilent

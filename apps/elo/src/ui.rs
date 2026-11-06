@@ -267,6 +267,9 @@ impl EloApp {
             let mut inner = outer.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(x0, full.top()), Vec2::new(w, f32::INFINITY))).layout(Layout::top_down(Align::Min)));
             let ui = &mut inner;
             {
+                if self.update_banner(ui, &p) {
+                    self.update_and_restart();
+                }
                 ui.add_space(4.0);
                 // Cabeçalho.
                 ui.horizontal(|ui| {
@@ -307,6 +310,49 @@ impl EloApp {
             let h = inner.min_rect().height();
             outer.allocate_space(Vec2::new(full.width(), h));
         });
+    }
+
+    /// Faixa de atualização na tela inicial. Devolve `true` para reiniciar e atualizar.
+    fn update_banner(&mut self, ui: &mut egui::Ui, p: &Palette) -> bool {
+        use crate::update::State;
+        let mut restart = false;
+        let mut download = false;
+        let (text, action): (String, Option<&str>) = match &self.updater.state {
+            State::Available { manifest, asset: Some(_) } if !self.settings.auto_update => (format!("Nova versão do Elo disponível: {}.", manifest.version), Some("Atualizar")),
+            State::Available { manifest, asset: None } => (format!("Nova versão do Elo disponível: {}.", manifest.version), Some("Baixar no GitHub")),
+            State::Downloading { version, done, total } => {
+                let pct = done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*total).max(1) as f32 * 100.0;
+                (format!("Baixando a versão {version}… {pct:.0}%"), None)
+            }
+            State::Ready { version, .. } => (
+                format!("A versão {version} está pronta.{}", if self.views.is_empty() && self.hosts.is_empty() { "" } else { " Instala ao fim das sessões, ou agora (as sessões caem)." }),
+                Some("Reiniciar e atualizar"),
+            ),
+            _ => return false,
+        };
+        egui::Frame::new().fill(theme::alpha(p.accent, 0.10)).stroke(Stroke::new(1.0, theme::alpha(p.accent, 0.35))).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                icons::icon(ui, Icon::Download, 15.0, p.accent_text);
+                ui.label(RichText::new(&text).size(13.0).color(p.text));
+                if let Some(a) = action {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::primary(ui, None, a, None).clicked() {
+                            match &self.updater.state {
+                                State::Ready { .. } => restart = true,
+                                State::Available { asset: None, .. } => open_url(crate::update::RELEASES),
+                                _ => download = true,
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        ui.add_space(14.0);
+        if download {
+            self.updater.download_now();
+        }
+        restart
     }
 
     /// Cartão azul com o ID deste computador e a senha temporária.
@@ -767,6 +813,8 @@ impl EloApp {
         let mut save = false;
         let mut wizard = false;
         let mut renamed = false;
+        let mut update_go = false;
+        let mut update_restart = false;
         self.poll_probe();
         if self.probe.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -802,6 +850,67 @@ impl EloApp {
                     self.settings.downloads = d;
                 }
             });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("Atualizações").font(theme::semibold(13.0)).color(p.text));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Versão instalada: {}", crate::update::CURRENT)).size(12.5).color(p.text2));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add_enabled(!self.updater.busy(), egui::Button::new("Verificar agora")).clicked() {
+                        self.updater.check_now();
+                    }
+                });
+            });
+            {
+                use crate::update::State;
+                match &self.updater.state {
+                    State::Idle => {}
+                    State::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new("Verificando…").size(12.0).color(p.text2));
+                        });
+                    }
+                    State::UpToDate => {
+                        ui.label(RichText::new("Você está na versão mais recente.").size(12.0).color(p.success));
+                    }
+                    State::Available { manifest, asset } => {
+                        let v = manifest.version.clone();
+                        let has = asset.is_some();
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Versão {v} disponível.")).size(12.0).color(p.accent_text));
+                            if has {
+                                if ui.small_button("Baixar e instalar").clicked() {
+                                    update_go = true;
+                                }
+                            } else if ui.small_button("Abrir página de download").clicked() {
+                                open_url(crate::update::RELEASES);
+                            }
+                        });
+                    }
+                    State::Downloading { version, done, total } => {
+                        let f = done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*total).max(1) as f32;
+                        ui.label(RichText::new(format!("Baixando a versão {version}…")).size(12.0).color(p.text2));
+                        ui.add(egui::ProgressBar::new(f).desired_height(5.0));
+                    }
+                    State::Ready { version, .. } => {
+                        let v = version.clone();
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Versão {v} pronta para instalar.")).size(12.0).color(p.success));
+                            if ui.small_button("Reiniciar e atualizar").clicked() {
+                                update_restart = true;
+                            }
+                        });
+                    }
+                    State::Failed(e) => {
+                        ui.add(egui::Label::new(RichText::new(format!("Não foi possível atualizar: {e}")).size(12.0).color(p.danger)).wrap());
+                    }
+                }
+            }
+            ui.checkbox(&mut self.settings.auto_update, "Atualizar automaticamente").on_hover_text("Baixa sozinho e instala quando não há sessão em andamento. O Elo reabre em seguida.");
+            if let crate::update::Install::Manual(why) = &self.updater.install {
+                ui.add(egui::Label::new(RichText::new(format!("Este Elo não se atualiza sozinho: {why}.")).size(11.5).color(p.muted)).wrap());
+            }
             ui.add_space(8.0);
             ui.separator();
             ui.label(RichText::new("Servidor").font(theme::semibold(13.0)).color(p.text));
@@ -920,6 +1029,13 @@ impl EloApp {
                 self.restart_control();
             }
         }
+        if update_go {
+            self.updater.download_now();
+        }
+        if update_restart {
+            self.settings.save();
+            self.update_and_restart();
+        }
         if wizard {
             self.settings = crate::settings::Settings::load();
             self.onboarding = Some(crate::onboarding::Onboarding::new(&self.settings, self.autostart));
@@ -1009,6 +1125,16 @@ fn docker_gateways() -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// Abre um endereço no navegador.
+pub(crate) fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 /// Abre um arquivo ou pasta no programa padrão do sistema.

@@ -95,6 +95,8 @@ pub struct Settings {
     pub allow_requests: bool,
     /// Já passou pelas boas-vindas (escolha do servidor na primeira abertura).
     pub onboarded: bool,
+    /// Baixar e instalar atualizações sozinho (quando não há sessão).
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -115,6 +117,7 @@ impl Default for Settings {
             quality: 1,
             allow_requests: true,
             onboarded: false,
+            auto_update: true,
         }
     }
 }

@@ -186,6 +186,9 @@ pub struct EloApp {
     pub renaming: Option<(String, String)>,
     /// Ação pedida na barra da sessão (aplicada depois de desenhar).
     pub session_act: Option<crate::ui::SessAct>,
+    pub updater: crate::update::Updater,
+    /// Aberto pelo início automático (reabre assim depois de atualizar).
+    pub background: bool,
 }
 
 impl EloApp {
@@ -223,6 +226,8 @@ impl EloApp {
             fullscreen: false,
             renaming: None,
             session_act: None,
+            updater: crate::update::Updater::default(),
+            background,
         };
         if !app.settings.onboarded {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
@@ -326,6 +331,24 @@ impl EloApp {
         if n > 0 && !v.files.open {
             // Mostra o progresso.
             v.chat_open = true;
+        }
+    }
+
+    /// Instala a atualização baixada e sai (o Elo novo abre sozinho).
+    pub fn update_and_restart(&mut self) {
+        match self.updater.install_now(self.background) {
+            Ok(()) => {
+                for v in &self.views {
+                    v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                for h in &self.hosts {
+                    h.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.settings.save();
+                self.local.server = None;
+                std::process::exit(0);
+            }
+            Err(e) => self.error(format!("Atualização: {e}")),
         }
     }
 
@@ -544,6 +567,14 @@ impl EloApp {
         }
         for t in notices {
             self.error(t);
+        }
+        // Atualizações: instala sozinho só sem sessão nem pedido em andamento.
+        let idle = self.views.is_empty() && self.hosts.is_empty() && self.asks.is_empty() && self.pending_connect.is_none();
+        if self.updater.tick(self.settings.auto_update, idle) {
+            self.update_and_restart();
+        }
+        if self.updater.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         // Avisos expiram.
         self.toasts.retain(|t| t.at.elapsed().as_secs() < if t.error { 10 } else { 5 });
