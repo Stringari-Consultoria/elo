@@ -143,6 +143,8 @@ pub struct ViewSession {
     pub clipboard: bool,
     pub quality: usize,
     pub mods: egui::Modifiers,
+    /// Modificadores apertados lá agora: Ctrl, Shift, Alt, Meta.
+    pub held: [bool; 4],
     pub started: Instant,
     /// Último movimento do mouse local sobre a tela remota.
     pub last_move: Instant,
@@ -574,6 +576,7 @@ impl EloApp {
                         clipboard: true,
                         quality: q,
                         mods: egui::Modifiers::NONE,
+                        held: [false; 4],
                         started: Instant::now(),
                         last_move: Instant::now(),
                         scroll_acc: egui::Vec2::ZERO,

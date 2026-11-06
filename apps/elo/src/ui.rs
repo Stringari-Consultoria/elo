@@ -843,7 +843,9 @@ impl EloApp {
                 paint_cursor(ui.painter(), pos);
             }
         }
-        if hovered {
+        let remote_mac = v.os == "macOS";
+        let focused = ctx.input(|i| i.focused);
+        if hovered && focused {
             resp.request_focus();
             let to_remote = |pos: egui::Pos2| (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32);
             let cmd = &v.handle.cmd;
@@ -860,7 +862,9 @@ impl EloApp {
                             send(Input::MouseMove { x, y });
                         }
                     }
-                    egui::Event::PointerButton { pos, button, pressed, .. } => {
+                    egui::Event::PointerButton { pos, button, pressed, modifiers } => {
+                        // Shift/Ctrl+clique: o modificador vai antes do clique.
+                        sync_mods(&mut v.held, remote_mods(modifiers, remote_mac), &send);
                         if rect.contains(pos) || !pressed {
                             let b = match button {
                                 egui::PointerButton::Primary => Some(Button::Left),
@@ -891,12 +895,8 @@ impl EloApp {
                         }
                     }
                     egui::Event::Key { key, pressed, modifiers, .. } => {
-                        // Modificadores mudaram: replica.
-                        for (on, was, k) in [(modifiers.ctrl, v.mods.ctrl, Key::Control), (modifiers.shift, v.mods.shift, Key::Shift), (modifiers.alt, v.mods.alt, Key::Alt)] {
-                            if on != was {
-                                send(Input::Key { key: k, down: on });
-                            }
-                        }
+                        // Modificadores como estavam nesta tecla (vão antes dela).
+                        sync_mods(&mut v.held, remote_mods(modifiers, remote_mac), &send);
                         v.mods = modifiers;
                         let special = match key {
                             egui::Key::Enter => Some(Key::Enter),
@@ -934,23 +934,34 @@ impl EloApp {
                         }
                     }
                     egui::Event::Copy | egui::Event::Cut => {
-                        // O egui consome Ctrl+C/X: repassa como atalho.
+                        // O egui consome Ctrl/Cmd+C/X: repassa como atalho (Cmd num Mac).
                         let c = if matches!(e, egui::Event::Copy) { 'c' } else { 'x' };
-                        for (k, d) in [(Key::Control, true), (Key::Char(c), true), (Key::Char(c), false), (Key::Control, false)] {
-                            send(Input::Key { key: k, down: d });
+                        let (m, i) = if remote_mac { (Key::Meta, 3) } else { (Key::Control, 0) };
+                        let had = v.held[i];
+                        if !had {
+                            send(Input::Key { key: m, down: true });
+                        }
+                        send(Input::Key { key: Key::Char(c), down: true });
+                        send(Input::Key { key: Key::Char(c), down: false });
+                        if !had {
+                            send(Input::Key { key: m, down: false });
                         }
                     }
                     egui::Event::Paste(t) => send(Input::Text(t)),
                     _ => {}
                 }
             }
-        } else if v.mods.any() {
-            // Saiu da tela com modificador apertado: solta tudo.
-            for (on, k) in [(v.mods.ctrl, Key::Control), (v.mods.shift, Key::Shift), (v.mods.alt, Key::Alt)] {
-                if on {
-                    let _ = v.handle.cmd.send(Cmd::Input(Input::Key { key: k, down: false }));
-                }
-            }
+            // Estado real agora: soltar só o Shift (ou o Cmd) não gera evento de
+            // tecla, e sem isto ele ficava apertado lá (clique virava Shift+clique).
+            let now = ctx.input(|i| i.modifiers);
+            sync_mods(&mut v.held, remote_mods(now, remote_mac), &send);
+            v.mods = now;
+        } else if v.held.iter().any(|h| *h) || v.mods.any() {
+            // Saiu da tela ou da janela (Cmd+Tab) com modificador apertado: solta tudo.
+            let cmd = v.handle.cmd.clone();
+            sync_mods(&mut v.held, [false; 4], &|i| {
+                let _ = cmd.send(Cmd::Input(i));
+            });
             v.mods = egui::Modifiers::NONE;
         }
     }
@@ -2484,6 +2495,25 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
         });
 }
 
+/// Modificadores que devem estar apertados lá: Ctrl, Shift, Alt, Meta.
+/// O Cmd do Mac vira Ctrl num Windows/Linux (Cmd+S salva, Cmd+Z desfaz) e
+/// continua Cmd num Mac.
+fn remote_mods(m: egui::Modifiers, remote_mac: bool) -> [bool; 4] {
+    let cmd = cfg!(target_os = "macos") && m.mac_cmd;
+    [m.ctrl || (cmd && !remote_mac), m.shift, m.alt, cmd && remote_mac]
+}
+
+/// Manda só o que mudou (apertar ou soltar) e guarda o estado de lá.
+fn sync_mods(held: &mut [bool; 4], want: [bool; 4], send: &dyn Fn(Input)) {
+    const KEYS: [Key; 4] = [Key::Control, Key::Shift, Key::Alt, Key::Meta];
+    for i in 0..4 {
+        if held[i] != want[i] {
+            send(Input::Key { key: KEYS[i], down: want[i] });
+            held[i] = want[i];
+        }
+    }
+}
+
 /// Junta a rolagem em "cliques" inteiros da roda. O touchpad manda muitos
 /// movimentos pequenos (frações de clique): arredondar cada um sozinho perde
 /// quase todos e a rolagem trava; aqui a sobra fica para o próximo.
@@ -2519,6 +2549,22 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn released_shift_is_released_remotely() {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let send = |i: Input| sent.borrow_mut().push(i);
+        let mut held = [false; 4];
+        // Shift+A: o Shift desce antes.
+        sync_mods(&mut held, remote_mods(egui::Modifiers::SHIFT, false), &send);
+        // Soltou só o Shift (sem evento de tecla): o estado do quadro solta lá.
+        sync_mods(&mut held, remote_mods(egui::Modifiers::NONE, false), &send);
+        assert_eq!(*sent.borrow(), vec![Input::Key { key: Key::Shift, down: true }, Input::Key { key: Key::Shift, down: false }]);
+        assert_eq!(held, [false; 4]);
+        // Nada mudou: nada é mandado.
+        sync_mods(&mut held, [false; 4], &send);
+        assert_eq!(sent.borrow().len(), 2);
+    }
 
     #[test]
     fn touchpad_scroll_is_not_lost() {
