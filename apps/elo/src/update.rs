@@ -219,6 +219,7 @@ pub fn download_to(url: &str, a: &Asset, dir: &Path, progress: &Arc<AtomicU64>) 
     Ok(path)
 }
 
+#[cfg(unix)]
 fn run(cmd: &mut Command) -> Result<(), String> {
     let out = cmd.output().map_err(|e| format!("{:?}: {e}", cmd.get_program()))?;
     if out.status.success() {
@@ -302,7 +303,7 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
 
 /// Troca `elo` e `elo-server` em `dir` pelos que estão em `extracted/<pasta do pacote>/`.
 /// Grava ao lado e renomeia por cima (o executável em uso continua válido até sair).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn replace_binaries(extracted: &Path, dir: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let pkg = std::fs::read_dir(extracted).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join("elo").is_file()).ok_or("pacote sem o executável elo")?;
@@ -522,7 +523,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn replaces_binaries() {
         let base = std::env::temp_dir().join(format!("elo-troca-{}", std::process::id()));
