@@ -23,9 +23,10 @@ TeamViewer e AnyDesk, com duas diferenças. **O servidor é seu**: ele vem
 embutido no app, ou você hospeda o seu. E **ninguém no meio consegue ler a
 sessão**, nem o próprio servidor.
 
-> **Estado do projeto: alfa.** Funciona e tem testes de ponta a ponta no Linux
-> (X11). Windows e macOS compilam, mas ainda não foram testados em máquinas
-> reais. Leia as [limitações](#limitações-conhecidas) antes de usar em produção.
+> **Estado do projeto: alfa.** Testado em máquinas reais no Linux (X11) e no
+> macOS, com testes de ponta a ponta no CI. O Windows compila e passa nos testes
+> do CI, mas ainda não foi testado em máquina real. Leia as
+> [limitações](#limitações-conhecidas) antes de usar em produção.
 
 ## Recursos
 
@@ -289,8 +290,9 @@ o instalador e o `.zip` do Windows, e publica a release.
 - **Só retransmissão.** Todo o tráfego passa pelo servidor; não há conexão
   direta P2P (hole punching). Funciona atrás de qualquer NAT, mas a banda do
   servidor cresce com o uso e a latência depende da distância até ele.
-- **Windows e macOS não foram testados em máquinas reais.** O CI compila nos
-  três sistemas, mas permissões do macOS e telas UAC do Windows precisam de teste.
+- **Windows ainda não foi testado em máquina real.** O CI compila e roda os
+  testes nos três sistemas; o Linux e o macOS já foram testados em máquinas
+  reais. Telas UAC do Windows precisam de teste.
 - **Linux: só X11.** No Wayland, captura e controle exigem o portal
   (xdg-desktop-portal/PipeWire), que ainda não foi implementado.
 - **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
@@ -306,7 +308,7 @@ Quer ajudar com algum desses itens? Veja abaixo.
 
 ## Contribuindo
 
-Contribuições são bem-vindas: correções, testes em Windows e macOS, suporte a
+Contribuições são bem-vindas: correções, testes no Windows, suporte a
 Wayland, melhorias no codec. Leia o [CONTRIBUTING.md](CONTRIBUTING.md) antes de
 abrir um pull request.
 
