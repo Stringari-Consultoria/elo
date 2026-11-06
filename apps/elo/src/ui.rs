@@ -197,6 +197,8 @@ impl EloApp {
         ui.horizontal_centered(|ui| {
             theme::logo(ui, 20.0, Icon::Remote);
             ui.label(RichText::new(crate::variant::app_name()).font(theme::semibold(14.0)).color(p.text));
+            ui.add_space(2.0);
+            by_stringari(ui, &p);
             ui.add_space(14.0);
             // Abas: início + sessões.
             let tab = |ui: &mut egui::Ui, on: bool, text: &str| -> egui::Response {
@@ -1435,6 +1437,23 @@ impl EloApp {
             }
             ui.add_space(6.0);
             ui.label(RichText::new(t!("O servidor registra só metadados (IDs, nomes dos computadores, horários e volume). Telas, teclas, arquivos e chat são cifrados ponta a ponta com uma chave que só os dois computadores têm.")).size(11.5).color(p.muted));
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new(t!("Sobre")).font(theme::semibold(13.0)).color(p.text));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let tex = stringari_symbol(ui.ctx());
+                ui.add(egui::Image::new(&tex).fit_to_exact_size(Vec2::splat(30.0)));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(format!("{} by Stringari", crate::variant::app_name())).font(theme::semibold(12.5)).color(p.text));
+                    ui.label(RichText::new("Stringari Consultoria & Tech").size(11.5).color(p.muted));
+                });
+            });
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(t!("O Elo é de código aberto (licenças MIT e Apache 2.0). O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.")).size(12.0).color(p.text2)).wrap());
+            if ui.link(RichText::new("github.com/Stringari-Consultoria/elo").font(theme::mono(11.5))).on_hover_text(REPO).clicked() {
+                open_url(REPO);
+            }
             });
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1576,6 +1595,35 @@ fn docker_gateways() -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// Repositório do Elo (código aberto).
+pub(crate) const REPO: &str = "https://github.com/Stringari-Consultoria/elo";
+
+/// "by {S} Stringari" ao lado do nome do app.
+fn by_stringari(ui: &mut egui::Ui, p: &theme::Palette) {
+    let tex = stringari_symbol(ui.ctx());
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.label(RichText::new("by").size(11.0).color(p.muted));
+        ui.add(egui::Image::new(&tex).fit_to_exact_size(Vec2::splat(15.0)));
+        ui.label(RichText::new("Stringari").font(theme::semibold(11.5)).color(p.text2));
+    })
+    .response
+    .on_hover_text("Stringari Consultoria & Tech");
+}
+
+/// O símbolo da Stringari (carregado uma vez por janela).
+pub(crate) fn stringari_symbol(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::unique("marca-stringari");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return t;
+    }
+    let img = image::load_from_memory(include_bytes!("../../../assets/marca/stringari-simbolo.png")).map(|i| i.to_rgba8()).unwrap_or_default();
+    let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+    let t = ctx.load_texture("marca-stringari", color, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
 }
 
 /// Abre um endereço no navegador.
