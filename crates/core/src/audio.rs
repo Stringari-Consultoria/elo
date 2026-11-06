@@ -81,7 +81,6 @@ fn to_f32<T: cpal::SizedSample>(d: &[T]) -> Vec<f32>
 where
     f32: cpal::FromSample<T>,
 {
-    use cpal::Sample;
     d.iter().map(|s| s.to_sample::<f32>()).collect()
 }
 
