@@ -41,6 +41,12 @@ else
     ICONE="$RAIZ/packaging/icons/elo.svg"
 fi
 
+if [[ -x /usr/bin/elo ]]; then
+    echo "Aviso: o Elo também está instalado pelo .deb (/usr/bin/elo)."
+    echo "A cópia em $BIN e o atalho dela passam na frente. Para usar só o .deb:"
+    echo "  $0 --remover"
+    echo
+fi
 mkdir -p "$BIN" "$APPS" "$ICONES"
 install -m 755 "$ORIGEM/elo" "$BIN/elo"
 install -m 755 "$ORIGEM/elo-server" "$BIN/elo-server"

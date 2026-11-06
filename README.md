@@ -59,6 +59,10 @@ Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Con
 | Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
 | Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
 
+Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
+e passar para o `.deb`, rode antes `./instalar.sh --remover`, porque a cópia em
+`~/.local` tem prioridade sobre a do sistema.
+
 **No Linux** a sessão precisa ser **X11**. No Ubuntu, escolha "Ubuntu no Xorg"
 na tela de login. Wayland ainda não é suportado.
 
