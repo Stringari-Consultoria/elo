@@ -8,6 +8,7 @@ use stringari_ui::icons::{self, Icon};
 use stringari_ui::theme::{self, Palette, pal};
 
 use crate::app::{ChatLine, EloApp, Status, ViewSession, quality};
+use crate::mac::{self, Kind};
 
 fn card(p: &Palette) -> egui::Frame {
     egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(20))
@@ -80,14 +81,31 @@ impl eframe::App for EloApp {
             let idx = tab - 1;
             if self.views[idx].files.open {
                 let downloads = self.settings.downloads.clone();
-                egui::Panel::right("arquivos").default_size(440.0).min_size(340.0).frame(egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::same(14))).show(ui, |ui| {
-                    files_panel(ui, &mut self.views[idx], &downloads);
+                egui::Panel::right("arquivos").default_size(460.0).min_size(360.0).frame(session_panel_frame()).show(ui, |ui| {
+                    ui.style_mut().visuals = egui::Visuals::dark();
+                    files_panel(ui, &mac::DARK, &mut self.views[idx], &downloads);
                 });
             } else if self.views[idx].chat_open {
-                egui::Panel::right("chat").default_size(300.0).frame(egui::Frame::new().fill(p.panel).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::same(10))).show(ui, |ui| {
+                egui::Panel::right("chat").default_size(320.0).min_size(260.0).frame(session_panel_frame()).show(ui, |ui| {
+                    ui.style_mut().visuals = egui::Visuals::dark();
+                    let m = mac::DARK;
                     let v = &mut self.views[idx];
+                    let who = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.label(RichText::new("Mensagens").font(theme::semibold(14.0)).color(m.label));
+                            ui.label(RichText::new(format!("com {who}")).size(11.5).color(m.label2));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if mac::round_icon(ui, &m, Icon::Close, "Fechar", 26.0, true).clicked() {
+                                v.chat_open = false;
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
                     let cmd = v.handle.cmd.clone();
-                    chat_panel(ui, &mut v.chat, &mut v.chat_input, &v.transfers, |t| {
+                    chat_panel(ui, &m, &mut v.chat, &mut v.chat_input, &v.transfers, |t| {
                         let _ = cmd.send(Cmd::Chat(t));
                     });
                 });
@@ -275,7 +293,7 @@ impl EloApp {
             let cmd = h.handle.cmd.clone();
             egui::CollapsingHeader::new(RichText::new(format!("Chat{}", if h.chat.is_empty() { String::new() } else { format!(" ({})", h.chat.len()) })).size(12.0)).id_salt(("hchat", i, h.chat.is_empty())).default_open(!h.chat.is_empty()).show(ui, |ui| {
                 ui.set_max_height(220.0);
-                chat_panel(ui, &mut h.chat, &mut h.chat_input, &h.transfers, |t| {
+                chat_panel(ui, &mac::of(ui.visuals().dark_mode), &mut h.chat, &mut h.chat_input, &h.transfers, |t| {
                     let _ = cmd.send(Cmd::Chat(t));
                 });
                 if ui.button("Enviar arquivo para quem está acessando…").clicked()
@@ -627,7 +645,6 @@ impl EloApp {
     }
 
     fn remote_view(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let p = pal(ui);
         let ctx = ui.ctx().clone();
         let fav = self.settings.favorite(&self.views[idx].target_id).is_some();
         let fs = self.fullscreen;
@@ -638,18 +655,26 @@ impl EloApp {
         if v.confirm_restart {
             let mut close = false;
             let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
-            egui::Modal::new(egui::Id::unique("reiniciar")).frame(egui::Frame::new().fill(p.raised).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(22))).show(&ctx, |ui| {
-                ui.set_width(420.0);
-                ui.label(RichText::new(format!("Reiniciar {name}?")).font(theme::semibold(16.0)).color(p.text));
-                ui.add_space(6.0);
-                ui.add(egui::Label::new(RichText::new("A sessão cai e o Elo tenta reconectar sozinho por até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa iniciar o Elo com o computador e ter o acesso não assistido ligado.").size(12.5).color(p.text2)).wrap());
-                ui.add_space(14.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::danger_button(ui, "Reiniciar").clicked() {
-                        let _ = v.handle.cmd.send(Cmd::Restart);
+            let m = mac::DARK;
+            egui::Modal::new(egui::Id::unique("reiniciar")).frame(mac::alert_frame(&m)).show(&ctx, |ui| {
+                ui.style_mut().visuals = egui::Visuals::dark();
+                ui.set_width(300.0);
+                ui.vertical_centered(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                    mac::icon_tile(ui.painter(), r, Icon::Refresh, m.orange);
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(format!("Reiniciar {name}?")).font(theme::semibold(15.0)).color(m.label));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new("A sessão cai e o Elo reconecta sozinho por até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa abrir o Elo junto com o sistema e ter o acesso não assistido ligado.").size(12.0).color(m.label2)).halign(Align::Center).wrap());
+                });
+                ui.add_space(18.0);
+                ui.columns(2, |c| {
+                    let w = Vec2::new(c[0].available_width(), 30.0);
+                    if mac::button(&mut c[0], &m, "Cancelar", Kind::Secondary, Some(w), true).clicked() || c[0].input(|i| i.key_pressed(egui::Key::Escape)) {
                         close = true;
                     }
-                    if theme::secondary(ui, None, "Cancelar").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    if mac::button(&mut c[1], &m, "Reiniciar", Kind::Destructive, Some(w), true).clicked() {
+                        let _ = v.handle.cmd.send(Cmd::Restart);
                         close = true;
                     }
                 });
@@ -660,14 +685,45 @@ impl EloApp {
         }
         // Tela remota.
         if !v.connected {
-            ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(120.0);
-                    ui.spinner();
-                    ui.label(RichText::new(if v.waiting { "Esperando o outro lado aceitar…" } else { "Conectando…" }).size(15.0).color(Color32::from_gray(220)));
-                    if v.waiting {
-                        ui.label(RichText::new(format!("Código de verificação: {}", v.sas)).font(theme::mono(14.0)).color(Color32::from_gray(180)));
-                    }
+            // Cartão de vidro no meio: quem, situação, código e Cancelar.
+            let m = mac::DARK;
+            let area = ui.available_rect_before_wrap();
+            let h = if v.waiting && !v.sas.is_empty() { 360.0 } else { 250.0 };
+            let card = egui::Rect::from_center_size(area.center(), Vec2::new(340.0, h));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(card).layout(Layout::top_down(Align::Center)), |ui| {
+                glass_frame(22, Margin::same(26)).show(ui, |ui| {
+                    ui.style_mut().visuals = egui::Visuals::dark();
+                    ui.set_width(288.0);
+                    ui.vertical_centered(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+                        mac::icon_tile(ui.painter(), r, Icon::Monitor, os_color(&v.os));
+                        ui.add_space(12.0);
+                        let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+                        ui.label(RichText::new(name).font(theme::semibold(16.0)).color(m.label));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let text = if v.waiting { "Esperando o outro lado aceitar" } else { "Conectando…" };
+                            let tw = ui.painter().layout_no_wrap(text.into(), egui::FontId::proportional(13.0), m.label2).size().x + 22.0;
+                            ui.add_space(((ui.available_width() - tw) / 2.0).max(0.0));
+                            ui.add(egui::Spinner::new().size(14.0).color(m.label2));
+                            ui.label(RichText::new(text).size(13.0).color(m.label2));
+                        });
+                        if v.waiting && !v.sas.is_empty() {
+                            ui.add_space(14.0);
+                            egui::Frame::new().fill(Color32::from_white_alpha(14)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(18, 8)).show(ui, |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(RichText::new("Código de verificação").size(11.0).color(m.label2));
+                                    ui.label(RichText::new(&v.sas).font(theme::mono(24.0)).color(m.label));
+                                });
+                            });
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(RichText::new("Confira se é o mesmo código na tela de quem vai aceitar.").size(11.5).color(m.label2)).halign(Align::Center).wrap());
+                        }
+                        ui.add_space(18.0);
+                        if mac::button(ui, &m, "Cancelar", Kind::Secondary, Some(Vec2::new(140.0, 30.0)), true).clicked() {
+                            v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
                 });
             });
             return;
@@ -696,7 +752,12 @@ impl EloApp {
         let rect = egui::Rect::from_center_size(avail.center(), size);
         let resp = ui.allocate_rect(avail, Sense::click_and_drag());
         if let Some(t) = &v.texture {
-            ui.painter().image(t.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            // Como uma janela: cantos arredondados e sombra (some quando ocupa tudo).
+            let radius = if rect.width() >= avail.width() - 1.0 && rect.height() >= avail.height() - 1.0 { 0 } else { 10 };
+            if radius > 0 {
+                ui.painter().add(egui::Shadow { offset: [0, 10], blur: 36, spread: 0, color: Color32::from_black_alpha(150) }.as_shape(rect, CornerRadius::same(radius)));
+            }
+            egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), rect.size())).corner_radius(CornerRadius::same(radius)).paint_at(ui, rect);
         }
         if !v.permissions.control {
             ui.painter().text(rect.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, "Somente visualização (o outro lado desativou o controle)", egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
@@ -1398,72 +1459,157 @@ fn remote_join(dir: &str, name: &str) -> String {
 }
 
 /// Gerenciador de arquivos: pastas do computador acessado, baixar e enviar.
-fn files_panel(ui: &mut egui::Ui, v: &mut ViewSession, downloads: &std::path::Path) {
-    let p = pal(ui);
+fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: &std::path::Path) {
     let cmd = v.handle.cmd.clone();
     let mut go: Option<String> = None;
+    // Cabeçalho.
     ui.horizontal(|ui| {
-        icons::icon(ui, Icon::FolderOpen, 16.0, p.accent);
-        let who = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
-        ui.label(RichText::new(format!("Arquivos de {who}")).font(theme::semibold(14.0)).color(p.text));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new("Arquivos").font(theme::semibold(14.0)).color(m.label));
+            let who = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+            ui.label(RichText::new(format!("em {who}")).size(11.5).color(m.label2));
+        });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if theme::icon_button(ui, Icon::Close, "Fechar", false).clicked() {
+            if mac::round_icon(ui, m, Icon::Close, "Fechar", 26.0, true).clicked() {
                 v.files.open = false;
             }
         });
     });
-    ui.add_space(8.0);
-    // Barra de caminho.
+    ui.add_space(10.0);
     let f = &mut v.files;
     let parent = f.listing.as_ref().and_then(|l| l.parent.clone());
     let current = f.listing.as_ref().map(|l| l.path.clone()).unwrap_or_default();
+    // Barra: voltar, início, atualizar e o caminho em migalhas (clique duplo edita).
+    let edit_id = ui.scope_id().with("editar-caminho");
+    let mut editing = ui.ctx().data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
     ui.horizontal(|ui| {
-        if ui.add_enabled_ui(parent.is_some(), |ui| theme::icon_button(ui, Icon::ArrowUp, "Pasta de cima", true)).inner.clicked() {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if mac::round_icon(ui, m, Icon::ArrowUp, "Pasta de cima", 28.0, parent.is_some()).clicked() {
             go = parent.clone();
         }
-        if theme::icon_button(ui, Icon::Home, "Pasta pessoal", true).clicked() {
+        if mac::round_icon(ui, m, Icon::Home, "Pasta pessoal", 28.0, true).clicked() {
             go = Some(String::new());
         }
-        if theme::icon_button(ui, Icon::Refresh, "Atualizar", true).clicked() {
+        if mac::round_icon(ui, m, Icon::Refresh, "Atualizar", 28.0, true).clicked() {
             go = Some(current.clone());
         }
-        let r = ui.add(egui::TextEdit::singleline(&mut f.path).font(theme::mono(12.0)).hint_text("caminho no outro computador").desired_width(ui.available_width()));
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            go = Some(f.path.clone());
+        ui.add_space(6.0);
+        let (bar, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+        ui.painter().rect(bar, CornerRadius::same(8), Color32::from_white_alpha(10), Stroke::new(1.0, m.sep), egui::StrokeKind::Inside);
+        if editing {
+            let r = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(Vec2::new(10.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut f.path).frame(egui::Frame::NONE).font(theme::mono(12.0)).text_color(m.label).desired_width(f32::INFINITY))
+                })
+                .inner;
+            r.request_focus();
+            if r.lost_focus() {
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    go = Some(f.path.clone());
+                }
+                editing = false;
+            }
+        } else {
+            // Migalhas: cada pasta do caminho é clicável; corta o começo se não couber.
+            let win = current.contains('\\');
+            let sep = if win { '\\' } else { '/' };
+            let parts: Vec<&str> = current.split(sep).filter(|x| !x.is_empty()).collect();
+            let mut crumbs: Vec<(String, String)> = Vec::new();
+            if !win {
+                crumbs.push(("/".into(), "/".into()));
+            }
+            for i in 0..parts.len() {
+                let path = if win { if i == 0 { format!("{}\\", parts[0]) } else { parts[..=i].join("\\") } } else { format!("/{}", parts[..=i].join("/")) };
+                crumbs.push((parts[i].to_string(), path));
+            }
+            let font = egui::FontId::proportional(12.5);
+            let chev = 14.0;
+            let ws: Vec<f32> = crumbs.iter().map(|(n, _)| ui.painter().layout_no_wrap(n.clone(), font.clone(), m.label).size().x + 8.0).collect();
+            let room = bar.width() - 16.0;
+            let mut first = 0;
+            while first + 1 < crumbs.len() && ws[first..].iter().sum::<f32>() + chev * (crumbs.len() - first) as f32 + 20.0 > room {
+                first += 1;
+            }
+            let mut x = bar.left() + 8.0;
+            if first > 0 {
+                ui.painter().text(egui::pos2(x, bar.center().y), Align2::LEFT_CENTER, "…", font.clone(), m.label3);
+                x += 14.0;
+            }
+            for (i, (name, path)) in crumbs.iter().enumerate().skip(first) {
+                if i > first || first > 0 {
+                    icons::paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(x + chev / 2.0 - 2.0, bar.center().y), Vec2::splat(10.0)), Icon::ChevronRight, m.label3);
+                    x += chev;
+                }
+                let r = egui::Rect::from_min_size(egui::pos2(x, bar.top() + 3.0), Vec2::new(ws[i], 22.0));
+                let cr = ui.interact(r, ui.scope_id().with(("migalha", i)), Sense::click());
+                let last = i + 1 == crumbs.len();
+                if cr.hovered() {
+                    ui.painter().rect_filled(r, CornerRadius::same(5), m.hover);
+                }
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, name, if last { theme::medium(12.5) } else { font.clone() }, if last { m.label } else { m.label2 });
+                if cr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !last {
+                    go = Some(path.clone());
+                }
+                x += ws[i];
+            }
+            if resp.on_hover_text("Clique duplo para digitar um caminho").double_clicked() {
+                f.path = current.clone();
+                editing = true;
+            }
         }
     });
-    ui.add_space(6.0);
+    ui.ctx().data_mut(|d| d.insert_temp(edit_id, editing));
+    ui.add_space(8.0);
     if let Some(e) = f.listing.as_ref().and_then(|l| l.error.clone()) {
-        ui.add(egui::Label::new(RichText::new(e).size(12.0).color(p.danger)).wrap());
+        ui.add(egui::Label::new(RichText::new(e).size(12.0).color(m.red)).wrap());
+        ui.add_space(4.0);
     }
-    // Lista da pasta.
-    let footer = 230.0;
-    let list_h = (ui.available_height() - footer).max(120.0);
-    egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(4)).show(ui, |ui| {
+    // Lista em colunas, como no Finder.
+    let footer = 250.0;
+    let list_h = (ui.available_height() - footer).max(140.0);
+    egui::Frame::new().fill(Color32::from_white_alpha(6)).stroke(Stroke::new(1.0, m.sep)).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(4)).show(ui, |ui| {
         ui.set_width(ui.available_width());
+        let w = ui.available_width();
+        let (size_x, date_x) = (w - 96.0, w - 6.0);
+        let (hdr, _) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::hover());
+        let hf = theme::medium(11.0);
+        ui.painter().text(egui::pos2(hdr.left() + 30.0, hdr.center().y), Align2::LEFT_CENTER, "Nome", hf.clone(), m.label2);
+        ui.painter().text(egui::pos2(hdr.left() + size_x, hdr.center().y), Align2::RIGHT_CENTER, "Tamanho", hf.clone(), m.label2);
+        ui.painter().text(egui::pos2(hdr.left() + date_x, hdr.center().y), Align2::RIGHT_CENTER, "Modificado", hf, m.label2);
+        ui.painter().line_segment([hdr.left_bottom(), hdr.right_bottom()], Stroke::new(1.0, m.sep));
         egui::ScrollArea::vertical().max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             if f.loading && f.listing.is_none() {
-                ui.add_space(20.0);
+                ui.add_space(24.0);
                 ui.vertical_centered(|ui| ui.spinner());
                 return;
             }
             let Some(l) = &f.listing else { return };
             let mut shown = 0;
             for e in l.entries.iter().filter(|e| f.hidden || !e.name.starts_with('.')) {
-                shown += 1;
                 let sel = f.selected.contains(&e.name);
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
-                let fill = if sel { p.selected } else if resp.hovered() { p.hover } else { Color32::TRANSPARENT };
-                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-                let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(15.0));
-                icons::paint(ui.painter(), ic, if e.dir { Icon::Folder } else { Icon::File }, if e.dir { p.accent } else { p.text2 });
-                let size = if e.dir { String::new() } else { human_bytes(e.size) };
-                let sw = ui.painter().layout_no_wrap(size.clone(), theme::mono(11.0), p.muted).size().x;
-                let mut job = egui::text::LayoutJob::simple_singleline(e.name.clone(), egui::FontId::proportional(13.0), p.text);
-                job.wrap = egui::text::TextWrapping { max_width: (rect.width() - 52.0 - sw).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                let p = ui.painter();
+                if sel {
+                    p.rect_filled(rect, CornerRadius::same(6), m.accent);
+                } else if resp.hovered() {
+                    p.rect_filled(rect, CornerRadius::same(6), m.hover);
+                } else if shown % 2 == 1 {
+                    p.rect_filled(rect, CornerRadius::same(6), Color32::from_white_alpha(5));
+                }
+                shown += 1;
+                let (text, sub) = if sel { (Color32::WHITE, Color32::from_white_alpha(210)) } else { (m.label, m.label2) };
+                let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 15.0, rect.center().y), Vec2::splat(16.0));
+                let folder = Color32::from_rgb(100, 180, 250);
+                icons::paint(p, ic, if e.dir { Icon::Folder } else { Icon::File }, if sel { Color32::WHITE } else if e.dir { folder } else { m.label2 });
+                let mut job = egui::text::LayoutJob::simple_singleline(e.name.clone(), egui::FontId::proportional(12.5), text);
+                job.wrap = egui::text::TextWrapping { max_width: (size_x - 110.0).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                 let g = ui.fonts_mut(|fo| fo.layout_job(job));
-                ui.painter().galley(egui::pos2(rect.left() + 32.0, rect.center().y - g.size().y / 2.0), g, p.text);
-                ui.painter().text(egui::pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, size, theme::mono(11.0), p.muted);
+                p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y / 2.0), g, text);
+                let size = if e.dir { "—".to_string() } else { human_bytes(e.size) };
+                p.text(egui::pos2(rect.left() + size_x, rect.center().y), Align2::RIGHT_CENTER, size, egui::FontId::proportional(11.5), sub);
+                p.text(egui::pos2(rect.left() + date_x, rect.center().y), Align2::RIGHT_CENTER, ago(e.modified), egui::FontId::proportional(11.5), sub);
                 if resp.double_clicked() {
                     if e.dir {
                         go = Some(remote_join(&l.path, &e.name));
@@ -1479,103 +1625,186 @@ fn files_panel(ui: &mut egui::Ui, v: &mut ViewSession, downloads: &std::path::Pa
                 }
             }
             if shown == 0 && l.error.is_none() {
-                ui.add_space(16.0);
-                ui.vertical_centered(|ui| ui.label(RichText::new("Pasta vazia").size(12.5).color(p.muted)));
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| ui.label(RichText::new("Pasta vazia").size(12.5).color(m.label3)));
             }
         });
     });
-    ui.add_space(8.0);
+    ui.add_space(10.0);
     ui.horizontal(|ui| {
         let n = f.selected.len();
-        let label = if n > 1 { format!("Baixar {n} arquivos") } else { "Baixar".to_string() };
-        if ui.add_enabled_ui(n > 0, |ui| theme::primary(ui, Some(Icon::Download), &label, None)).inner.on_disabled_hover_text("Selecione arquivos (clique). Clique duplo baixa direto.").clicked() {
-            for name in f.selected.drain(..) {
-                let _ = cmd.send(Cmd::Download(remote_join(&current, &name)));
-            }
-        }
-        if ui.add_enabled_ui(!current.is_empty(), |ui| theme::secondary(ui, Some(Icon::Upload), "Enviar para cá…")).inner.on_hover_text("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.").clicked()
-            && let Some(list) = rfd::FileDialog::new().pick_files()
-        {
-            for path in list {
-                let _ = cmd.send(Cmd::Upload(path, current.clone()));
-            }
+        let hid = ui.selectable_label(f.hidden, RichText::new("Mostrar ocultos").size(12.0).color(m.label2)).on_hover_text("Arquivos e pastas que começam com ponto");
+        if hid.clicked() {
+            f.hidden = !f.hidden;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.checkbox(&mut f.hidden, "Ocultos");
+            let label = if n > 1 { format!("Baixar {n}") } else { "Baixar".to_string() };
+            if mac::button(ui, m, &label, Kind::Primary, None, n > 0).on_disabled_hover_text("Selecione arquivos (clique). Clique duplo baixa direto.").clicked() {
+                for name in f.selected.drain(..) {
+                    let _ = cmd.send(Cmd::Download(remote_join(&current, &name)));
+                }
+            }
+            if mac::button(ui, m, "Enviar…", Kind::Secondary, None, !current.is_empty()).on_hover_text("Envia arquivos deste computador para a pasta aberta. Também dá para arrastar para a janela.").clicked()
+                && let Some(list) = rfd::FileDialog::new().pick_files()
+            {
+                for path in list {
+                    let _ = cmd.send(Cmd::Upload(path, current.clone()));
+                }
+            }
         });
     });
     if let Some(path) = go {
         f.loading = true;
         let _ = cmd.send(Cmd::ListDir(path));
     }
-    // Transferências.
-    ui.add_space(10.0);
-    ui.separator();
+    // Transferências, como a lista de downloads.
+    ui.add_space(16.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Transferências").font(theme::semibold(12.5)).color(p.text));
+        ui.label(RichText::new("Transferências").font(theme::semibold(13.0)).color(m.label));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.small_button("Abrir recebidos").on_hover_text(downloads.display().to_string()).clicked() {
+            if mac::round_icon(ui, m, Icon::FolderOpen, &format!("Abrir a pasta de recebidos ({})", downloads.display()), 26.0, true).clicked() {
                 let _ = std::fs::create_dir_all(downloads);
                 open_path(downloads);
             }
         });
     });
+    ui.add_space(6.0);
     egui::ScrollArea::vertical().id_salt("transferencias").auto_shrink([false, false]).show(ui, |ui| {
         if v.transfers.is_empty() {
-            ui.label(RichText::new("Nada ainda. Arquivos baixados vão para a pasta de recebidos.").size(11.5).color(p.muted));
+            ui.label(RichText::new("Nada ainda. O que você baixar vai para a pasta de recebidos.").size(11.5).color(m.label3));
         }
         for t in v.transfers.iter().rev().take(20) {
             let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
-            ui.horizontal(|ui| {
-                icons::icon(ui, if t.incoming { Icon::Download } else { Icon::Upload }, 13.0, if t.finished { p.success } else { p.text2 });
-                let status = if t.finished { "concluído".to_string() } else { format!("{:.0}% de {}", pct * 100.0, human_bytes(t.total)) };
-                ui.add(egui::Label::new(RichText::new(&t.name).size(12.0).color(p.text)).truncate());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if t.finished && t.incoming
-                        && let Some(path) = &t.path
-                        && ui.small_button("Abrir").clicked()
-                    {
-                        open_path(path);
-                    }
-                    ui.label(RichText::new(status).size(11.0).color(p.muted));
-                });
-            });
-            if !t.finished {
-                ui.add(egui::ProgressBar::new(pct).desired_height(4.0));
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 42.0), Sense::hover());
+            let p = ui.painter();
+            let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), Vec2::splat(28.0));
+            mac::icon_tile(p, ic, if t.incoming { Icon::Download } else { Icon::Upload }, if t.finished { m.green } else { m.accent });
+            let x = rect.left() + 38.0;
+            let right_w = if t.finished && t.incoming && t.path.is_some() { 66.0 } else { 0.0 };
+            let mut job = egui::text::LayoutJob::simple_singleline(t.name.clone(), egui::FontId::proportional(12.5), m.label);
+            job.wrap = egui::text::TextWrapping { max_width: (rect.right() - x - right_w - 4.0).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+            let g = ui.fonts_mut(|fo| fo.layout_job(job));
+            p.galley(egui::pos2(x, rect.top() + 5.0), g, m.label);
+            if t.finished {
+                p.text(egui::pos2(x, rect.bottom() - 9.0), Align2::LEFT_CENTER, format!("{} · {}", if t.incoming { "Recebido" } else { "Enviado" }, human_bytes(t.total)), egui::FontId::proportional(11.0), m.label2);
+            } else {
+                let bar = egui::Rect::from_min_size(egui::pos2(x, rect.bottom() - 12.0), Vec2::new((rect.right() - x - 54.0).max(20.0), 4.0));
+                p.rect_filled(bar, CornerRadius::same(2), m.hover);
+                p.rect_filled(egui::Rect::from_min_size(bar.min, Vec2::new(bar.width() * pct, 4.0)), CornerRadius::same(2), m.accent);
+                p.text(egui::pos2(rect.right(), bar.center().y), Align2::RIGHT_CENTER, format!("{:.0}%", pct * 100.0), egui::FontId::proportional(11.0), m.label2);
+            }
+            if right_w > 0.0
+                && let Some(path) = &t.path
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::right_to_left(Align::Center)));
+                if mac::button(&mut child, m, "Abrir", Kind::Secondary, Some(Vec2::new(60.0, 24.0)), true).clicked() {
+                    open_path(path);
+                }
             }
         }
     });
 }
 
-fn chat_panel(ui: &mut egui::Ui, chat: &mut Vec<ChatLine>, input: &mut String, transfers: &[elo_core::session::Transfer], mut send: impl FnMut(String)) {
-    let p = pal(ui);
-    ui.label(RichText::new("Chat").font(theme::semibold(13.0)).color(p.text));
-    egui::ScrollArea::vertical().stick_to_bottom(true).max_height(ui.available_height() - 120.0).auto_shrink([false, true]).show(ui, |ui| {
-        for l in chat.iter() {
-            ui.with_layout(Layout::top_down(if l.mine { Align::Max } else { Align::Min }), |ui| {
-                egui::Frame::new().fill(if l.mine { p.selected } else { p.surface }).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(8, 5)).show(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(&l.text).size(12.5).color(p.text)).wrap());
-                });
+/// Conversa no estilo do Mensagens: balões azuis (meus) e cinza (do outro lado).
+fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: &mut String, transfers: &[elo_core::session::Transfer], mut send: impl FnMut(String)) {
+    let input_h = 46.0;
+    let list_h = (ui.available_height() - input_h).max(80.0);
+    egui::ScrollArea::vertical().stick_to_bottom(true).max_height(list_h).min_scrolled_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if chat.is_empty() && transfers.is_empty() {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                mac::icon_tile(ui.painter(), r, Icon::Comment, m.green);
+                ui.add_space(8.0);
+                ui.label(RichText::new("Nenhuma mensagem").font(theme::semibold(13.0)).color(m.label));
+                ui.label(RichText::new("As mensagens são cifradas de ponta a ponta.").size(11.5).color(m.label2));
             });
-            ui.add_space(3.0);
+        }
+        let max_w = (ui.available_width() * 0.8).max(120.0);
+        let mut prev: Option<bool> = None;
+        for l in chat.iter() {
+            if let Some(p) = prev {
+                ui.add_space(if p == l.mine { 3.0 } else { 10.0 });
+            }
+            prev = Some(l.mine);
+            let (fill, color) = if l.mine { (m.accent, Color32::WHITE) } else { (m.fill, m.label) };
+            let job = egui::text::LayoutJob::simple(l.text.clone(), egui::FontId::proportional(13.0), color, max_w - 24.0);
+            let g = ui.fonts_mut(|f| f.layout_job(job));
+            let size = g.size() + Vec2::new(24.0, 14.0);
+            let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size.y), Sense::click());
+            let x = if l.mine { row.right() - size.x } else { row.left() };
+            let bubble = egui::Rect::from_min_size(egui::pos2(x, row.top()), size);
+            ui.painter().rect_filled(bubble, CornerRadius::same((size.y / 2.0).min(17.0) as u8), fill);
+            ui.painter().galley(bubble.min + Vec2::new(12.0, 7.0), g, color);
+            if resp.on_hover_text("Clique com o botão direito para copiar").secondary_clicked() {
+                copy(ui, &l.text);
+            }
+        }
+        if !transfers.is_empty() {
+            ui.add_space(12.0);
         }
         for t in transfers {
             let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
-            ui.label(RichText::new(format!("{} {} — {}", if t.incoming { "↓" } else { "↑" }, t.name, if t.finished { "concluído".into() } else { format!("{:.0}%", pct * 100.0) })).size(11.5).color(p.text2));
+            ui.vertical_centered(|ui| {
+                let state = if t.finished { "concluído".into() } else { format!("{:.0}%", pct * 100.0) };
+                ui.label(RichText::new(format!("{} {} · {state}", if t.incoming { "Recebendo" } else { "Enviando" }, t.name)).size(11.0).color(m.label2));
+            });
             if !t.finished {
-                ui.add(egui::ProgressBar::new(pct).desired_height(4.0));
+                let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 4.0), Sense::hover());
+                let r = r.shrink2(Vec2::new(r.width() * 0.2, 0.0));
+                ui.painter().rect_filled(r, CornerRadius::same(2), m.hover);
+                ui.painter().rect_filled(egui::Rect::from_min_size(r.min, Vec2::new(r.width() * pct, 4.0)), CornerRadius::same(2), m.accent);
             }
+            ui.add_space(4.0);
         }
     });
-    ui.horizontal(|ui| {
-        let r = ui.add(egui::TextEdit::singleline(input).hint_text("mensagem").desired_width(ui.available_width() - 70.0));
-        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.button("Enviar").clicked() || enter) && !input.trim().is_empty() {
-            let t = std::mem::take(input);
-            chat.push(ChatLine { mine: true, text: t.clone() });
-            send(t);
+    // Campo em cápsula com o botão de enviar redondo.
+    ui.add_space(10.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::hover());
+    let field = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right() - 40.0, rect.bottom()));
+    ui.painter().rect(field, CornerRadius::same(17), if m.dark { Color32::from_white_alpha(10) } else { Color32::WHITE }, Stroke::new(1.0, if m.dark { m.sep } else { Color32::from_black_alpha(30) }), egui::StrokeKind::Inside);
+    let r = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(field.shrink2(Vec2::new(14.0, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.add(egui::TextEdit::singleline(input).frame(egui::Frame::NONE).hint_text(RichText::new("Mensagem").color(m.label3)).text_color(m.label).desired_width(f32::INFINITY).min_size(Vec2::new(0.0, 34.0)).align(Align2::LEFT_CENTER))
+        })
+        .inner;
+    let has = !input.trim().is_empty();
+    let b = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), Vec2::splat(32.0));
+    let br = ui.interact(b, ui.scope_id().with("enviar"), if has { Sense::click() } else { Sense::hover() });
+    ui.painter().circle_filled(b.center(), 16.0, if has { m.accent } else { m.hover });
+    icons::paint(ui.painter(), b.shrink(8.0), Icon::Send, if has { Color32::WHITE } else { m.label3 });
+    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if (br.on_hover_text("Enviar").clicked() || enter) && has {
+        let t = std::mem::take(input);
+        chat.push(ChatLine { mine: true, text: t.clone() });
+        send(t);
+        if enter {
+            r.request_focus();
         }
-    });
+    }
+}
+
+/// Painel lateral da sessão (chat, arquivos): material escuro, como a tela.
+fn session_panel_frame() -> egui::Frame {
+    egui::Frame::new().fill(Color32::from_rgb(30, 30, 33)).stroke(Stroke::new(1.0, Color32::from_white_alpha(16))).inner_margin(Margin::same(14))
+}
+
+/// "agora", "há 5 min", "há 3 h", "ontem", "há 4 dias", "há 2 meses".
+fn ago(when: u64) -> String {
+    if when == 0 {
+        return String::new();
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    match now.saturating_sub(when) {
+        0..60 => "agora".into(),
+        d @ 60..3600 => format!("há {} min", d / 60),
+        d @ 3600..86_400 => format!("há {} h", d / 3600),
+        86_400..172_800 => "ontem".into(),
+        d @ 172_800..5_184_000 => format!("há {} dias", d / 86_400),
+        d @ 5_184_000..63_072_000 => format!("há {} meses", d / 2_592_000),
+        d => format!("há {} anos", d / 31_536_000),
+    }
 }
 
 /// Botão principal largo (toda a largura), com o texto centralizado.
@@ -1779,8 +2008,8 @@ fn glass_segments(ui: &mut egui::Ui, id: egui::Id, labels: &[String], tips: &[St
     let pw = ease_to(ui.ctx(), id.with("w"), rects[cur].width(), 0.32);
     let pill = egui::Rect::from_min_size(egui::pos2(px, rects[cur].top()), Vec2::new(pw, h - 2.0 * pad));
     let pr = CornerRadius::same((r - pad) as u8);
-    painter.add(egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: theme::alpha(GLASS_BLUE, 0.45) }.as_shape(pill, pr));
-    painter.rect_filled(pill, pr, GLASS_BLUE);
+    painter.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(90) }.as_shape(pill, pr));
+    painter.rect_filled(pill, pr, Color32::from_rgb(99, 99, 104));
     glass_shine(painter, pill, r);
     let mut pick = None;
     for (i, rr) in rects.iter().enumerate() {
@@ -1800,24 +2029,90 @@ fn glass_segments(ui: &mut egui::Ui, id: egui::Id, labels: &[String], tips: &[St
     pick
 }
 
-/// Linha do menu de vidro: ícone, texto e (opcional) chave à direita.
-fn glass_row(ui: &mut egui::Ui, icon: Icon, label: &str, enabled: bool, switch: Option<bool>, color: Color32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), if enabled { Sense::click() } else { Sense::hover() });
+/// Linha de ação do menu de vidro: ícone e texto.
+fn glass_row(ui: &mut egui::Ui, icon: Icon, label: &str, enabled: bool, color: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), if enabled { Sense::click() } else { Sense::hover() });
     let painter = ui.painter();
     if enabled && resp.hovered() {
         painter.rect_filled(rect, CornerRadius::same(10), Color32::from_white_alpha(18));
     }
     let c = if enabled { color } else { Color32::from_white_alpha(60) };
-    icons::paint(painter, egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), Vec2::splat(17.0)), icon, c);
-    painter.text(egui::pos2(rect.left() + 40.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), c);
-    if let Some(on) = switch {
-        let t = ui.ctx().animate_bool_with_time(resp.id.with("sw"), on, 0.16);
-        let track = egui::Rect::from_center_size(egui::pos2(rect.right() - 26.0, rect.center().y), Vec2::new(34.0, 20.0));
-        painter.rect_filled(track, CornerRadius::same(10), Color32::from_white_alpha(40).lerp_to_gamma(GLASS_BLUE, t));
-        let x = egui::lerp(track.left() + 10.0..=track.right() - 10.0, t);
-        painter.circle_filled(egui::pos2(x, track.center().y), 8.0, Color32::WHITE);
-    }
+    icons::paint(painter, egui::Rect::from_center_size(egui::pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(16.0)), icon, c);
+    painter.text(egui::pos2(rect.left() + 38.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(13.0), c);
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
+/// Módulo da Central de Controle: cartão arredondado dentro do menu.
+fn cc_module<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(Color32::from_white_alpha(12))
+        .corner_radius(CornerRadius::same(16))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// Botão-módulo da Central de Controle: círculo (azul quando ligado) e textos.
+fn cc_toggle(ui: &mut egui::Ui, w: f32, icon: Icon, title: &str, sub: &str, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 60.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+    let t = ui.ctx().animate_bool_with_time(resp.id.with("on"), on, 0.16);
+    let p = ui.painter();
+    p.rect_filled(rect, CornerRadius::same(16), Color32::from_white_alpha((12.0 + 8.0 * hover) as u8));
+    let c = egui::pos2(rect.left() + 26.0, rect.center().y);
+    p.circle_filled(c, 17.0, Color32::from_white_alpha(30).lerp_to_gamma(GLASS_BLUE, t));
+    icons::paint(p, egui::Rect::from_center_size(c, Vec2::splat(17.0)), icon, Color32::WHITE);
+    let x = rect.left() + 50.0;
+    let wrap = rect.right() - x - 6.0;
+    let mut job = egui::text::LayoutJob::simple(title.to_string(), theme::semibold(12.5), GLASS_TEXT, wrap);
+    job.wrap.max_rows = 2;
+    let g = ui.fonts_mut(|f| f.layout_job(job));
+    let h = g.size().y;
+    p.galley(egui::pos2(x, rect.center().y - (h + 14.0) / 2.0), g, GLASS_TEXT);
+    p.text(egui::pos2(x, rect.center().y + (h + 14.0) / 2.0 - 7.0), Align2::LEFT_CENTER, sub, egui::FontId::proportional(11.0), GLASS_MUTED);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Controle deslizante com paradas (como o de brilho da Central de Controle).
+fn cc_slider(ui: &mut egui::Ui, id: egui::Id, labels: &[&str], tips: &[&str], value: usize) -> Option<usize> {
+    let n = labels.len();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click_and_drag());
+    let track = egui::Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 20.0, 6.0));
+    let x_of = |i: usize| track.left() + track.width() * i as f32 / (n - 1) as f32;
+    let mut pick = None;
+    if (resp.clicked() || resp.dragged())
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let i = (((pos.x - track.left()) / track.width()).clamp(0.0, 1.0) * (n - 1) as f32).round() as usize;
+        if i != value {
+            pick = Some(i);
+        }
+    }
+    let target = pick.unwrap_or(value);
+    let kx = ease_to(ui.ctx(), id, x_of(target), 0.22);
+    let p = ui.painter();
+    p.rect_filled(track, CornerRadius::same(3), Color32::from_white_alpha(30));
+    p.rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(kx, track.bottom())), CornerRadius::same(3), GLASS_BLUE);
+    for i in 0..n {
+        p.circle_filled(egui::pos2(x_of(i), track.center().y), 2.0, Color32::from_white_alpha(if x_of(i) <= kx { 160 } else { 70 }));
+    }
+    let knob = egui::pos2(kx, track.center().y);
+    p.add(egui::Shadow { offset: [0, 1], blur: 5, spread: 0, color: Color32::from_black_alpha(120) }.as_shape(egui::Rect::from_center_size(knob, Vec2::splat(20.0)), CornerRadius::same(10)));
+    p.circle_filled(knob, 10.0, Color32::WHITE);
+    let resp = resp.on_hover_text(tips[target]).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let _ = resp;
+    // Nomes das paradas.
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
+    for (i, l) in labels.iter().enumerate() {
+        let align = if i == 0 { Align2::LEFT_CENTER } else if i + 1 == n { Align2::RIGHT_CENTER } else { Align2::CENTER_CENTER };
+        let x = if i == 0 { track.left() - 4.0 } else if i + 1 == n { track.right() + 4.0 } else { x_of(i) };
+        let on = i == target;
+        ui.painter().text(egui::pos2(x, row.center().y), align, *l, if on { theme::semibold(11.0) } else { egui::FontId::proportional(11.0) }, if on { GLASS_TEXT } else { GLASS_MUTED });
+    }
+    pick
 }
 
 /// Barras de sinal (0 a 3) pela fluidez da imagem.
@@ -1979,61 +2274,58 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
     act
 }
 
-/// Menu "Mais opções": qualidade, ajustes e ações no outro computador.
+/// Menu "Mais opções", como a Central de Controle: módulos de ajuste,
+/// qualidade da imagem num controle deslizante e ações no outro computador.
 fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
     egui::Popup::menu(button)
         .id(id)
         .align(egui::RectAlign::BOTTOM_END)
         .gap(12.0)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .frame(glass_frame(18, Margin::same(10)))
-        .width(280.0)
+        .frame(glass_frame(24, Margin::same(10)))
+        .width(300.0)
         .show(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            let section = |ui: &mut egui::Ui, t: &str| {
-                ui.add_space(4.0);
+            ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+            let half = (ui.available_width() - 8.0) / 2.0;
+            ui.horizontal(|ui| {
+                if cc_toggle(ui, half, Icon::Expand, "Ajustar à janela", if v.fit { "ligado" } else { "tamanho real" }, v.fit).on_hover_text("Desligado: tamanho real, com rolagem").clicked() {
+                    v.fit = !v.fit;
+                }
+                if cc_toggle(ui, half, Icon::Copy, "Copiar e colar", if v.clipboard { "ligado" } else { "desligado" }, v.clipboard).on_hover_text("Área de transferência compartilhada entre os dois").clicked() {
+                    v.clipboard = !v.clipboard;
+                    let _ = v.handle.cmd.send(Cmd::Clipboard(v.clipboard));
+                }
+            });
+            cc_module(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(t).font(theme::semibold(10.5)).color(GLASS_MUTED).extra_letter_spacing(0.6));
+                    icons::icon(ui, Icon::Image, 14.0, GLASS_TEXT2);
+                    ui.label(RichText::new("Qualidade da imagem").font(theme::semibold(12.5)).color(GLASS_TEXT));
                 });
                 ui.add_space(4.0);
-            };
-            section(ui, "QUALIDADE DA IMAGEM");
-            let labels: Vec<String> = ["Fluida", "Equilibrada", "Nítida"].iter().map(|s| s.to_string()).collect();
-            let tips: Vec<String> = ["Menos dados por quadro: melhor em rede lenta", "Bom para a maioria das conexões", "Imagem mais nítida, usa mais rede"].iter().map(|s| s.to_string()).collect();
-            let w = ui.available_width();
-            if let Some(q) = glass_segments(ui, id.with("qualidade"), &labels, &tips, v.quality.min(2), Some(w), 34.0) {
-                v.quality = q;
-                let (jpeg, fps) = quality(q);
-                let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
-            }
-            ui.add_space(8.0);
-            section(ui, "VISUALIZAÇÃO");
-            if glass_row(ui, Icon::Expand, "Ajustar à janela", true, Some(v.fit), GLASS_TEXT).on_hover_text("Desligado: tamanho real, com rolagem").clicked() {
-                v.fit = !v.fit;
-            }
-            if glass_row(ui, Icon::Copy, "Copiar e colar entre os dois", true, Some(v.clipboard), GLASS_TEXT).clicked() {
-                v.clipboard = !v.clipboard;
-                let _ = v.handle.cmd.send(Cmd::Clipboard(v.clipboard));
-            }
-            ui.add_space(6.0);
-            let (sep, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(sep, CornerRadius::ZERO, Color32::from_white_alpha(20));
-            ui.add_space(6.0);
-            let ctrl = v.permissions.control;
-            let denied = "O outro lado não liberou o controle";
-            if glass_row(ui, Icon::Key, "Enviar Ctrl+Alt+Del", ctrl, None, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
-                let _ = v.handle.cmd.send(Cmd::SecureAttention);
-                egui::Popup::close_id(ui.ctx(), id);
-            }
-            if glass_row(ui, Icon::Refresh, "Reiniciar o computador…", ctrl, None, Color32::from_rgb(255, 128, 124))
-                .on_hover_text("Reinicia o outro computador e reconecta quando ele voltar")
-                .on_disabled_hover_text(denied)
-                .clicked()
-            {
-                v.confirm_restart = true;
-                egui::Popup::close_id(ui.ctx(), id);
-            }
+                let tips = ["Menos dados por quadro: melhor em rede lenta", "Bom para a maioria das conexões", "Imagem mais nítida, usa mais rede"];
+                if let Some(q) = cc_slider(ui, id.with("qualidade"), &["Fluida", "Equilibrada", "Nítida"], &tips, v.quality.min(2)) {
+                    v.quality = q;
+                    let (jpeg, fps) = quality(q);
+                    let _ = v.handle.cmd.send(Cmd::Quality { jpeg, fps });
+                }
+            });
+            cc_module(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let ctrl = v.permissions.control;
+                let denied = "O outro lado não liberou o controle";
+                if glass_row(ui, Icon::Key, "Enviar Ctrl+Alt+Del", ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
+                    let _ = v.handle.cmd.send(Cmd::SecureAttention);
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
+                if glass_row(ui, Icon::Refresh, "Reiniciar o computador…", ctrl, Color32::from_rgb(255, 128, 124))
+                    .on_hover_text("Reinicia o outro computador e reconecta quando ele voltar")
+                    .on_disabled_hover_text(denied)
+                    .clicked()
+                {
+                    v.confirm_restart = true;
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
+            });
         });
 }
 

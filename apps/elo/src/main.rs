@@ -2,6 +2,7 @@
 
 mod app;
 mod autostart;
+mod mac;
 mod onboarding;
 mod settings;
 mod tray;
