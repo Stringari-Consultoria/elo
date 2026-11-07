@@ -1450,7 +1450,7 @@ impl EloApp {
                 });
             });
             ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(t!("O Elo é de código aberto (licenças MIT e Apache 2.0). O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.")).size(12.0).color(p.text2)).wrap());
+            ui.add(egui::Label::new(RichText::new(t!("O Elo é software livre (licença AGPL 3.0) e vem sem nenhuma garantia. O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.")).size(12.0).color(p.text2)).wrap());
             if ui.link(RichText::new("github.com/Stringari-Consultoria/elo").font(theme::mono(11.5))).on_hover_text(REPO).clicked() {
                 open_url(REPO);
             }

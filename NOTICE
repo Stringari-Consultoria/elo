@@ -1,12 +1,57 @@
 Elo by Stringari
 Copyright (c) 2026 Gabriel Stringari
 
+O Elo é software livre: você pode redistribuí-lo e modificá-lo sob a GNU
+Affero General Public License, versão 3 (arquivo LICENSE), com os termos
+adicionais abaixo, permitidos pela seção 7 dessa licença. O Elo é distribuído
+SEM NENHUMA GARANTIA; veja a licença para os detalhes.
+
+As versões até a 0.1.6 foram publicadas sob MIT ou Apache 2.0 e continuam sob
+essas licenças. A partir da 0.1.7, vale a AGPL 3.0 com os termos abaixo.
+
+
+TERMOS ADICIONAIS (seção 7 da AGPL 3.0)
+
+a) Crédito (seção 7, b). Toda obra baseada no Elo que tenha interface gráfica
+   deve manter, visíveis e legíveis, o crédito "by Stringari" junto ao nome do
+   programa na janela principal e, na tela "Sobre" (ou equivalente), o aviso
+   de que é baseada no Elo, de Stringari Consultoria & Tech, com o link
+   https://github.com/Stringari-Consultoria/elo.
+
+b) Versões modificadas (seção 7, c). Versões modificadas não podem se
+   apresentar como o Elo oficial da Stringari e devem indicar, na tela
+   "Sobre" (ou equivalente), que foram modificadas e por quem.
+
+c) Marcas (seção 7, e). Esta licença não dá direito de usar o nome
+   "Stringari" nem o símbolo da Stringari (assets/marca) além do necessário
+   para o crédito do item (a), em que o símbolo pode aparecer sem alterações
+   ao lado do texto. Qualquer outro uso precisa de autorização da Stringari
+   Consultoria & Tech.
+
+
+ADDITIONAL TERMS (AGPL 3.0, section 7), English version
+
+a) Attribution (section 7(b)). Any work based on Elo that has a graphical
+   user interface must keep, visible and legible, the attribution
+   "by Stringari" next to the program's name in its main window and, in its
+   "About" screen (or equivalent), a notice that it is based on Elo by
+   Stringari Consultoria & Tech, with the link
+   https://github.com/Stringari-Consultoria/elo.
+
+b) Modified versions (section 7(c)). Modified versions must not present
+   themselves as the official Elo by Stringari and must state, in their
+   "About" screen (or equivalent), that they were modified and by whom.
+
+c) Trademarks (section 7(e)). This license grants no right to use the name
+   "Stringari" or the Stringari symbol (assets/marca) beyond what item (a)
+   requires; for that attribution, the symbol may be shown unaltered next to
+   the text. Any other use requires permission from Stringari Consultoria &
+   Tech.
+
+
 Fontes incluídas em assets/fonts, sob a SIL Open Font License 1.1:
   - Geist (assets/fonts/Geist-OFL.txt)
   - JetBrains Mono (assets/fonts/JetBrainsMono-OFL.txt)
-
-O símbolo da Stringari (assets/marca) é marca da Stringari Consultoria & Tech
-e não faz parte das licenças do código: forks devem trocá-lo.
 
 TeamViewer e AnyDesk são marcas de seus respectivos donos. Este projeto não é
 afiliado a eles nem endossado por eles.

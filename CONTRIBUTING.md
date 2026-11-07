@@ -46,6 +46,6 @@ primeira.
 
 ## Licença das contribuições
 
-Ao enviar uma contribuição, você concorda que ela seja licenciada sob MIT ou
-Apache 2.0, à escolha de quem a usa, como o resto do projeto, sem termos
-adicionais.
+Ao enviar uma contribuição, você concorda que ela seja licenciada sob a AGPL 3.0
+com os termos adicionais do [NOTICE](NOTICE), como o resto do projeto, e que a
+Stringari Consultoria & Tech também possa distribuí-la sob outras licenças.

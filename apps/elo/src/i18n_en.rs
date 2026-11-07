@@ -5,7 +5,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Unidades e discos", "Drives and disks"),
     ("Unidades", "Drives"),
     ("Sobre", "About"),
-    ("O Elo é de código aberto (licenças MIT e Apache 2.0). O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.", "Elo is open source (MIT and Apache 2.0 licenses). The code is on GitHub: suggestions, issues and contributions are welcome."),
+    ("O Elo é software livre (licença AGPL 3.0) e vem sem nenhuma garantia. O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.", "Elo is free software (AGPL 3.0 license) and comes with no warranty. The code is on GitHub: suggestions, issues and contributions are welcome."),
     (" Instala ao fim das sessões, ou agora (as sessões caem).", " Installs when sessions end, or now (sessions drop)."),
     ("Mensagens", "Messages"),
     ("com {}", "with {}"),

@@ -43,7 +43,7 @@ mkdir -p "$PKG/DEBIAN" "$PKG/usr/bin" "$PKG/lib/systemd/system" "$PKG/etc/defaul
 install -m 755 "$REL/elo-server" "$PKG/usr/bin/"
 install -m 644 "$RAIZ/packaging/servidor/elo-server.service" "$PKG/lib/systemd/system/elo-server.service"
 install -m 644 "$RAIZ/packaging/servidor/elo-server.default" "$PKG/etc/default/elo-server"
-install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/elo-server/"
+install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/elo-server/"
 echo "/etc/default/elo-server" > "$PKG/DEBIAN/conffiles"
 TAM="$(du -sk "$PKG" | cut -f1)"
 # (Replaces/Breaks: até a 0.1.3, o .deb do app também trazia /usr/bin/elo-server.)
@@ -121,7 +121,7 @@ mkdir -p "$TMP/$NOME"
 install -m 755 "$REL/elo-server" "$TMP/$NOME/"
 install -m 755 "$RAIZ/scripts/instalar-servidor.sh" "$TMP/$NOME/instalar.sh"
 install -m 644 "$RAIZ/packaging/servidor/elo-server.service" "$RAIZ/packaging/servidor/elo-server.default" "$TMP/$NOME/"
-install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$TMP/$NOME/"
+install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$TMP/$NOME/"
 cat > "$TMP/$NOME/LEIA-ME.txt" <<TXT
 Servidor do Elo $VERSAO (Linux $ARQ, glibc $GLIBC ou mais nova)
 

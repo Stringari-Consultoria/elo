@@ -28,7 +28,7 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) $nome
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 New-Item -ItemType Directory $tmp | Out-Null
 # (Lista montada item a item: no PowerShell, um "if" com um item só vira texto.)
-$itens = @("$rel\$exe.exe", "$raiz\LICENSE-MIT", "$raiz\LICENSE-APACHE")
+$itens = @("$rel\$exe.exe", "$raiz\LICENSE", "$raiz\NOTICE")
 if (-not $cliente) { $itens += "$rel\elo-server.exe" }
 Copy-Item $itens $tmp
 Copy-Item "$raiz\NOTICE" "$tmp\NOTICE.txt"
@@ -44,7 +44,7 @@ $snome = "elo-server-$versao-windows-x64"
 $stmp = Join-Path ([IO.Path]::GetTempPath()) $snome
 if (Test-Path $stmp) { Remove-Item -Recurse -Force $stmp }
 New-Item -ItemType Directory $stmp | Out-Null
-Copy-Item "$rel\elo-server.exe", "$raiz\LICENSE-MIT", "$raiz\LICENSE-APACHE" $stmp
+Copy-Item "$rel\elo-server.exe", "$raiz\LICENSE", "$raiz\NOTICE" $stmp
 Copy-Item "$raiz\NOTICE" "$stmp\NOTICE.txt"
 @"
 Servidor do Elo $versao para Windows 10/11 e Windows Server (64 bits)

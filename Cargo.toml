@@ -6,7 +6,7 @@ default-members = ["apps/elo"]
 [workspace.package]
 version = "0.1.6"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 rust-version = "1.98"
 
 [workspace.dependencies]

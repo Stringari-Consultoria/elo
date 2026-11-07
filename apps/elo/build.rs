@@ -10,7 +10,7 @@ fn main() {
     res.set("ProductName", "Elo");
     res.set("FileDescription", "Elo - acesso remoto");
     res.set("CompanyName", "Stringari Consultoria");
-    res.set("LegalCopyright", "(c) 2026 Gabriel Stringari. MIT ou Apache-2.0.");
+    res.set("LegalCopyright", "(c) 2026 Gabriel Stringari. AGPL-3.0.");
     if let Err(e) = res.compile() {
         // Sem o compilador de recursos, o app funciona; só fica sem ícone.
         println!("cargo:warning=ícone do Windows não embutido: {e}");

@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml"><img src="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="#licença"><img src="https://img.shields.io/badge/licen%C3%A7a-MIT%20ou%20Apache--2.0-blue" alt="Licença: MIT ou Apache-2.0"></a>
+  <a href="#licença"><img src="https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-blue" alt="Licença: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
 </p>
 
@@ -451,10 +451,19 @@ abrir um pull request.
 
 ## Licença
 
-O código é licenciado, à sua escolha, sob a [MIT](LICENSE-MIT) ou a
-[Apache 2.0](LICENSE-APACHE). Salvo declaração em contrário, toda contribuição
-enviada para inclusão neste projeto é licenciada da mesma forma, sem termos
-adicionais.
+O Elo é software livre, licenciado sob a [GNU AGPL 3.0](LICENSE) com termos
+adicionais (seção 7) descritos no [NOTICE](NOTICE). Em resumo:
+
+- você pode usar, estudar, modificar e redistribuir o Elo, inclusive para fins
+  comerciais;
+- quem distribui uma versão modificada, ou a oferece pela rede (por exemplo, um
+  servidor do Elo alterado), precisa publicar o código dela sob a mesma licença;
+- versões baseadas no Elo devem manter o crédito "by Stringari" ao lado do nome
+  e, na tela Sobre, o aviso de que vêm do Elo, com o link deste repositório;
+- o nome e o símbolo da Stringari são marcas: só podem aparecer nesse crédito.
+
+As versões até a 0.1.6 foram publicadas sob MIT ou Apache 2.0 e continuam sob
+essas licenças.
 
 As fontes em `assets/fonts` (Geist e JetBrains Mono) são distribuídas sob a SIL
 Open Font License 1.1. Veja [NOTICE](NOTICE).

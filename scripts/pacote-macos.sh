@@ -104,7 +104,7 @@ if [[ -n "${ASSINATURA:-}" ]]; then
 else
     codesign --force --sign - "$TMP/$SRV/elo-server"
 fi
-install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$TMP/$SRV/"
+install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$TMP/$SRV/"
 cat > "$TMP/$SRV/br.com.stringari.elo-server.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

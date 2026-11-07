@@ -65,8 +65,7 @@ Source: "{#BinDir}\{#Exe}.exe"; DestDir: "{app}"; Flags: ignoreversion
 #ifndef Cliente
 Source: "{#BinDir}\elo-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
-Source: "{#Raiz}\LICENSE-MIT"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Raiz}\LICENSE-APACHE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Raiz}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#Raiz}\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
 
 [Icons]

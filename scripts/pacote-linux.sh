@@ -71,7 +71,7 @@ Terminal=false
 Categories=Network;RemoteAccess;
 StartupWMClass=$ID
 DESKTOP
-install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/$PACOTE/"
+install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/$PACOTE/"
 # Rolagem suave quando este computador é acessado: libera o /dev/uinput para
 # quem está logado (um arquivo por pacote: os dois podem estar instalados).
 mkdir -p "$PKG/usr/lib/udev/rules.d"
@@ -119,7 +119,7 @@ if [[ "$EXE" == elo ]]; then install -m 755 "$REL/elo-server" "$TMP/$NOME/"; fi
 install -m 755 "$RAIZ/scripts/instalar-linux.sh" "$TMP/$NOME/instalar.sh"
 install -m 644 "$RAIZ/packaging/icons/elo.svg" "$TMP/$NOME/elo.svg"
 install -m 644 "$RAIZ/packaging/linux/60-elo-uinput.rules" "$TMP/$NOME/"
-install -m 644 "$RAIZ/LICENSE-MIT" "$RAIZ/LICENSE-APACHE" "$RAIZ/NOTICE" "$TMP/$NOME/"
+install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$TMP/$NOME/"
 cat > "$TMP/$NOME/LEIA-ME.txt" <<TXT
 $APP $VERSAO — acesso remoto
 
