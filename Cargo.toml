@@ -22,7 +22,7 @@ thiserror = "2"
 postcard = { version = "1", features = ["use-std"] }
 rand = "0.8"
 sha2 = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 hkdf = "0.12"
 spake2 = "0.4"
 chacha20poly1305 = "0.10"
