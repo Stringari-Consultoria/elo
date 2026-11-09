@@ -32,7 +32,29 @@ pub struct ClientsUi {
     pub new_tech: NewTech,
     /// Confirmação de algo destrutivo: (texto, ação).
     pub confirm: Option<(String, Manage)>,
+    /// Aprovar a chave de um técnico: (usuário, nome, chave).
+    pub approve: Option<(String, String, String)>,
+    /// Confirmar a criação de uma chave dos técnicos nova (troca a atual).
+    pub new_ca: bool,
 }
+
+/// Situação de uma chave de técnico, para mostrar.
+fn key_status(k: &elo_proto::ctrl::TechKey, ca: &str) -> (bool, String) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let valid = elo_proto::cert::key_from_hex(ca).and_then(|ca| elo_proto::cert::SignedCert::from_text(&k.cert).filter(|c| c.valid(&ca, now)));
+    match valid {
+        Some(c) => (true, t!("aprovada, vale mais {} dias", (c.cert.expires - now) / 86_400)),
+        None => (false, t!("aguardando aprovação").to_string()),
+    }
+}
+
+/// Código curto de uma chave pública em hex.
+fn fp(hex: &str) -> String {
+    elo_proto::cert::key_from_hex(hex).map(|k| elo_proto::cert::fingerprint(&k)).unwrap_or_default()
+}
+
+/// Texto da chave dos técnicos para levar a outro administrador.
+const CA_PREFIX: &str = "ELOCHAVE-";
 
 pub struct DeviceEdit {
     pub id: String,
@@ -87,6 +109,27 @@ impl EloApp {
                 });
             });
             ui.label(RichText::new(t!("A aba Clientes mostra as empresas atendidas, os computadores delas e os pedidos de ajuda.")).size(11.5).color(p.muted));
+            // Chave deste app: o administrador confere este código ao aprovar.
+            if let Some(k) = self.settings.tech_key() {
+                let public = elo_proto::cert::public_of(&k);
+                let mine = elo_proto::cert::to_hex(&public);
+                let status = match self.overview.as_ref() {
+                    Some(o) if o.ca.is_empty() => (false, t!("a empresa ainda não criou a chave dos técnicos").to_string()),
+                    Some(o) => o.me.keys.iter().find(|x| x.key == mine).map(|x| key_status(x, &o.ca)).unwrap_or((false, t!("aguardando aprovação").to_string())),
+                    None => (false, String::new()),
+                };
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(t!("Chave deste computador:")).size(11.5).color(p.text2));
+                    ui.label(RichText::new(elo_proto::cert::fingerprint(&public)).font(theme::mono(11.5)).color(p.text));
+                });
+                if !status.1.is_empty() {
+                    ui.label(RichText::new(&status.1).size(11.5).color(if status.0 { p.success } else { p.warning }));
+                }
+                if !status.0 {
+                    ui.add(egui::Label::new(RichText::new(t!("Computadores das empresas só aceitam técnicos aprovados. Peça a um administrador para aprovar esta chave em Clientes → Técnicos, conferindo o código acima.")).size(11.5).color(p.muted)).wrap());
+                }
+            }
             return;
         }
         if !self.features.iter().any(|f| f == "empresas") {
@@ -423,7 +466,22 @@ impl EloApp {
                         ui.label(RichText::new(t!("Servidor: {}", targets[0].0)).size(12.0).color(p.text2));
                     }
                     let t = &targets[pick.min(targets.len() - 1)].1;
-                    let code = Invite { address: t.address.clone(), tls: t.tls, pin: t.pin.clone(), company: c.id.clone(), key: c.key.clone(), name: c.name.clone() }.encode();
+                    // A chave dos técnicos vai no convite só de quem a tem aqui:
+                    // vinda do servidor, ela não protegeria nada.
+                    let ca = match self.settings.ca_secret().map(|k| elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k))) {
+                        Some(mine) if mine == o.ca => mine,
+                        _ if o.ca.is_empty() => String::new(),
+                        _ => {
+                            ui.add_space(8.0);
+                            ui.add(egui::Label::new(RichText::new(t!("Só quem tem a chave dos técnicos gera convites. Peça a um administrador que tenha a chave neste computador, ou importe-a em Clientes → Técnicos.")).size(12.5).color(p.warning)).wrap());
+                            return;
+                        }
+                    };
+                    if ca.is_empty() {
+                        ui.add_space(6.0);
+                        ui.add(egui::Label::new(RichText::new(t!("Ainda não há chave dos técnicos: crie em Clientes → Técnicos. Com ela, só técnicos aprovados acessam os computadores dos clientes, e nem quem controla o servidor consegue se passar por técnico.")).size(11.5).color(p.warning)).wrap());
+                    }
+                    let code = Invite { address: t.address.clone(), tls: t.tls, pin: t.pin.clone(), company: c.id.clone(), key: c.key.clone(), name: c.name.clone(), ca }.encode();
                     ui.add_space(8.0);
                     theme::field_label(ui, t!("Código de convite"));
                     egui::Frame::new().fill(p.sunken).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(10)).show(ui, |ui| {
@@ -499,10 +557,44 @@ impl EloApp {
             let mut close = false;
             let mut create = false;
             let mut remove = None;
+            let mut make_ca = false;
+            let mut import = false;
+            let mut export = false;
+            let mut approve = None;
+            let holder = self.settings.ca_secret().map(|k| elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k)));
+            let has_ca = !o.ca.is_empty() && holder.as_deref() == Some(o.ca.as_str());
+            let ca_import = &mut self.ca_import;
             egui::Modal::new(egui::Id::unique("tecnicos")).frame(frame).show(ctx, |ui| {
-                ui.set_width(480.0);
+                ui.set_width(520.0);
                 ui.label(RichText::new(t!("Técnicos")).font(theme::semibold(16.0)).color(p.text));
                 ui.label(RichText::new(t!("Cada técnico entra no Elo com usuário e senha (Configurações → Conta de técnico) e vê todas as empresas.")).size(12.0).color(p.text2));
+                ui.add_space(8.0);
+                // Chave dos técnicos.
+                egui::Frame::new().fill(p.sunken).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(10)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(t!("Chave dos técnicos")).font(theme::semibold(13.0)).color(p.text));
+                    if o.ca.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(t!("Com ela, os computadores dos clientes só aceitam técnicos que você aprovou, e nem quem controla o servidor consegue se passar por técnico. A chave fica neste computador: guarde uma cópia.")).size(11.5).color(p.text2)).wrap());
+                        ui.add_space(4.0);
+                        make_ca = theme::primary(ui, Some(Icon::Shield), t!("Criar chave dos técnicos"), None).clicked();
+                    } else if has_ca {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(fp(&o.ca)).font(theme::mono(11.5)).color(p.text));
+                            ui.label(RichText::new(t!("· neste computador")).size(11.5).color(p.success));
+                        });
+                        export = ui.small_button(t!("Copiar a chave para outro administrador")).on_hover_text(t!("Quem tiver este texto aprova técnicos. Passe só por um meio seguro e apague depois.")).clicked();
+                    } else {
+                        ui.label(RichText::new(fp(&o.ca)).font(theme::mono(11.5)).color(p.text));
+                        ui.add(egui::Label::new(RichText::new(if holder.is_some() { t!("A chave guardada neste computador não é a do servidor. Importe a certa ou peça a quem a tem para aprovar.") } else { t!("A chave está no computador de quem a criou. Para aprovar técnicos e gerar convites aqui, cole a chave copiada de lá.") }).size(11.5).color(p.warning)).wrap());
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(ca_import).password(true).hint_text(CA_PREFIX).desired_width(300.0));
+                            import = ui.add_enabled(!ca_import.trim().is_empty(), egui::Button::new(t!("Importar"))).clicked();
+                        });
+                        if ui.small_button(t!("Criar outra chave…")).clicked() {
+                            make_ca = true;
+                        }
+                    }
+                });
                 ui.add_space(8.0);
                 for t in &o.techs {
                     ui.horizontal(|ui| {
@@ -513,6 +605,19 @@ impl EloApp {
                             }
                         });
                     });
+                    if !o.ca.is_empty() {
+                        for k in &t.keys {
+                            let (ok, status) = key_status(k, &o.ca);
+                            ui.horizontal(|ui| {
+                                ui.add_space(14.0);
+                                ui.label(RichText::new(fp(&k.key)).font(theme::mono(11.0)).color(p.text2));
+                                ui.label(RichText::new(status).size(11.0).color(if ok { p.success } else { p.warning }));
+                                if !ok && has_ca && ui.small_button(t!("Aprovar…")).clicked() {
+                                    approve = Some((t.user.clone(), t.name.clone(), k.key.clone()));
+                                }
+                            });
+                        }
+                    }
                 }
                 ui.separator();
                 ui.label(RichText::new(t!("Novo técnico")).font(theme::semibold(13.0)).color(p.text));
@@ -534,11 +639,81 @@ impl EloApp {
                 let n = std::mem::take(&mut self.clients.new_tech);
                 self.manage(Manage::CreateTech { user: n.user, name: n.name, password: n.password, admin: n.admin });
             }
+            if make_ca {
+                if o.ca.is_empty() {
+                    self.create_ca();
+                } else {
+                    self.clients.new_ca = true;
+                }
+            }
+            if export && let Some(k) = self.settings.ca_secret() {
+                ctx.copy_text(format!("{CA_PREFIX}{}", elo_proto::cert::to_hex(&k)));
+                self.toast(t!("Chave dos técnicos copiada. Cole no Elo do outro administrador e apague a cópia."));
+            }
+            if import {
+                let text = std::mem::take(&mut self.ca_import);
+                match elo_proto::cert::key_from_hex(text.trim().trim_start_matches(CA_PREFIX)) {
+                    Some(k) if elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k)) == o.ca => {
+                        self.settings.tech_ca_secret = elo_proto::cert::to_hex(&k);
+                        self.settings.save();
+                        self.toast(t!("Chave dos técnicos importada: este computador já aprova técnicos e gera convites."));
+                        self.auto_certify();
+                    }
+                    _ => self.error(t!("Essa não é a chave dos técnicos deste servidor.")),
+                }
+            }
+            if approve.is_some() {
+                self.clients.approve = approve;
+            }
             if let Some(user) = remove {
                 self.clients.confirm = Some((t!("Remover o técnico {}? Ele sai na hora de todos os apps.", user), Manage::DeleteTech { user }));
             }
             if close {
                 self.clients.techs_open = false;
+            }
+        }
+        // Aprovar a chave de um técnico.
+        if let Some((user, name, key)) = self.clients.approve.clone() {
+            let (mut ok, mut close) = (false, false);
+            egui::Modal::new(egui::Id::unique("aprovar-tecnico")).frame(frame).show(ctx, |ui| {
+                ui.set_width(440.0);
+                ui.label(RichText::new(t!("Aprovar {}", name)).font(theme::semibold(16.0)).color(p.text));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new(t!("Peça a {} para abrir Configurações → Conta de técnico no Elo e ler o código da chave. Aprove só se for igual a este:", name)).size(12.5).color(p.text2)).wrap());
+                ui.add_space(6.0);
+                ui.label(RichText::new(fp(&key)).font(theme::mono(16.0)).color(p.text));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new(t!("Se o código for diferente, alguém trocou a chave no caminho: não aprove.")).size(11.5).color(p.warning)).wrap());
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ok = theme::primary(ui, Some(Icon::Check), t!("O código confere: aprovar"), None).clicked();
+                    close = theme::secondary(ui, None, t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                });
+            });
+            if ok {
+                self.certify(&user, &name, &key);
+                self.clients.approve = None;
+            } else if close {
+                self.clients.approve = None;
+            }
+        }
+        // Trocar a chave dos técnicos.
+        if self.clients.new_ca {
+            let (mut ok, mut close) = (false, false);
+            egui::Modal::new(egui::Id::unique("nova-chave-tecnicos")).frame(frame).show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.add(egui::Label::new(RichText::new(t!("Criar outra chave dos técnicos? Todas as aprovações deixam de valer, e os computadores dos clientes só voltam a aceitar técnicos depois de receber um convite novo.")).size(13.5).color(p.text)).wrap());
+                ui.add_space(14.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ok = theme::danger_button(ui, t!("Criar outra")).clicked();
+                    close = theme::secondary(ui, None, t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                });
+            });
+            if ok {
+                self.create_ca();
+            }
+            if ok || close {
+                self.clients.new_ca = false;
             }
         }
         // Confirmação.
@@ -563,6 +738,16 @@ impl EloApp {
                 self.clients.confirm = None;
             }
         }
+    }
+
+    /// Cria a chave dos técnicos neste computador e manda a parte pública.
+    fn create_ca(&mut self) {
+        let k = elo_proto::cert::new_secret();
+        self.settings.tech_ca_secret = elo_proto::cert::to_hex(&k);
+        self.settings.save();
+        self.certified.clear();
+        self.manage(Manage::SetCa { public: elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k)) });
+        self.toast(t!("Chave dos técnicos criada. Ela fica neste computador: use \"Copiar a chave\" para guardar uma cópia ou levar a outro administrador."));
     }
 
     // ── Elo Cliente ───────────────────────────────────────────────────
@@ -668,14 +853,14 @@ impl EloApp {
         ui.add_space(16.0);
         card(p).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(egui::TextEdit::multiline(&mut self.invite_input).desired_rows(3).font(theme::mono(12.0)).hint_text("ELO1-…").desired_width(f32::INFINITY));
+            ui.add(egui::TextEdit::multiline(&mut self.invite_input).desired_rows(3).font(theme::mono(12.0)).hint_text("ELO2-…").desired_width(f32::INFINITY));
             ui.add_space(12.0);
             let valid = Invite::decode(&self.invite_input);
             if let Some(i) = &valid {
-                ui.label(RichText::new(t!("Empresa: {}", i.name)).size(12.5).color(p.success));
+                invite_summary(ui, p, i);
                 ui.add_space(6.0);
             } else if !self.invite_input.trim().is_empty() {
-                ui.label(RichText::new(t!("Esse código não parece completo: confira se copiou tudo (começa com ELO1-).")).size(12.0).color(p.danger));
+                ui.label(RichText::new(t!("Esse código não parece completo: confira se copiou tudo (começa com ELO).")).size(12.0).color(p.danger));
                 ui.add_space(6.0);
             }
             if big_button(ui, p, t!("Conectar à empresa"), valid.is_some()).clicked() {
@@ -688,5 +873,21 @@ impl EloApp {
         });
         ui.add_space(12.0);
         ui.label(RichText::new(t!("Depois de conectado, este computador só recebe conexões dos técnicos da empresa, sempre com o seu aceite na tela.")).size(11.5).color(p.muted));
+    }
+}
+
+/// O que o convite diz, antes de confirmar: empresa, servidor, se a conexão é
+/// cifrada e se só técnicos aprovados entram. O convite não tem assinatura:
+/// quem conferir aqui sabe para onde o computador vai se ligar.
+pub fn invite_summary(ui: &mut egui::Ui, p: &Palette, i: &Invite) {
+    ui.label(RichText::new(t!("Empresa: {}", i.name)).size(12.5).color(p.success));
+    ui.label(RichText::new(t!("Servidor: {}", i.address)).font(theme::mono(11.5)).color(p.text2));
+    if !i.tls && !i.address.starts_with("wss://") {
+        ui.add(egui::Label::new(RichText::new(t!("Atenção: este servidor não usa conexão cifrada (TLS). Só continue se a empresa confirmou que é isso mesmo.")).size(11.5).color(p.danger)).wrap());
+    }
+    if i.ca.is_empty() {
+        ui.add(egui::Label::new(RichText::new(t!("Convite sem a chave dos técnicos: o computador vai aceitar a chave que o servidor informar no primeiro contato.")).size(11.5).color(p.warning)).wrap());
+    } else if let Some(k) = elo_proto::cert::key_from_hex(&i.ca) {
+        ui.label(RichText::new(t!("Só técnicos aprovados pela empresa (chave {})", elo_proto::cert::fingerprint(&k))).size(11.5).color(p.text2));
     }
 }

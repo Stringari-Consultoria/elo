@@ -107,11 +107,11 @@ fn session_through_relay() {
         assert_eq!(hs, vs);
         assert_eq!(from, viewer_id);
         let (htx, hrx) = channel();
-        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
+        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
         let hh = session::host(cfg.clone(), hs, hsec, from.clone(), "Visualizador".into(), opt, htx);
         let remote = Arc::new(Mutex::new(Remote::default()));
         let (vtx, vrx) = channel();
-        let vh = session::viewer(cfg.clone(), vs, vsec, pw.into(), viewer_id.clone(), "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx);
+        let vh = session::viewer(cfg.clone(), vs, vsec, pw.into(), viewer_id.clone(), "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx, host_id.clone(), None);
         if !ok {
             let Some(ViewerEvent::Ended(r)) = wait(&vrx, 15, |e| matches!(e, ViewerEvent::Ended(_))) else { panic!() };
             assert!(r.contains("senha"), "{r}");
@@ -289,11 +289,11 @@ fn websocket_like_cloudflare_tunnel() {
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     assert_eq!((hs, &from_id), (vs, &viewer_id));
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
+    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();
-    let vh = session::viewer(ws, vs, vsec, "s3nha-ws".into(), viewer_id.clone(), "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx);
+    let vh = session::viewer(ws, vs, vsec, "s3nha-ws".into(), viewer_id.clone(), "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx, host_id.clone(), None);
     assert!(wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. })).is_some(), "sessão por WebSocket não conectou");
     let end = Instant::now() + Duration::from_secs(15);
     while remote.lock().unwrap().version == 0 {
@@ -400,14 +400,14 @@ fn cancelled_request_disappears() {
     let viewer = client::start(cfg.clone(), [6u8; 32], "Visualizador".into());
     let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
     let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
-    viewer.tx.send(client::Command::Connect { target: host_id }).unwrap();
+    viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
     let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true };
+    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
     let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let (vtx, vrx) = channel();
-    let vh = session::viewer(cfg.clone(), vs, vsec, String::new(), viewer_id, "Visualizador".into(), dir.join("baixados"), Arc::new(Mutex::new(Remote::default())), vtx);
+    let vh = session::viewer(cfg.clone(), vs, vsec, String::new(), viewer_id, "Visualizador".into(), dir.join("baixados"), Arc::new(Mutex::new(Remote::default())), vtx, host_id.clone(), None);
     // Sem senha: vira pedido na tela do anfitrião.
     // (Guarda o pedido, como a tela do app: ninguém respondeu ainda.)
     let Some(HostEvent::Ask { reply: _pending, .. }) = wait(&hrx, 10, |e| matches!(e, HostEvent::Ask { .. })) else { panic!("o pedido não chegou ao anfitrião") };
@@ -455,16 +455,16 @@ fn companies_techs_and_help_requests() {
     let company = o.companies[0].clone();
 
     // Elo Cliente com o convite.
-    let ident = client::Identity { company: Some((company.id.clone(), company.key.clone())), tech_token: None };
+    let ident = client::Identity { company: Some((company.id.clone(), company.key.clone())), tech_token: None, tech_key: String::new() };
     let cli = client::start_with(cfg.clone(), [12u8; 32], "Caixa da padaria".into(), ident);
     let Some(Event::Online { id: cli_id }) = wait(&cli.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("cliente offline") };
-    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::Company { .. })), Some(Event::Company { name }) if name == "Padaria Pão Quente"));
+    assert!(matches!(wait(&cli.rx, 5, |e| matches!(e, Event::Company { .. })), Some(Event::Company { name, .. }) if name == "Padaria Pão Quente"));
     let Some(Event::Overview(o)) = wait(&tech.rx, 5, |e| matches!(e, Event::Overview(o) if o.devices.iter().any(|d| d.company.is_some()))) else { panic!("cliente não apareceu no painel") };
     let d = o.devices.iter().find(|d| d.id == cli_id).unwrap();
     assert!(d.online && d.company.as_deref() == Some(company.id.as_str()));
 
     // Convite errado é recusado.
-    let bad = client::start_with(cfg.clone(), [13u8; 32], "Intruso".into(), client::Identity { company: Some((company.id.clone(), "chave-errada".into())), tech_token: None });
+    let bad = client::start_with(cfg.clone(), [13u8; 32], "Intruso".into(), client::Identity { company: Some((company.id.clone(), "chave-errada".into())), tech_token: None, tech_key: String::new() });
     assert!(matches!(wait(&bad.rx, 10, |e| matches!(e, Event::Error(_))), Some(Event::Error(m)) if m.contains("convite")));
 
     // Regras: computador comum não conecta no cliente; o cliente não conecta em ninguém.
@@ -490,9 +490,9 @@ fn companies_techs_and_help_requests() {
     assert!(wait(&other.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
     other.tx.send(client::Command::Login { user: "ana".into(), password: "errada-errada".into(), setup: None, name: String::new() }).unwrap();
     assert!(wait(&other.rx, 10, |e| matches!(e, Event::AuthError(_))).is_some());
-    other.tx.send(client::Command::SetIdentity(client::Identity { company: None, tech_token: Some(token.clone()) })).unwrap();
+    other.tx.send(client::Command::SetIdentity(client::Identity { company: None, tech_token: Some(token.clone()), tech_key: String::new() })).unwrap();
     other.tx.send(client::Command::Quit).unwrap();
-    let again = client::start_with(cfg.clone(), [14u8; 32], "Outro".into(), client::Identity { company: None, tech_token: Some(token) });
+    let again = client::start_with(cfg.clone(), [14u8; 32], "Outro".into(), client::Identity { company: None, tech_token: Some(token), tech_key: String::new() });
     assert!(matches!(wait(&again.rx, 10, |e| matches!(e, Event::LoggedIn { .. })), Some(Event::LoggedIn { user, .. }) if user == "ana"));
 
     // Quem não é técnico não consegue aparecer como "(técnico)".
@@ -552,10 +552,10 @@ fn wrong_passwords_lock_only_who_tried() {
         let Some(Event::SessionReady { session: s, secret, .. }) = wait(&who.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
         let Some(Event::Incoming { from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
         let (htx, _hrx) = channel();
-        let opt = HostOptions { passwords: vec!["certa-123".into()], name: "Anfitrião".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false };
+        let opt = HostOptions { passwords: vec!["certa-123".into()], name: "Anfitrião".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false, id: host_id.clone(), tech_ca: None };
         let hh = session::host(cfg.clone(), s, secret, from_id, "x".into(), opt, htx);
         let (vtx, vrx) = channel();
-        let vh = session::viewer(cfg.clone(), s, secret, pw.into(), who_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx);
+        let vh = session::viewer(cfg.clone(), s, secret, pw.into(), who_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx, host_id.clone(), None);
         let r = wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. } | ViewerEvent::Ended(_)));
         vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         hh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -568,6 +568,110 @@ fn wrong_passwords_lock_only_who_tried() {
     assert!(!attempt(&attacker, &attacker_id, "certa-123"), "quem errou 5 vezes devia estar bloqueado");
     assert!(attempt(&owner, &owner_id, "certa-123"), "o dono, de outro computador, devia entrar");
     for c in [&host, &attacker, &owner] {
+        let _ = c.tx.send(client::Command::Quit);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Chave dos técnicos: o administrador cria a chave e aprova um técnico; o
+/// computador da empresa (com a chave do convite) aceita o pedido dele como
+/// verificado e recusa o de um técnico que ninguém aprovou.
+#[test]
+fn only_approved_techs_reach_company_computers() {
+    use elo_proto::cert;
+    use elo_proto::ctrl::Manage;
+    if std::env::var("DISPLAY").is_err() {
+        eprintln!("sem DISPLAY: teste pulado");
+        return;
+    }
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let port = 31000 + (std::process::id() % 1000) as u16;
+    let dir = std::env::temp_dir().join(format!("elo-e2e-chave-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    let cfg = ServerCfg { address: format!("127.0.0.1:{port}"), tls: false, pin: String::new() };
+    let setup = std::fs::read_to_string(dir.join("primeiro-acesso.txt")).unwrap();
+    let code = setup.split_whitespace().find(|w| w.len() == 9 && w.contains('-')).unwrap().to_string();
+    let tech = |seed: u8, secret: &[u8; 32]| client::start_with(cfg.clone(), [seed; 32], format!("Técnico {seed}"), client::Identity { company: None, tech_token: None, tech_key: cert::to_hex(&cert::public_of(secret)) });
+
+    // Administrador: entra, cria a chave dos técnicos e os técnicos.
+    let (admin_key, ca) = (cert::new_secret(), cert::new_secret());
+    let admin = tech(41, &admin_key);
+    assert!(wait(&admin.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
+    admin.tx.send(client::Command::Login { user: "ana".into(), password: "s3nha-da-ana".into(), setup: Some(code), name: "Ana".into() }).unwrap();
+    assert!(wait(&admin.rx, 10, |e| matches!(e, Event::LoggedIn { .. })).is_some());
+    admin.tx.send(client::Command::Manage(Manage::SetCa { public: cert::to_hex(&cert::public_of(&ca)) })).unwrap();
+    for u in ["beto", "caio"] {
+        admin.tx.send(client::Command::Manage(Manage::CreateTech { user: u.into(), name: u.to_uppercase(), password: format!("s3nha-do-{u}"), admin: false })).unwrap();
+    }
+    admin.tx.send(client::Command::Manage(Manage::CreateCompany { name: "Clínica".into() })).unwrap();
+    let Some(Event::Overview(o)) = wait(&admin.rx, 10, |e| matches!(e, Event::Overview(o) if !o.ca.is_empty() && o.techs.len() == 3 && !o.companies.is_empty())) else { panic!("painel sem chave, técnicos ou empresa") };
+    let company = o.companies[0].clone();
+
+    // Beto e Caio entram, cada um com a chave do próprio app.
+    let (beto_key, caio_key) = (cert::new_secret(), cert::new_secret());
+    let beto = tech(42, &beto_key);
+    let caio = tech(43, &caio_key);
+    for (c, u) in [(&beto, "beto"), (&caio, "caio")] {
+        assert!(wait(&c.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
+        c.tx.send(client::Command::Login { user: u.into(), password: format!("s3nha-do-{u}"), setup: None, name: String::new() }).unwrap();
+        assert!(wait(&c.rx, 10, |e| matches!(e, Event::LoggedIn { .. })).is_some());
+    }
+    // O administrador aprova só o Beto (a chave que o painel mostra).
+    let beto_pub = cert::to_hex(&cert::public_of(&beto_key));
+    assert!(wait(&admin.rx, 10, |e| matches!(e, Event::Overview(o) if o.techs.iter().any(|t| t.user == "beto" && t.keys.iter().any(|k| k.key == beto_pub)))).is_some(), "a chave do Beto não chegou ao painel");
+    let signed = cert::issue(&ca, cert::TechCert { user: "beto".into(), name: "Beto".into(), key: cert::public_of(&beto_key), expires: u64::MAX });
+    admin.tx.send(client::Command::Manage(Manage::Certify { user: "beto".into(), cert: signed.to_text() })).unwrap();
+    // Certificado de outra chave dos técnicos é recusado pelo servidor.
+    let forged = cert::issue(&cert::new_secret(), cert::TechCert { user: "caio".into(), name: "Caio".into(), key: cert::public_of(&caio_key), expires: u64::MAX });
+    admin.tx.send(client::Command::Manage(Manage::Certify { user: "caio".into(), cert: forged.to_text() })).unwrap();
+    assert!(wait(&admin.rx, 5, |e| matches!(e, Event::Error(m) if m.contains("não confere"))).is_some());
+    let Some(Event::Overview(bo)) = wait(&beto.rx, 10, |e| matches!(e, Event::Overview(o) if o.me.keys.iter().any(|k| !k.cert.is_empty()))) else { panic!("o Beto não recebeu o certificado") };
+    let beto_cert = cert::SignedCert::from_text(&bo.me.keys.iter().find(|k| k.key == beto_pub).unwrap().cert).unwrap();
+
+    // Computador da empresa: convite com a chave dos técnicos.
+    let cli = client::start_with(cfg.clone(), [44u8; 32], "Recepção".into(), client::Identity { company: Some((company.id.clone(), company.key.clone())), tech_token: None, tech_key: String::new() });
+    let Some(Event::Online { id: cli_id }) = wait(&cli.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!() };
+    let Some(Event::Company { ca: announced, .. }) = wait(&cli.rx, 10, |e| matches!(e, Event::Company { .. })) else { panic!("sem empresa") };
+    assert_eq!(announced, cert::to_hex(&cert::public_of(&ca)));
+    let ca_pub = cert::public_of(&ca);
+
+    // Um pedido de cada técnico: devolve (o anfitrião perguntou, verificado, fim do visualizador).
+    let attempt = |who: &client::Control, my_id: &str, credential: Option<elo_proto::secure::Credential>| {
+        who.tx.send(client::Command::Connect { target: cli_id.clone() }).unwrap();
+        let Some(Event::SessionReady { session: s, secret, .. }) = wait(&who.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+        let Some(Event::Incoming { from_id, from_name, .. }) = wait(&cli.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+        let (htx, hrx) = channel();
+        let opt = HostOptions { passwords: Vec::new(), name: "Recepção".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false, id: cli_id.clone(), tech_ca: Some(ca_pub) };
+        let hh = session::host(cfg.clone(), s, secret, from_id, from_name, opt, htx);
+        let (vtx, vrx) = channel();
+        let vh = session::viewer(cfg.clone(), s, secret, String::new(), my_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx, cli_id.clone(), credential);
+        let ask = wait(&hrx, 8, |e| matches!(e, HostEvent::Ask { .. }));
+        let end = if ask.is_some() { None } else { wait(&vrx, 8, |e| matches!(e, ViewerEvent::Ended(_))) };
+        vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        hh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        match (ask, end) {
+            (Some(HostEvent::Ask { verified, from_name, .. }), _) => (true, verified, from_name),
+            (_, Some(ViewerEvent::Ended(r))) => (false, None, r),
+            _ => panic!("nem pedido nem fim"),
+        }
+    };
+    // IDs dos técnicos (o mesmo token devolve o mesmo ID).
+    let beto_ctl_id = client::probe(&cfg, &[42u8; 32], "Técnico 42").unwrap();
+    let caio_ctl_id = client::probe(&cfg, &[43u8; 32], "Técnico 43").unwrap();
+    let (asked, verified, name) = attempt(&beto, &beto_ctl_id, Some(elo_proto::secure::Credential { secret: beto_key, cert: beto_cert.to_bytes() }));
+    assert!(asked, "o pedido do Beto devia aparecer");
+    assert_eq!(verified.as_deref(), Some("Beto"));
+    assert_eq!(name, "Beto (técnico)");
+    let (asked, _, reason) = attempt(&caio, &caio_ctl_id, None);
+    assert!(!asked, "o pedido do Caio (não aprovado) não devia aparecer");
+    assert!(reason.contains("aprovados"), "{reason}");
+    // Certificado do Beto com a chave do Caio: a assinatura da sessão não bate.
+    let (asked, _, _) = attempt(&caio, &caio_ctl_id, Some(elo_proto::secure::Credential { secret: caio_key, cert: beto_cert.to_bytes() }));
+    assert!(!asked, "certificado alheio não devia passar");
+    for c in [&admin, &beto, &caio, &cli] {
         let _ = c.tx.send(client::Command::Quit);
     }
     let _ = std::fs::remove_dir_all(&dir);

@@ -36,7 +36,7 @@ sessão**, nem o próprio servidor.
 - **Gerenciador de arquivos**: navegue nas pastas do outro computador, baixe e
   envie arquivos (ou arraste para a janela da sessão).
 - **Cifragem ponta a ponta**: SPAKE2 a partir da senha, depois ChaCha20-Poly1305.
-- **Código de verificação** de 6 dígitos nas duas telas, contra ataques no meio.
+- **Código de verificação** de 8 dígitos nas duas telas, contra ataques no meio, e técnicos de empresa com identidade conferida pela chave dos técnicos.
 - **Pedido de acesso**: sem senha, o outro lado aceita na tela e escolhe as permissões.
 - **Acesso não assistido** com senha fixa.
 - **Permissões revogáveis** durante a sessão (controle, área de transferência, arquivos).
@@ -275,18 +275,32 @@ embutido no app, o próprio Elo já preenche. Administradores criam e removem t�
 aba **Clientes → Técnicos**. O servidor guarda só o hash (Argon2) das senhas,
 e o app guarda só um token de entrada.
 
+**Chave dos técnicos.** Em **Clientes → Técnicos**, um administrador cria a
+chave dos técnicos. A parte secreta fica no app dele (dá para copiar para
+outro administrador); o servidor e os convites levam só a parte pública. Cada
+app de técnico tem a própria chave, cujo código aparece em **Configurações →
+Conta de técnico**. O administrador aprova cada chave conferindo esse código
+com o técnico, e o app dele assina um certificado que vale 90 dias e se renova
+sozinho enquanto o técnico estiver na lista. Os computadores das empresas só
+aceitam pedidos de técnicos aprovados, e o pedido mostra que a identidade foi
+conferida. Nem quem controla o servidor consegue se passar por técnico.
+Computadores com convite antigo, sem a chave, ficam com a que o servidor
+informar no primeiro contato.
+
 **Aba Clientes.** Pedidos de ajuda (com a mensagem do cliente e quem está
 atendendo), empresas, computadores (online, visto pela última vez, nome e
 observações) e o botão para conectar. Um pedido novo aparece na hora, com
 aviso, mesmo com o Elo na bandeja.
 
 **Convidar um computador.** Na empresa, **Convidar computador** gera um código
-de convite (endereço do servidor, impressão digital e a chave da empresa) e
+de convite (endereço do servidor, impressão digital, chave da empresa e chave
+pública dos técnicos) e
 uma mensagem pronta com o link de download. O cliente instala o **Elo
 Cliente**, cola o código e pronto. Para instalar em muitas máquinas, salve o
 código em `convite.txt` em `C:\ProgramData\Elo\` (Windows), `/etc/elo/`
 (Linux) ou `/Library/Application Support/Elo/` (macOS): o Elo Cliente lê
-sozinho na primeira abertura. **Trocar o convite** invalida o código antigo
+sozinho na primeira abertura. Só quem tem a chave dos técnicos no app gera
+convites. **Trocar o convite** invalida o código antigo
 para instalações novas, sem derrubar os computadores já ligados.
 
 **Elo Cliente.** É o mesmo programa, com outro nome e configuração própria (os
@@ -301,12 +315,19 @@ histórico de sessões registra qual técnico fez cada acesso.
 - **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
   partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
   repassa bytes: não tem a chave, não lê a sessão e, nas conexões com senha, não
-  consegue se passar por nenhum dos lados sem saber a senha.
-- **Conexões sem senha** (pedido com aceite na tela, inclusive as de técnicos) têm
-  uma garantia menor: sem segredo combinado antes, a proteção contra um servidor
-  comprometido depende de conferir o **código de verificação** de 6 dígitos que
-  aparece nas duas telas. Esse mecanismo ainda está sendo reforçado: por enquanto,
-  use nessas conexões apenas servidores em que você confia.
+  consegue se passar por nenhum dos lados sem saber a senha. O acordo inclui os
+  IDs das duas pontas: o servidor também não consegue desviar a conexão para
+  outro computador que tenha a mesma senha.
+- **Técnicos de empresa** provam quem são com a chave dos técnicos (veja
+  "Empresas e Elo Cliente"): o computador do cliente confere o certificado e
+  uma assinatura ligada a esta sessão.
+- **Outras conexões sem senha** (pedido com aceite na tela) dependem do
+  **código de verificação** de 8 dígitos que aparece nas duas telas. Quem acessa
+  se compromete com a própria mensagem antes de ver a do outro lado, então um
+  servidor comprometido tem uma chance em 100 milhões, por tentativa, de fazer
+  os códigos baterem. Tentativas abandonadas no meio contam, e passando do
+  limite os pedidos param por alguns minutos. Confira o código com a pessoa,
+  por telefone ou chat, antes de aceitar.
 - **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
   novas conexões por um tempo. O servidor também limita tentativas por IP.
 - **TLS** entre o app e o servidor, com certificado público ou com impressão

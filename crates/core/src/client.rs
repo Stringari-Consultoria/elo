@@ -22,8 +22,8 @@ pub enum Event {
     WakeSent { target: String, relays: u32 },
     /// Recursos do servidor (logo depois de `Online`; vazio em servidores antigos).
     Features(Vec<String>),
-    /// Elo Cliente: ligado à empresa.
-    Company { name: String },
+    /// Elo Cliente: ligado à empresa. `ca`: chave pública dos técnicos (hex).
+    Company { name: String, ca: String },
     /// Técnico: entrou (guarde o token).
     LoggedIn { user: String, name: String, admin: bool, token: String },
     /// O servidor ainda não tem técnicos: crie o administrador com o código de primeiro acesso.
@@ -43,6 +43,8 @@ pub struct Identity {
     pub company: Option<(String, String)>,
     /// Token de uma entrada de técnico.
     pub tech_token: Option<String>,
+    /// Chave pública deste app de técnico (hex), para a aprovação.
+    pub tech_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +169,7 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, ident: &mut Identity, 
                     }
                     *ident = i;
                 }
-                Command::Login { user, password, setup, name } if enterprise => send(&mut c, &ToServer::Login { user, password, setup, name })?,
+                Command::Login { user, password, setup, name } if enterprise => send(&mut c, &ToServer::Login { user, password, setup, name, key: ident.tech_key.clone() })?,
                 Command::Login { .. } => needs("contas de técnico")?,
                 Command::Logout => {
                     ident.tech_token = None;
@@ -196,12 +198,12 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, ident: &mut Identity, 
                                 send(&mut c, &ToServer::JoinCompany { company, key })?;
                             }
                             if let Some(token) = ident.tech_token.clone() {
-                                send(&mut c, &ToServer::Resume { token })?;
+                                send(&mut c, &ToServer::Resume { token, key: ident.tech_key.clone() })?;
                             }
                         }
                         continue;
                     }
-                    FromServer::Company { name } => Event::Company { name },
+                    FromServer::Company { name, ca } => Event::Company { name, ca },
                     FromServer::LoggedIn { user, name, admin, token } => {
                         ident.tech_token = Some(token.clone());
                         Event::LoggedIn { user, name, admin, token }

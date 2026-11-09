@@ -1023,6 +1023,12 @@ impl EloApp {
                 });
                 ui.add_space(8.0);
                 ui.add(egui::Label::new(RichText::new(t!("{} (ID {}) quer acessar este computador.", a.from_name, pretty_id(&a.from_id))).size(13.5).color(p.text)).wrap());
+                if a.verified {
+                    ui.horizontal(|ui| {
+                        icons::icon(ui, Icon::Check, 14.0, p.success);
+                        ui.label(RichText::new(t!("Técnico aprovado pela empresa (identidade conferida pela chave dos técnicos)")).size(12.0).color(p.success));
+                    });
+                }
                 ui.add_space(6.0);
                 ui.label(RichText::new(t!("Código de verificação: {}", a.sas)).font(theme::mono(15.0)).color(p.text));
                 ui.label(RichText::new(t!("Confirme com a pessoa que o código aparece igual na tela dela. Só aceite se você conhece quem está pedindo.")).size(11.5).color(p.text2));
@@ -1352,8 +1358,12 @@ impl EloApp {
                 let name = self.settings.company.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| t!("nenhuma ainda").into());
                 ui.label(RichText::new(t!("Este computador é atendido como {}. Só os técnicos da empresa conseguem pedir acesso, e você sempre aceita na tela.", name)).size(12.0).color(p.text2));
                 egui::CollapsingHeader::new(RichText::new(t!("Usar outro código de convite")).size(12.0).color(p.text2)).id_salt("outro-convite").show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.invite_input).desired_rows(2).font(theme::mono(11.5)).hint_text("ELO1-…").desired_width(f32::INFINITY));
-                    if ui.add_enabled(elo_proto::ctrl::Invite::decode(&self.invite_input).is_some(), egui::Button::new(t!("Usar este código"))).clicked() {
+                    ui.add(egui::TextEdit::multiline(&mut self.invite_input).desired_rows(2).font(theme::mono(11.5)).hint_text("ELO2-…").desired_width(f32::INFINITY));
+                    let decoded = elo_proto::ctrl::Invite::decode(&self.invite_input);
+                    if let Some(i) = &decoded {
+                        crate::empresa::invite_summary(ui, &p, i);
+                    }
+                    if ui.add_enabled(decoded.is_some(), egui::Button::new(t!("Usar este código"))).clicked() {
                         let text = std::mem::take(&mut self.invite_input);
                         if let Err(e) = self.join_invite(&text) {
                             self.error(e);

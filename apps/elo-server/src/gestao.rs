@@ -24,6 +24,9 @@ pub struct Gestao {
     /// ID → empresa, apelido e observações.
     #[serde(default)]
     pub devices: HashMap<String, DevRec>,
+    /// Chave pública dos técnicos (hex; vazio = ainda não criada).
+    #[serde(default)]
+    pub ca: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +51,41 @@ pub struct TechRec {
     /// `TOKEN_DAYS` dias, a entrada expira.
     #[serde(default)]
     pub token_seen: HashMap<String, u64>,
+    /// Chaves dos apps do técnico e os certificados aprovados.
+    #[serde(default)]
+    pub keys: Vec<KeyRec>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KeyRec {
+    /// Chave pública (hex).
+    pub key: String,
+    /// Certificado em hex (vazio = aguardando aprovação).
+    #[serde(default)]
+    pub cert: String,
+    /// Último uso (segundos desde 1970).
+    #[serde(default)]
+    pub seen: u64,
+}
+
+/// Chaves guardadas por técnico (computadores em que ele entrou).
+const MAX_KEYS: usize = 10;
+
+impl TechRec {
+    /// O app do técnico entrou com esta chave: guarda (as mais antigas saem).
+    pub fn note_key(&mut self, key: &str, now: u64) {
+        if elo_proto::cert::key_from_hex(key).is_none() {
+            return;
+        }
+        match self.keys.iter_mut().find(|k| k.key == key) {
+            Some(k) => k.seen = now,
+            None => self.keys.push(KeyRec { key: key.to_string(), cert: String::new(), seen: now }),
+        }
+        if self.keys.len() > MAX_KEYS {
+            self.keys.sort_by_key(|k| std::cmp::Reverse(k.seen));
+            self.keys.truncate(MAX_KEYS);
+        }
+    }
 }
 
 /// Dias sem uso que uma entrada de técnico vale.
@@ -224,7 +262,7 @@ mod tests {
         std::fs::write(file(&d), b"{ quebrado").unwrap();
         assert!(Gestao::load(&d).is_err());
         assert_eq!(std::fs::read(file(&d)).unwrap(), b"{ quebrado");
-        let g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: "h".into(), admin: true, tokens: Vec::new(), token_seen: HashMap::new() }], ..Default::default() };
+        let g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: "h".into(), admin: true, tokens: Vec::new(), token_seen: HashMap::new(), keys: Vec::new() }], ..Default::default() };
         g.save(&d);
         assert_eq!(Gestao::load(&d).unwrap().techs.len(), 1);
         #[cfg(unix)]
@@ -239,7 +277,7 @@ mod tests {
     fn unused_tech_entry_expires_and_use_renews_it() {
         let h = token_hash("tok");
         let now = crate::now_secs();
-        let mut g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: String::new(), admin: false, tokens: vec![h.clone()], token_seen: HashMap::from([(h.clone(), now - (TOKEN_DAYS + 1) * 86_400)]) }], ..Default::default() };
+        let mut g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: String::new(), admin: false, tokens: vec![h.clone()], token_seen: HashMap::from([(h.clone(), now - (TOKEN_DAYS + 1) * 86_400)]), keys: Vec::new() }], ..Default::default() };
         assert!(g.by_token("tok").is_none(), "vencida");
         g.techs[0].token_seen.insert(h.clone(), now - (TOKEN_DAYS - 1) * 86_400);
         assert!(g.by_token("tok").is_some());

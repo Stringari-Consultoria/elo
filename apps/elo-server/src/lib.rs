@@ -290,7 +290,7 @@ impl State {
         let g = self.gestao.lock().await.clone();
         let mut requests: Vec<HelpRequest> = self.help.lock().await.values().cloned().collect();
         let me = g.tech(user)?;
-        let tech = |t: &TechRec| elo_proto::ctrl::Tech { user: t.user.clone(), name: t.name.clone(), admin: t.admin };
+        let tech = |t: &TechRec| elo_proto::ctrl::Tech { user: t.user.clone(), name: t.name.clone(), admin: t.admin, keys: t.keys.iter().map(|k| elo_proto::ctrl::TechKey { key: k.key.clone(), cert: k.cert.clone() }).collect() };
         let mut companies: Vec<elo_proto::ctrl::Company> = g.companies.iter().map(|c| elo_proto::ctrl::Company { id: c.id.clone(), name: c.name.clone(), key: c.key.clone() }).collect();
         companies.sort_by_key(|c| c.name.to_lowercase());
         let mut ids: Vec<&String> = known.keys().chain(g.devices.keys()).collect();
@@ -318,7 +318,7 @@ impl State {
             .collect();
         devices.sort_by_key(|d| (d.company.as_ref().and_then(|c| g.company_name(c)).unwrap_or_default().to_lowercase(), if d.alias.is_empty() { d.name.to_lowercase() } else { d.alias.to_lowercase() }));
         requests.sort_by_key(|r| r.since);
-        Some(Overview { me: tech(me), companies, devices, requests, techs: if me.admin { g.techs.iter().map(tech).collect() } else { Vec::new() } })
+        Some(Overview { me: tech(me), companies, devices, requests, techs: if me.admin { g.techs.iter().map(tech).collect() } else { Vec::new() }, ca: g.ca.clone() })
     }
 
     /// Painel atualizado a todos os técnicos, juntando os avisos de meio
@@ -632,6 +632,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 }
                 let joined = {
                     let mut g = state.gestao.lock().await;
+                    let ca = g.ca.clone();
                     let c = g.companies.iter().find(|c| c.id == company).cloned();
                     // Quem já é da empresa continua mesmo se a chave do convite mudou.
                     let already = g.company_of(&id).as_deref() == Some(company.as_str());
@@ -639,20 +640,20 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                         Some(c) if already || c.key == key => {
                             g.devices.entry(id.clone()).or_default().company = Some(c.id.clone());
                             state.save_gestao(&g);
-                            Some(c.name)
+                            Some((c.name, ca))
                         }
                         _ => None,
                     }
                 };
                 match joined {
-                    Some(name) => {
-                        let _ = tx.try_send(FromServer::Company { name });
+                    Some((name, ca)) => {
+                        let _ = tx.try_send(FromServer::Company { name, ca });
                         state.notify_techs().await;
                     }
                     None => err(ErrorCode::BadRequest, "código de convite inválido ou trocado: peça um novo à empresa de suporte"),
                 }
             }
-            ToServer::Login { user, password, setup, name: display } => {
+            ToServer::Login { user, password, setup, name: display, key } => {
                 if !state.limits.lock().await.allow(&format!("login:{}", peer.ip()), 10) {
                     err(ErrorCode::RateLimited, "muitas tentativas de entrar; aguarde um minuto");
                     continue;
@@ -682,7 +683,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     {
                         let mut g = state.gestao.lock().await;
                         let name = if display.trim().is_empty() { user.clone() } else { display.trim().to_string() };
-                        g.techs.push(TechRec { user: user.clone(), name, hash, admin: true, tokens: Vec::new(), token_seen: HashMap::new() });
+                        g.techs.push(TechRec { user: user.clone(), name, hash, admin: true, tokens: Vec::new(), token_seen: HashMap::new(), keys: Vec::new() });
                         state.save_gestao(&g);
                     }
                     *state.setup.lock().await = None;
@@ -723,6 +724,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                             t.tokens.drain(..n - 20);
                         }
                         t.prune_tokens(now_secs());
+                        t.note_key(&key, now_secs());
                         (t.user.clone(), t.name.clone(), t.admin)
                     });
                     state.save_gestao(&g);
@@ -733,7 +735,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 enter_tech(&state, conn, &tx, &user, &name, admin, token).await;
                 tech = Some((user, name));
             }
-            ToServer::Resume { token } => {
+            ToServer::Resume { token, key } => {
                 if !state.limits.lock().await.allow(&format!("login:{}", peer.ip()), 30) {
                     err(ErrorCode::RateLimited, "muitas tentativas de entrar; aguarde um minuto");
                     continue;
@@ -741,8 +743,11 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let me = {
                     let mut g = state.gestao.lock().await;
                     let me = g.by_token(&token).map(|t| (t.user.clone(), t.name.clone(), t.admin));
-                    // A validade foi renovada: grava.
-                    if me.is_some() {
+                    // A validade foi renovada (e a chave do app anotada): grava.
+                    if let Some((user, ..)) = &me {
+                        if let Some(t) = g.techs.iter_mut().find(|t| t.user == *user) {
+                            t.note_key(&key, now_secs());
+                        }
                         state.save_gestao(&g);
                     }
                     me
@@ -925,7 +930,7 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
             let hash = tokio::task::spawn_blocking(move || gestao::hash_password(&password)).await.map_err(|e| e.to_string())??;
             let mut g = state.gestao.lock().await;
             let name = if name.trim().is_empty() { user.clone() } else { clean(&name, 80) };
-            g.techs.push(TechRec { user: user.clone(), name, hash, admin: is_admin, tokens: Vec::new(), token_seen: HashMap::new() });
+            g.techs.push(TechRec { user: user.clone(), name, hash, admin: is_admin, tokens: Vec::new(), token_seen: HashMap::new(), keys: Vec::new() });
             state.save_gestao(&g);
             eprintln!("[técnico] {me} criou a conta {user}");
         }
@@ -963,6 +968,46 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
             t.hash = hash;
             // Senha nova: as outras entradas dessa conta caem.
             t.tokens.clear();
+            state.save_gestao(&g);
+        }
+        Manage::SetCa { public } => {
+            need_admin()?;
+            elo_proto::cert::key_from_hex(&public).ok_or("chave dos técnicos inválida")?;
+            let mut g = state.gestao.lock().await;
+            if g.ca != public {
+                // Chave nova: as aprovações antigas não valem mais.
+                g.ca = public.clone();
+                for t in g.techs.iter_mut() {
+                    for k in t.keys.iter_mut() {
+                        k.cert.clear();
+                    }
+                }
+                state.save_gestao(&g);
+                eprintln!("[técnico] {me:?} criou a chave dos técnicos");
+                // Computadores das empresas online já ficam sabendo (os de
+                // convite antigo guardam a chave; os outros mantêm a do convite).
+                let names: Vec<(String, String)> = g.devices.keys().filter_map(|id| g.company_of(id).and_then(|c| g.company_name(&c)).map(|n| (id.clone(), n))).collect();
+                drop(g);
+                let on = state.online.lock().await;
+                for (id, name) in names {
+                    for d in on.get(&id).into_iter().flatten() {
+                        let _ = d.tx.try_send(FromServer::Company { name: name.clone(), ca: public.clone() });
+                    }
+                }
+            }
+        }
+        Manage::Certify { user, cert } => {
+            need_admin()?;
+            let c = elo_proto::cert::SignedCert::from_text(&cert).ok_or("certificado inválido")?;
+            let mut g = state.gestao.lock().await;
+            let ca = elo_proto::cert::key_from_hex(&g.ca).ok_or("crie a chave dos técnicos antes de aprovar")?;
+            if c.cert.user != user || !c.valid(&ca, now_secs()) {
+                return Err("certificado não confere com a chave dos técnicos".into());
+            }
+            let key = elo_proto::cert::to_hex(&c.cert.key);
+            let t = g.techs.iter_mut().find(|t| t.user == user).ok_or("técnico não encontrado")?;
+            let k = t.keys.iter_mut().find(|k| k.key == key).ok_or("essa chave não é de nenhum app desse técnico")?;
+            k.cert = cert;
             state.save_gestao(&g);
         }
         Manage::TakeRequest { device } => {

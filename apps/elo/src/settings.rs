@@ -112,6 +112,12 @@ pub struct Settings {
     pub tech: Option<TechCfg>,
     /// Elo Cliente: empresa a que este computador pertence (código de convite).
     pub company: Option<CompanyCfg>,
+    /// Chave secreta deste app como técnico (hex). Um administrador aprova a
+    /// parte pública; com ela o técnico prova quem é aos computadores das empresas.
+    pub tech_secret: String,
+    /// Administrador: chave secreta dos técnicos (hex), se foi criada ou
+    /// importada aqui. Quem a tem aprova técnicos e gera convites.
+    pub tech_ca_secret: String,
 }
 
 /// Entrada de técnico guardada: só o token, nunca a senha.
@@ -125,14 +131,35 @@ pub struct TechCfg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanyCfg {
-    /// Código de convite completo ("ELO1-…").
+    /// Código de convite completo ("ELO2-…").
     pub invite: String,
     pub name: String,
+    /// Chave pública dos técnicos da empresa (hex), do convite ou, nos
+    /// convites antigos, do primeiro contato com o servidor. Só técnico
+    /// aprovado por ela consegue pedir acesso.
+    #[serde(default)]
+    pub ca: String,
 }
 
 impl CompanyCfg {
     pub fn decoded(&self) -> Option<elo_proto::ctrl::Invite> {
         elo_proto::ctrl::Invite::decode(&self.invite)
+    }
+
+    pub fn ca_key(&self) -> Option<[u8; 32]> {
+        elo_proto::cert::key_from_hex(&self.ca)
+    }
+}
+
+impl Settings {
+    /// Chave secreta deste app de técnico.
+    pub fn tech_key(&self) -> Option<[u8; 32]> {
+        elo_proto::cert::key_from_hex(&self.tech_secret)
+    }
+
+    /// Chave secreta dos técnicos, se está neste computador.
+    pub fn ca_secret(&self) -> Option<[u8; 32]> {
+        elo_proto::cert::key_from_hex(&self.tech_ca_secret)
     }
 }
 
@@ -158,6 +185,8 @@ impl Default for Settings {
             close_to_tray: true, language: "auto".into(),
             tech: None,
             company: None,
+            tech_secret: String::new(),
+            tech_ca_secret: String::new(),
         }
     }
 }
@@ -227,6 +256,9 @@ impl Settings {
         // Padrão antigo, de um servidor que não existe: vira "sem servidor".
         if s.server.address.trim() == "elo.stringari.com.br:21116" {
             s.server.address.clear();
+        }
+        if elo_proto::cert::key_from_hex(&s.tech_secret).is_none() {
+            s.tech_secret = elo_proto::cert::to_hex(&elo_proto::cert::new_secret());
         }
         s.save();
         s

@@ -26,9 +26,10 @@ pub enum ToServer {
     JoinCompany { company: String, key: String },
     /// Técnico: entra com usuário e senha. Com `setup` (código de primeiro
     /// acesso do servidor), cria a conta como administrador.
-    Login { user: String, password: String, setup: Option<String>, name: String },
+    /// `key`: chave pública do técnico neste app (hex), para a aprovação.
+    Login { user: String, password: String, setup: Option<String>, name: String, key: String },
     /// Técnico: volta a entrar com o token de uma entrada anterior.
-    Resume { token: String },
+    Resume { token: String, key: String },
     Logout,
     /// Elo Cliente: pede ajuda aos técnicos.
     RequestHelp { message: String },
@@ -60,6 +61,12 @@ pub enum Manage {
     SetPassword { user: String, password: String },
     /// "Vou atender": marca o pedido de ajuda como meu.
     TakeRequest { device: String },
+    /// Administrador: chave pública dos técnicos (hex). A secreta fica no app
+    /// de quem criou; trocar a chave invalida as aprovações e os convites.
+    SetCa { public: String },
+    /// Administrador: certificado do técnico (`cert::SignedCert` em hex),
+    /// assinado no app de quem tem a chave dos técnicos.
+    Certify { user: String, cert: String },
 }
 
 /// O que o técnico vê no painel de clientes.
@@ -71,6 +78,8 @@ pub struct Overview {
     pub requests: Vec<HelpRequest>,
     /// Só para administradores.
     pub techs: Vec<Tech>,
+    /// Chave pública dos técnicos (hex; vazio = ainda não criada).
+    pub ca: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -86,6 +95,16 @@ pub struct Tech {
     pub user: String,
     pub name: String,
     pub admin: bool,
+    /// Chaves dos apps em que o técnico entrou (um por computador).
+    pub keys: Vec<TechKey>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TechKey {
+    /// Chave pública (hex).
+    pub key: String,
+    /// Certificado (hex; vazio = aguardando aprovação).
+    pub cert: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -115,7 +134,8 @@ pub struct HelpRequest {
     pub taken_by: Option<String>,
 }
 
-/// Convite do Elo Cliente: onde fica o servidor e de que empresa é.
+/// Convite do Elo Cliente: onde fica o servidor, de que empresa é e a chave
+/// pública dos técnicos (só eles conseguem acessar o computador).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Invite {
     pub address: String,
@@ -124,15 +144,28 @@ pub struct Invite {
     pub company: String,
     pub key: String,
     pub name: String,
+    /// Chave pública dos técnicos (hex; vazio nos convites antigos).
+    pub ca: String,
+}
+
+/// Convite de antes da chave dos técnicos ("ELO1-").
+#[derive(Deserialize)]
+struct InviteV1 {
+    address: String,
+    tls: bool,
+    pin: String,
+    company: String,
+    key: String,
+    name: String,
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 impl Invite {
-    /// Texto para copiar e colar: "ELO1-" + base64 (URL) do conteúdo.
+    /// Texto para copiar e colar: "ELO2-" + base64 (URL) do conteúdo.
     pub fn encode(&self) -> String {
         let data = postcard::to_stdvec(self).unwrap_or_default();
-        let mut out = String::from("ELO1-");
+        let mut out = String::from("ELO2-");
         for c in data.chunks(3) {
             let n = c.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
             for i in 0..=c.len() {
@@ -144,7 +177,11 @@ impl Invite {
 
     pub fn decode(text: &str) -> Option<Invite> {
         let t: String = text.trim().chars().filter(|c| !c.is_whitespace()).collect();
-        let body = t.strip_prefix("ELO1-")?;
+        let (v1, body) = match (t.strip_prefix("ELO2-"), t.strip_prefix("ELO1-")) {
+            (Some(b), _) => (false, b),
+            (None, Some(b)) => (true, b),
+            _ => return None,
+        };
         let mut bytes = Vec::new();
         let vals: Vec<u32> = body.bytes().map(|b| B64.iter().position(|x| *x == b).map(|p| p as u32)).collect::<Option<_>>()?;
         for c in vals.chunks(4) {
@@ -152,6 +189,10 @@ impl Invite {
             for i in 0..c.len().saturating_sub(1) {
                 bytes.push((n >> (16 - 8 * i)) as u8);
             }
+        }
+        if v1 {
+            let o: InviteV1 = postcard::from_bytes(&bytes).ok()?;
+            return Some(Invite { address: o.address, tls: o.tls, pin: o.pin, company: o.company, key: o.key, name: o.name, ca: String::new() });
         }
         postcard::from_bytes(&bytes).ok()
     }
@@ -175,8 +216,8 @@ pub enum FromServer {
     /// Resposta ao `Wake`: quantos computadores da rede do alvo mandaram o pacote.
     WakeSent { target: String, relays: u32 },
     // Só para quem usou os recursos de "empresas".
-    /// Elo Cliente: ligado à empresa.
-    Company { name: String },
+    /// Elo Cliente: ligado à empresa. `ca`: chave pública dos técnicos (hex).
+    Company { name: String, ca: String },
     /// Técnico: entrou. Guarde o `token` para `Resume`.
     LoggedIn { user: String, name: String, admin: bool, token: String },
     /// O servidor ainda não tem técnicos: crie o administrador com o código
@@ -238,9 +279,13 @@ pub fn clean_id(s: &str) -> String {
 mod tests {
     #[test]
     fn invite_round_trip() {
-        let i = super::Invite { address: "wss://elo.exemplo.com".into(), tls: true, pin: String::new(), company: "c1".into(), key: "k".repeat(22), name: "Padaria Pão Quente".into() };
+        let i = super::Invite { address: "wss://elo.exemplo.com".into(), tls: true, pin: String::new(), company: "c1".into(), key: "k".repeat(22), name: "Padaria Pão Quente".into(), ca: "ab".repeat(32) };
         let t = i.encode();
-        assert!(t.starts_with("ELO1-"));
+        assert!(t.starts_with("ELO2-"));
+        // Convite antigo (sem a chave dos técnicos) continua valendo.
+        let old = "ELO1-FXdzczovL2Vsby5leGVtcGxvLmNvbQEAAmMxFmtra2tra2tra2tra2tra2tra2tra2sETG9qYQ";
+        let o = super::Invite::decode(old).expect("ELO1");
+        assert_eq!((o.address.as_str(), o.company.as_str(), o.name.as_str(), o.ca.as_str()), ("wss://elo.exemplo.com", "c1", "Loja", ""));
         assert_eq!(super::Invite::decode(&t), Some(i.clone()));
         // Colado com espaços/quebras de linha no meio.
         let spaced: String = t.chars().enumerate().flat_map(|(n, c)| if n % 20 == 19 { vec![c, '\n'] } else { vec![c] }).collect();

@@ -12,7 +12,7 @@ use elo_proto::codec::{Decoder, Encoder};
 use elo_proto::ctrl::{FromServer, ToServer};
 use elo_proto::frame::{read_frame, write_frame};
 use elo_proto::msg::{Button, DirEntry, Input, Key, Monitor, Msg, Permissions};
-use elo_proto::secure::{AuthMode, Opener, Sealer, host_handshake, viewer_handshake};
+use elo_proto::secure::{AuthMode, Credential, Opener, Peers, Sealer, host_handshake, viewer_handshake};
 
 use crate::net::{Conn, Framer, ServerCfg, connect};
 use crate::platform::{self, Clip};
@@ -520,6 +520,26 @@ pub struct HostOptions {
     pub restart: fn() -> Result<(), String>,
     /// Mandar o som deste computador a quem pedir (dá para mudar na sessão).
     pub audio: bool,
+    /// ID deste computador (entra no aperto de mão: o relay não desvia).
+    pub id: String,
+    /// Elo Cliente: chave pública dos técnicos da empresa. Com ela, só
+    /// técnico aprovado consegue pedir acesso.
+    pub tech_ca: Option<[u8; 32]>,
+}
+
+/// Motivo de fim para quem pediu acesso sem ser técnico aprovado.
+pub const UNVERIFIED: &str = "este computador só aceita técnicos aprovados pela empresa: peça a um administrador para aprovar o seu Elo (Clientes → Técnicos)";
+
+/// Pedidos sem senha abandonados no meio do aperto de mão. Quem está no meio
+/// da conexão abandona para tentar de novo o código de verificação; passando
+/// do limite, pedidos sem senha param por alguns minutos.
+static ABANDONED: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+const MAX_ABANDONED: usize = 30;
+
+fn requests_allowed() -> bool {
+    let mut a = ABANDONED.lock().unwrap_or_else(|e| e.into_inner());
+    a.retain(|t| t.elapsed() < Duration::from_secs(600));
+    a.len() < MAX_ABANDONED
 }
 
 /// Ligar o som sozinho ao conectar (os testes desligam: anfitrião e
@@ -531,9 +551,10 @@ pub const GAVE_UP: &str = "quem pediu desistiu do pedido";
 
 pub enum HostEvent {
     /// Pedido sem senha: responda com as permissões (ou `None` para recusar).
-    Ask { from_id: String, from_name: String, sas: String, reply: Sender<Option<Permissions>> },
+    /// `verified`: nome do técnico aprovado pela empresa (certificado conferido).
+    Ask { from_id: String, from_name: String, sas: String, reply: Sender<Option<Permissions>>, verified: Option<String> },
     /// `password`: qual senha da lista de `HostOptions` foi usada (`None` = aceite na tela).
-    Started { from_id: String, from_name: String, sas: String, password: Option<u8> },
+    Started { from_id: String, from_name: String, sas: String, password: Option<u8>, verified: Option<String> },
     Chat(String),
     File(Transfer),
     AuthFailed { from_id: String },
@@ -619,8 +640,13 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut c = join(cfg, session, secret, true)?;
     c.set_read_timeout(Some(Duration::from_secs(30)));
     let locked = host_locked(from_id);
-    let keys = match host_handshake(&mut c, if locked { &[] } else { &opt.passwords }) {
+    let peers = Peers { session, viewer: from_id, host: &opt.id };
+    let keys = match host_handshake(&mut c, if locked { &[] } else { &opt.passwords }, peers, requests_allowed()) {
         Ok(k) => k,
+        Err(elo_proto::Error::Abandoned) => {
+            ABANDONED.lock().unwrap_or_else(|e| e.into_inner()).push(Instant::now());
+            return Err(GAVE_UP.into());
+        }
         Err(e) => {
             if locked {
                 return Err("senha bloqueada por alguns minutos: muitas tentativas erradas".into());
@@ -637,9 +663,25 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut perms = opt.default_permissions;
     // Antes do aceite, quem pediu só sabe o ID: nada de blocos grandes.
     ch.fr.set_max(PRE_ACCEPT_FRAME);
+    // Técnico aprovado: o certificado bate com a chave da empresa e assina
+    // esta sessão (ninguém no meio consegue repassar a assinatura).
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let verified = match (&opt.tech_ca, &keys.proof) {
+        (Some(ca), Some((cert, sig))) => elo_proto::cert::check(ca, now, cert, sig, &keys.binding).map(|c| c.name),
+        _ => None,
+    };
+    if keys.mode == AuthMode::Request && opt.tech_ca.is_some() && verified.is_none() {
+        let _ = ch.send(&Msg::Bye(UNVERIFIED.into()));
+        return Err("pedido de acesso recusado: quem pediu não é um técnico aprovado da empresa".into());
+    }
+    let from_name = match &verified {
+        Some(n) => format!("{} (técnico)", elo_proto::plain_text(n, 64)),
+        None => from_name.to_string(),
+    };
+    let from_name = from_name.as_str();
     if keys.mode == AuthMode::Request {
         let (tx, rrx) = channel();
-        let _ = ev.send(HostEvent::Ask { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), reply: tx });
+        let _ = ev.send(HostEvent::Ask { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), reply: tx, verified: verified.clone() });
         // Espera a resposta de quem está aqui, de olho na conexão: se o outro
         // lado desistir (cancelar, fechar), o pedido some da tela.
         ch.c.set_read_timeout(Some(Duration::from_millis(200)));
@@ -672,7 +714,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut clip = Clip::new();
     let monitors = screen.monitors();
     ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
-    let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), password: (keys.mode == AuthMode::Password).then_some(keys.which) });
+    let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), password: (keys.mode == AuthMode::Password).then_some(keys.which), verified: verified.clone() });
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
     let mut enc = Encoder::new();
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
@@ -969,23 +1011,37 @@ pub struct Listing {
     pub error: Option<String>,
 }
 
-pub fn viewer(cfg: ServerCfg, session: u64, secret: [u8; 16], password: String, my_id: String, my_name: String, downloads: PathBuf, remote: Arc<Mutex<Remote>>, events: Sender<ViewerEvent>) -> Handle {
+/// `target_id`: o ID digitado (entra no aperto de mão); `credential`: técnico
+/// de empresa, para provar quem é ao pedir acesso a um Elo Cliente.
+pub fn viewer(cfg: ServerCfg, session: u64, secret: [u8; 16], password: String, my_id: String, my_name: String, downloads: PathBuf, remote: Arc<Mutex<Remote>>, events: Sender<ViewerEvent>, target_id: String, credential: Option<Credential>) -> Handle {
     let (h, rx) = new_handle();
     let h2 = h.clone();
     std::thread::Builder::new()
         .name("elo-visualizador".into())
         .spawn(move || {
-            let r = viewer_run(&cfg, session, secret, &password, &my_id, &my_name, &downloads, &remote, &events, &h2, rx);
+            let who = Who { my_id: &my_id, my_name: &my_name, target_id: &target_id, credential: credential.as_ref() };
+            let r = viewer_run(&cfg, session, secret, &password, who, &downloads, &remote, &events, &h2, rx);
             let _ = events.send(ViewerEvent::Ended(r.err().unwrap_or_else(|| "sessão encerrada".into())));
         })
         .expect("thread");
     h
 }
 
-fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, my_id: &str, my_name: &str, downloads: &Path, remote: &Arc<Mutex<Remote>>, ev: &Sender<ViewerEvent>, h: &Handle, rx: Receiver<Cmd>) -> Result<(), String> {
+/// Quem acessa, para quem e com que credencial.
+struct Who<'a> {
+    my_id: &'a str,
+    my_name: &'a str,
+    target_id: &'a str,
+    credential: Option<&'a Credential>,
+}
+
+fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, who: Who, downloads: &Path, remote: &Arc<Mutex<Remote>>, ev: &Sender<ViewerEvent>, h: &Handle, rx: Receiver<Cmd>) -> Result<(), String> {
+    let Who { my_id, my_name, target_id, credential } = who;
     let mut c = join(cfg, session, secret, false)?;
     c.set_read_timeout(Some(Duration::from_secs(30)));
-    let keys = viewer_handshake(&mut c, password).map_err(|e| match e {
+    let peers = Peers { session, viewer: my_id, host: target_id };
+    let keys = viewer_handshake(&mut c, password, peers, credential).map_err(|e| match e {
+        elo_proto::Error::Auth if password.is_empty() => "o outro computador recusou o pedido (muitas tentativas em pouco tempo, ou a conexão foi desviada): tente de novo em alguns minutos".to_string(),
         elo_proto::Error::Auth => "senha incorreta (ou o computador bloqueou novas tentativas por alguns minutos)".to_string(),
         e => e.to_string(),
     })?;

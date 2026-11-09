@@ -199,6 +199,8 @@ pub struct Ask {
     pub reply: Sender<Option<Permissions>>,
     pub permissions: Permissions,
     pub at: Instant,
+    /// Técnico aprovado pela chave da empresa (certificado conferido).
+    pub verified: bool,
 }
 
 /// Atende os pedidos de acesso fora da janela. Com a senha de administrador
@@ -328,6 +330,10 @@ pub struct EloApp {
     pub help_text: String,
     /// Elo Cliente: código de convite sendo colado.
     pub invite_input: String,
+    /// Chaves de técnico já assinadas nesta execução (não reenvia a cada painel).
+    pub certified: Vec<(String, String)>,
+    /// Chave dos técnicos colada para importar (outro administrador).
+    pub ca_import: String,
 }
 
 /// Formulário de entrada do técnico.
@@ -351,7 +357,7 @@ impl EloApp {
             && let Some(text) = crate::variant::invite_file()
             && let Some(inv) = elo_proto::ctrl::Invite::decode(&text)
         {
-            settings.company = Some(CompanyCfg { invite: text.trim().to_string(), name: inv.name });
+            settings.company = Some(CompanyCfg { invite: text.trim().to_string(), name: inv.name, ca: inv.ca });
             settings.onboarded = true;
             settings.save();
         }
@@ -409,6 +415,8 @@ impl EloApp {
             help: None,
             help_text: String::new(),
             invite_input: String::new(),
+            certified: Vec::new(),
+            ca_import: String::new(),
         };
         app.answer.set(app.server_cfg(), app.host_options());
         if !app.settings.onboarded && !app.client_mode() {
@@ -469,8 +477,8 @@ impl EloApp {
 
     /// Liga este computador à empresa do convite (Elo Cliente).
     pub fn join_invite(&mut self, text: &str) -> Result<(), String> {
-        let inv = elo_proto::ctrl::Invite::decode(text).ok_or(t!("código de convite inválido: confira se copiou inteiro (começa com ELO1-)"))?;
-        self.settings.company = Some(CompanyCfg { invite: text.split_whitespace().collect(), name: inv.name });
+        let inv = elo_proto::ctrl::Invite::decode(text).ok_or(t!("código de convite inválido: confira se copiou inteiro (começa com ELO)"))?;
+        self.settings.company = Some(CompanyCfg { invite: text.split_whitespace().collect(), name: inv.name, ca: inv.ca });
         self.settings.onboarded = true;
         self.settings.tech = None;
         self.settings.save();
@@ -479,6 +487,47 @@ impl EloApp {
         self.local = Local::start(&LocalServer { enabled: false, ..self.settings.local_server.clone() });
         self.restart_control();
         Ok(())
+    }
+
+    /// Técnico: chave deste app e o certificado dela, se um administrador já aprovou.
+    pub fn tech_credential(&self) -> Option<elo_proto::secure::Credential> {
+        let secret = self.settings.tech_key()?;
+        let mine = elo_proto::cert::to_hex(&elo_proto::cert::public_of(&secret));
+        let o = self.overview.as_ref()?;
+        let cert = o.me.keys.iter().find(|k| k.key == mine && !k.cert.is_empty())?;
+        let cert = elo_proto::cert::SignedCert::from_text(&cert.cert)?;
+        Some(elo_proto::secure::Credential { secret, cert: cert.to_bytes() })
+    }
+
+    /// Administrador com a chave dos técnicos: aprova sozinho a chave deste
+    /// próprio app e renova as aprovações perto de vencer (a mesma chave já
+    /// aprovada). Chave nova de outro técnico só com o clique "Aprovar".
+    pub fn auto_certify(&mut self) {
+        let (Some(o), Some(ca)) = (self.overview.clone(), self.settings.ca_secret()) else { return };
+        if !o.me.admin || elo_proto::cert::to_hex(&elo_proto::cert::public_of(&ca)) != o.ca {
+            return;
+        }
+        let now = now_secs();
+        let mine = self.settings.tech_key().map(|k| elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k))).unwrap_or_default();
+        let ca_pub = elo_proto::cert::public_of(&ca);
+        for t in &o.techs {
+            for k in &t.keys {
+                let current = elo_proto::cert::SignedCert::from_text(&k.cert).filter(|c| c.valid(&ca_pub, now) && c.cert.user == t.user);
+                let renew = current.as_ref().is_some_and(|c| c.cert.expires < now + 30 * 86_400);
+                let own = t.user == o.me.user && k.key == mine && current.is_none();
+                if (own || renew) && !self.certified.contains(&(t.user.clone(), k.key.clone())) {
+                    self.certify(&t.user, &t.name, &k.key);
+                }
+            }
+        }
+    }
+
+    /// Assina e manda o certificado de uma chave de técnico.
+    pub fn certify(&mut self, user: &str, name: &str, key: &str) {
+        let (Some(ca), Some(k)) = (self.settings.ca_secret(), elo_proto::cert::key_from_hex(key)) else { return };
+        let cert = elo_proto::cert::issue(&ca, elo_proto::cert::TechCert { user: user.into(), name: name.into(), key: k, expires: now_secs() + elo_proto::cert::CERT_DAYS * 86_400 });
+        self.certified.push((user.to_string(), key.to_string()));
+        let _ = self.control.tx.send(Command::Manage(elo_proto::ctrl::Manage::Certify { user: user.into(), cert: cert.to_text() }));
     }
 
     /// Técnico: entra (ou cria o primeiro administrador).
@@ -503,7 +552,9 @@ impl EloApp {
         if !self.client_mode() && self.settings.unattended && !self.settings.permanent_password.is_empty() {
             passwords.push(self.settings.permanent_password.clone());
         }
-        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, audio: true }
+        // Elo Cliente com a chave dos técnicos: só técnico aprovado pede acesso.
+        let tech_ca = if self.client_mode() { self.settings.company.as_ref().and_then(|c| c.ca_key()) } else { None };
+        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, audio: true, id: self.my_id().unwrap_or_default().to_string(), tech_ca }
     }
 
     /// Servidor em uso: o local (se ligado) ou o configurado.
@@ -705,12 +756,24 @@ impl EloApp {
                     self.help = None;
                 }
                 Event::Features(f) => self.features = f,
-                Event::Company { name } => {
-                    if let Some(c) = self.settings.company.as_mut()
-                        && c.name != name
-                    {
+                Event::Company { name, ca } => {
+                    let mut warn = false;
+                    if let Some(c) = self.settings.company.as_mut() {
+                        let mut changed = c.name != name;
                         c.name = name;
-                        self.settings.save();
+                        // Convite antigo, sem a chave: fica com a do primeiro contato.
+                        if c.ca.is_empty() && elo_proto::cert::key_from_hex(&ca).is_some() {
+                            c.ca = ca;
+                            changed = true;
+                        } else if !c.ca.is_empty() && !ca.is_empty() && c.ca != ca {
+                            warn = true;
+                        }
+                        if changed {
+                            self.settings.save();
+                        }
+                    }
+                    if warn {
+                        self.error(t!("A chave dos técnicos informada pelo servidor não é a do seu convite. Este computador continua aceitando só os técnicos do convite; se a empresa trocou a chave, peça um convite novo."));
                     }
                 }
                 Event::LoggedIn { user, name, admin, token } => {
@@ -774,6 +837,7 @@ impl EloApp {
                         self.show_window(ctx);
                     }
                     self.overview = Some(o);
+                    self.auto_certify();
                 }
                 Event::Error(m) => {
                     // Tentativa de reconexão: o computador ainda está voltando, sem alarde.
@@ -799,7 +863,8 @@ impl EloApp {
                     let remote = Arc::new(Mutex::new(Remote::default()));
                     let (tx, rx) = channel();
                     let my = self.my_id().unwrap_or_default().to_string();
-                    let handle = session::viewer(self.server_cfg(), session, secret, password, my, self.settings.device_name.clone(), self.downloads(), remote.clone(), tx);
+                    let credential = self.tech_credential();
+                    let handle = session::viewer(self.server_cfg(), session, secret, password, my, self.settings.device_name.clone(), self.downloads(), remote.clone(), tx, target_id.clone(), credential);
                     let q = self.settings.quality;
                     let (jpeg, fps) = quality(q);
                     let _ = handle.cmd.send(session::Cmd::Quality { jpeg, fps });
@@ -861,13 +926,14 @@ impl EloApp {
         for h in self.hosts.iter_mut() {
             for e in h.events.try_iter() {
                 match e {
-                    HostEvent::Ask { from_id, from_name, sas, reply } => {
-                        new_asks.push(Ask { session: h.session, from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() });
+                    HostEvent::Ask { from_id, from_name, sas, reply, verified } => {
+                        new_asks.push(Ask { session: h.session, from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now(), verified: verified.is_some() });
                         show = true;
                     }
-                    HostEvent::Started { sas, password, .. } => {
+                    HostEvent::Started { sas, password, from_name, .. } => {
                         h.started = true;
                         h.sas = sas;
+                        h.from_name = from_name;
                         h.with_password = password.is_some();
                         // A primeira da lista de `host_options` é a temporária.
                         h.temporary = password == Some(0);
@@ -1025,11 +1091,16 @@ impl EloApp {
     }
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 /// O que o servidor deve saber deste app além do ID.
 fn identity(s: &Settings, client_mode: bool) -> client::Identity {
     client::Identity {
         company: s.company.as_ref().and_then(|c| c.decoded()).map(|i| (i.company, i.key)),
         tech_token: if client_mode { None } else { s.tech.as_ref().map(|t| t.token.clone()) },
+        tech_key: s.tech_key().map(|k| elo_proto::cert::to_hex(&elo_proto::cert::public_of(&k))).unwrap_or_default(),
     }
 }
 

@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cert;
 pub mod codec;
 pub mod ctrl;
 pub mod frame;
@@ -16,7 +17,9 @@ pub mod msg;
 pub mod secure;
 
 /// 2: gerenciador de arquivos (ListDir, DirListing, FileRequest, Notice).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: código de verificação com compromisso (8 dígitos), identidades no
+/// SPAKE2, prova do técnico (chave dos técnicos) e contas com chave.
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const DEFAULT_PORT: u16 = 21116;
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +32,10 @@ pub enum Error {
     Auth,
     #[error("integridade da mensagem falhou (canal adulterado ou chave errada)")]
     Crypto,
+    /// Quem pediu acesso parou no meio do aperto de mão, depois de ver a
+    /// mensagem deste lado (conta como tentativa: ver `secure`).
+    #[error("o outro lado desistiu no meio do aperto de mão")]
+    Abandoned,
     #[error("{0}")]
     Other(String),
 }
