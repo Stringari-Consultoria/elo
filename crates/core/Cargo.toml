@@ -36,6 +36,6 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.9"
-enigo = "0.5"
+enigo = "0.6"
 
 [dev-dependencies]
