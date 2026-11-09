@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use elo_proto::codec::{Decoder, Encoder};
 use elo_proto::ctrl::{FromServer, ToServer};
 use elo_proto::frame::{read_frame, write_frame};
-use elo_proto::msg::{DirEntry, Input, Monitor, Msg, Permissions};
+use elo_proto::msg::{DirEntry, Input, Key, Monitor, Msg, Permissions};
 use elo_proto::secure::{AuthMode, Opener, Sealer, host_handshake, viewer_handshake};
 
 use crate::net::{Conn, Framer, ServerCfg, connect};
@@ -192,6 +192,31 @@ impl Files {
         drop(f);
         Some(Transfer { id, name: p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), done, total, incoming: true, finished: true, path: Some(p) })
     }
+}
+
+/// Modificadores que transformam uma letra em atalho.
+const SHORTCUT_MODS: [Key; 3] = [Key::Control, Key::Alt, Key::Meta];
+
+/// Repassa a entrada ao sistema. Texto nunca é digitado com Ctrl, Alt ou Meta
+/// apertado: cada letra viraria um atalho no programa aberto. Vale também para
+/// visualizadores antigos, que colavam com o Ctrl da colagem ainda apertado.
+fn apply_input(ctl: &mut dyn platform::Control, held: &mut [bool; 3], input: &Input, monitor: u8) {
+    if let Input::Key { key, down } = input
+        && let Some(i) = SHORTCUT_MODS.iter().position(|m| m == key)
+    {
+        held[i] = *down;
+    }
+    let text = matches!(input, Input::Text(_));
+    let mods = |ctl: &mut dyn platform::Control, down: bool| {
+        for (key, on) in SHORTCUT_MODS.iter().zip(held.iter()) {
+            if *on && text {
+                ctl.apply(&Input::Key { key: *key, down }, monitor);
+            }
+        }
+    };
+    mods(ctl, false);
+    ctl.apply(input, monitor);
+    mods(ctl, true);
 }
 
 /// Pasta pessoal do usuário.
@@ -450,6 +475,8 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut enc = Encoder::new();
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
     let mut monitor = 0u8;
+    // Ctrl/Alt/Meta que o visualizador deixou apertados (ver `apply_input`).
+    let mut shortcut_mods = [false; 3];
     let mut seq = 0u32;
     let mut acked = 0u32;
     let mut last_frame = Instant::now() - Duration::from_secs(1);
@@ -482,7 +509,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     if perms.control
                         && let Some(ctl) = control.as_mut()
                     {
-                        ctl.apply(&i, monitor);
+                        apply_input(ctl.as_mut(), &mut shortcut_mods, &i, monitor);
                     }
                 }
                 Msg::Clipboard(t) => {
@@ -948,8 +975,44 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
     }
 }
 
-#[cfg(all(test, not(any(windows, target_os = "macos"))))]
+#[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Fake(Vec<Input>);
+
+    impl platform::Control for Fake {
+        fn apply(&mut self, input: &Input, _monitor: u8) {
+            self.0.push(input.clone());
+        }
+    }
+
+    fn key(key: Key, down: bool) -> Input {
+        Input::Key { key, down }
+    }
+
+    #[test]
+    fn text_never_goes_out_with_a_shortcut_modifier_held() {
+        let (mut c, mut held) = (Fake::default(), [false; 3]);
+        let paste = Input::Text("a-b".into());
+        for i in [key(Key::Control, true), paste.clone(), key(Key::Control, false)] {
+            apply_input(&mut c, &mut held, &i, 0);
+        }
+        assert_eq!(c.0, [key(Key::Control, true), key(Key::Control, false), paste, key(Key::Control, true), key(Key::Control, false)]);
+    }
+
+    #[test]
+    fn shortcuts_and_shift_stay_as_they_are() {
+        let (mut c, mut held) = (Fake::default(), [false; 3]);
+        let typed = [key(Key::Shift, true), Input::Text("A".into()), key(Key::Shift, false), key(Key::Control, true), key(Key::Char('s'), true), key(Key::Char('s'), false), key(Key::Control, false)];
+        for i in &typed {
+            apply_input(&mut c, &mut held, i, 0);
+        }
+        assert_eq!(c.0, typed);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn mounts_only_real_disks() {
         let table = "/dev/nvme0n1p3 / ext4 rw 0 0\nproc /proc proc rw 0 0\n/dev/loop0 /snap/bare/5 squashfs ro 0 0\n/dev/nvme0n1p2 /boot/efi vfat rw 0 0\n/dev/sdb1 /media/gabriel/ARQUIVOS ext4 rw 0 0\n/dev/sda1 /media/gabriel/BACKUPS ext4 rw 0 0\nlxcfs /var/lib/lxcfs fuse.lxcfs rw 0 0\ntmpfs /run/user/1000 tmpfs rw 0 0\n/dev/sdc1 /run/media/ana/MEU\\040PENDRIVE vfat rw 0 0\n//nas/fotos /mnt/nas cifs rw 0 0\n/dev/nvme0n1p4 /home ext4 rw 0 0\n/dev/sdb1 /media/gabriel/ARQUIVOS ext4 rw 0 0\n";

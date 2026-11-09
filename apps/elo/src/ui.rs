@@ -977,7 +977,12 @@ impl EloApp {
                             send(Input::Key { key: m, down: false });
                         }
                     }
-                    egui::Event::Paste(t) => send(Input::Text(t)),
+                    egui::Event::Paste(t) => {
+                        // Cmd/Ctrl+V ainda está apertado: sem soltar lá, cada letra
+                        // colada vira um atalho (o "-" vira Ctrl+-, que tira o zoom).
+                        sync_mods(&mut v.held, [false; 4], &send);
+                        send(Input::Text(t));
+                    }
                     _ => {}
                 }
             }
