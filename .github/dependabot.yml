@@ -1,0 +1,13 @@
+# Avisa por pull request quando uma dependência ou ação tem versão nova
+# (inclusive correções de segurança).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

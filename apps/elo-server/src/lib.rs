@@ -13,7 +13,8 @@
 //!
 //! Na mesma porta aceita o protocolo direto (TCP + TLS) e WebSocket (para ficar
 //! atrás de proxies HTTP como o Cloudflare Tunnel). Sem TLS, só aceita
-//! conexões vindas do próprio computador (o `cloudflared`, por exemplo).
+//! conexões vindas do próprio computador (o `cloudflared`, por exemplo) ou de
+//! um proxy configurado (`--proxy-confiavel`).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -143,27 +144,143 @@ struct State {
     /// Pedidos de ajuda abertos, por computador.
     help: Mutex<HashMap<String, HelpRequest>>,
     techs_online: Mutex<Vec<TechConn>>,
+    /// Proxies que podem falar sem TLS e informar o IP real (além do próprio computador).
+    proxies: Vec<(std::net::IpAddr, u8)>,
+    /// Conexões abertas por IP (limite contra quem abre milhares).
+    conns: std::sync::Mutex<HashMap<std::net::IpAddr, usize>>,
+    /// Envio do painel aos técnicos já agendado.
+    notify_queued: std::sync::atomic::AtomicBool,
+}
+
+/// Conexões abertas ao mesmo tempo, no total e por IP (fora os proxies).
+/// Por IP é folgado: um escritório inteiro sai pelo mesmo IP.
+const MAX_CONNS: usize = 8192;
+const MAX_CONNS_PER_IP: usize = 512;
+/// Sessão no relay sem nenhum byte por este tempo é encerrada (os apps
+/// mandam algo a cada poucos segundos).
+const RELAY_IDLE: Duration = Duration::from_secs(180);
+/// ID sem aparecer por este tempo (e fora de empresa) é esquecido.
+const ID_UNUSED_DAYS: u64 = 365;
+
+/// Vaga de conexão; devolvida ao sair.
+struct Slot {
+    state: Arc<State>,
+    ip: Option<std::net::IpAddr>,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut c = self.state.conns.lock().unwrap_or_else(|e| e.into_inner());
+        let key = self.ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        if let Some(n) = c.get_mut(&key) {
+            *n -= 1;
+            if *n == 0 {
+                c.remove(&key);
+            }
+        }
+    }
+}
+
+/// Trava do histórico de sessões: a limpeza não pode reescrever o arquivo
+/// enquanto uma sessão nova é gravada (a linha nova se perdia).
+static LOG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn append_log(p: &Path, text: &str) {
+    use std::io::Write;
+    let _g = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let mut o = std::fs::OpenOptions::new();
+    o.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    if let Ok(mut f) = o.open(p) {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
+/// "10.0.0.5" ou "172.16.0.0/12".
+fn parse_net(s: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (ip, bits) = match s.trim().split_once('/') {
+        Some((ip, b)) => (ip.parse::<std::net::IpAddr>().ok()?, b.parse::<u8>().ok()?),
+        None => {
+            let ip: std::net::IpAddr = s.trim().parse().ok()?;
+            (ip, if ip.is_ipv4() { 32 } else { 128 })
+        }
+    };
+    (bits <= if ip.is_ipv4() { 32 } else { 128 }).then_some((ip, bits))
+}
+
+fn in_net(ip: std::net::IpAddr, (net, bits): (std::net::IpAddr, u8)) -> bool {
+    // IPv4 dentro de IPv6 ("::ffff:10.0.0.5") conta como IPv4.
+    let ip = match ip {
+        std::net::IpAddr::V6(v) => v.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    };
+    match (ip, net) {
+        (std::net::IpAddr::V4(a), std::net::IpAddr::V4(n)) => bits == 0 || (u32::from(a) >> (32 - bits as u32)) == (u32::from(n) >> (32 - bits as u32)),
+        (std::net::IpAddr::V6(a), std::net::IpAddr::V6(n)) => bits == 0 || (u128::from(a) >> (128 - bits as u32)) == (u128::from(n) >> (128 - bits as u32)),
+        _ => false,
+    }
 }
 
 impl State {
     async fn save_ids(&self) {
-        let ids = self.ids.lock().await;
-        if let Ok(j) = serde_json::to_vec_pretty(&*ids) {
-            let tmp = self.data.join("ids.json.tmp");
-            if tokio::fs::write(&tmp, j).await.is_ok() {
-                let _ = tokio::fs::rename(&tmp, self.data.join("ids.json")).await;
-            }
+        let j = serde_json::to_vec_pretty(&*self.ids.lock().await);
+        if let Ok(j) = j {
+            let p = self.data.join("ids.json");
+            let _ = tokio::task::spawn_blocking(move || gestao::write_private(&p, &j)).await;
         }
     }
 
     async fn save_known(&self) {
-        let k = self.known.lock().await;
-        if let Ok(j) = serde_json::to_vec_pretty(&*k) {
-            let tmp = self.data.join("dispositivos.json.tmp");
-            if tokio::fs::write(&tmp, j).await.is_ok() {
-                let _ = tokio::fs::rename(&tmp, self.data.join("dispositivos.json")).await;
-            }
+        let j = serde_json::to_vec_pretty(&*self.known.lock().await);
+        if let Ok(j) = j {
+            let p = self.data.join("dispositivos.json");
+            let _ = tokio::task::spawn_blocking(move || gestao::write_private(&p, &j)).await;
         }
+    }
+
+    /// O próprio computador ou um proxy configurado.
+    fn trusted(&self, ip: std::net::IpAddr) -> bool {
+        let local = match ip {
+            std::net::IpAddr::V4(v) => v.is_loopback(),
+            std::net::IpAddr::V6(v) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|m| m.is_loopback()),
+        };
+        local || self.proxies.iter().any(|n| in_net(ip, *n))
+    }
+
+    /// Reserva uma vaga de conexão (`None` = cheio).
+    fn slot(self: &Arc<Self>, ip: std::net::IpAddr) -> Option<Slot> {
+        let mut c = self.conns.lock().unwrap_or_else(|e| e.into_inner());
+        let total: usize = c.values().sum();
+        // Atrás de proxy todos chegam com o IP dele: só o limite total vale.
+        let key = if self.trusted(ip) { None } else { Some(ip) };
+        let k = key.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        let mine = c.get(&k).copied().unwrap_or(0);
+        if total >= MAX_CONNS || (key.is_some() && mine >= MAX_CONNS_PER_IP) {
+            return None;
+        }
+        c.insert(k, mine + 1);
+        Some(Slot { state: self.clone(), ip: key })
+    }
+
+    /// Esquece IDs que não aparecem há mais de `ID_UNUSED_DAYS` dias e não
+    /// são de nenhuma empresa (sem isto, `ids.json` só crescia).
+    async fn expire_ids(&self) {
+        let limit = now_secs().saturating_sub(ID_UNUSED_DAYS * 86_400);
+        let online: Vec<String> = self.online.lock().await.keys().cloned().collect();
+        let managed: Vec<String> = self.gestao.lock().await.devices.keys().cloned().collect();
+        let old: Vec<String> = self.known.lock().await.iter().filter(|(id, k)| k.seen > 0 && k.seen < limit && !online.contains(id) && !managed.contains(id)).map(|(id, _)| id.clone()).collect();
+        if old.is_empty() {
+            return;
+        }
+        self.ids.lock().await.retain(|_, id| !old.contains(id));
+        self.known.lock().await.retain(|id, _| !old.contains(id));
+        self.save_ids().await;
+        self.save_known().await;
+        eprintln!("[~] {} IDs sem uso há mais de {ID_UNUSED_DAYS} dias foram esquecidos", old.len());
     }
 
     /// O que o técnico vê no painel (`None` se a conta não existe mais).
@@ -204,8 +321,24 @@ impl State {
         Some(Overview { me: tech(me), companies, devices, requests, techs: if me.admin { g.techs.iter().map(tech).collect() } else { Vec::new() } })
     }
 
+    /// Painel atualizado a todos os técnicos, juntando os avisos de meio
+    /// segundo: antes, cada computador que entrava ou saía mandava o painel
+    /// inteiro a todos os técnicos.
+    async fn notify_techs(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.notify_queued.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let st = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            st.notify_queued.store(false, Ordering::SeqCst);
+            st.notify_now().await;
+        });
+    }
+
     /// Manda o painel atualizado a todos os técnicos logados.
-    async fn notify_techs(&self) {
+    async fn notify_now(&self) {
         let list: Vec<(String, mpsc::Sender<FromServer>)> = self.techs_online.lock().await.iter().map(|t| (t.user.clone(), t.tx.clone())).collect();
         for (user, tx) in list {
             if let Some(o) = self.overview(&user).await {
@@ -219,10 +352,8 @@ impl State {
     }
 
     async fn log_session(&self, line: serde_json::Value) {
-        use tokio::io::AsyncWriteExt as _;
-        if let Ok(mut f) = tokio::fs::OpenOptions::new().create(true).append(true).open(self.data.join("sessoes.jsonl")).await {
-            let _ = f.write_all(format!("{line}\n").as_bytes()).await;
-        }
+        let p = self.data.join("sessoes.jsonl");
+        let _ = tokio::task::spawn_blocking(move || append_log(&p, &format!("{line}\n"))).await;
     }
 }
 
@@ -232,20 +363,18 @@ fn prune_log(data: &Path, days: u32) {
         return;
     }
     let p = data.join("sessoes.jsonl");
+    let _g = LOG.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(text) = std::fs::read_to_string(&p) else { return };
     let limit = now_secs().saturating_sub(days as u64 * 86_400);
     let keep: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).ok().and_then(|v| v["fim"].as_u64()).is_none_or(|fim| fim >= limit)).collect();
     if keep.len() == text.lines().count() {
         return;
     }
-    let tmp = data.join("sessoes.jsonl.tmp");
     let body = if keep.is_empty() { String::new() } else { format!("{}\n", keep.join("\n")) };
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, &p);
-    }
+    gestao::write_private(&p, body.as_bytes());
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
@@ -256,9 +385,23 @@ const MAX_FRAMES_PER_SEC: u32 = 120;
 /// IDs novos por endereço e por dia (uma empresa instalando em massa cabe aqui).
 const NEW_IDS_PER_DAY: usize = 200;
 
-/// Texto do cliente, curto e sem caracteres de controle.
+/// Texto do cliente, curto, numa linha e sem caracteres de controle nem
+/// invisíveis (vai para o disco, os registros e a tela dos técnicos).
 fn short_text(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(64).collect()
+    elo_proto::plain_text(s, 64)
+}
+
+/// Nome de quem pede acesso sem conta de técnico: sem parênteses, para não
+/// se passar por "Fulano (técnico)", que só o servidor escreve.
+fn requester_name(s: &str) -> String {
+    short_text(&s.replace(['(', ')', '[', ']'], " "))
+}
+
+/// A entrada de técnico desta conexão ainda vale? (conta removida, senha
+/// trocada ou entrada vencida derrubam o acesso na hora, não só na próxima vez).
+async fn tech_valid(state: &State, user: &str, token_h: &Option<String>) -> bool {
+    let g = state.gestao.lock().await;
+    g.tech(user).zip(token_h.as_ref()).is_some_and(|(t, h)| t.token_ok(h, now_secs()))
 }
 
 async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 32], name: String, os: String, version: u32, mac: String) {
@@ -363,6 +506,16 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
             break;
         }
         let Ok(m) = postcard::from_bytes::<ToServer>(&frame) else { break };
+        if matches!(m, ToServer::Connect { .. } | ToServer::Wake { .. } | ToServer::Manage(_))
+            && let Some((user, _)) = &tech
+            && !tech_valid(&state, user, &token_h).await
+        {
+            tech = None;
+            token_h = None;
+            state.techs_online.lock().await.retain(|t| t.conn != conn);
+            err(ErrorCode::Auth, "sua entrada de técnico não vale mais (conta removida, senha trocada ou entrada vencida): entre de novo");
+            continue;
+        }
         match m {
             ToServer::Ping => {
                 let _ = tx.try_send(FromServer::Pong);
@@ -370,8 +523,19 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
             ToServer::Connect { target, from_name } => {
                 let target = elo_proto::ctrl::clean_id(&target);
                 let ok_ip = state.limits.lock().await.allow(&format!("connect:{}", peer.ip()), 20);
-                let ok_target = state.limits.lock().await.allow(&format!("target:{target}"), 30);
-                if !ok_ip || !ok_target {
+                if !ok_ip {
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitas tentativas de conexão; aguarde um minuto".into() });
+                    continue;
+                }
+                // Só IDs que existem contam no limite do alvo, e técnicos não contam:
+                // antes, 30 pedidos por minuto a um ID impediam o técnico de entrar.
+                let exists = target.len() == 9 && target.bytes().all(|b| b.is_ascii_digit()) && state.ids.lock().await.values().any(|v| *v == target);
+                if !exists {
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::NotFound, message: "ID não encontrado".into() });
+                    continue;
+                }
+                let ok_target = tech.is_some() || state.limits.lock().await.allow(&format!("target:{target}"), 30);
+                if !ok_target {
                     let _ = tx.try_send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitas tentativas de conexão; aguarde um minuto".into() });
                     continue;
                 }
@@ -394,7 +558,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 }
                 let from_name = match &tech {
                     Some((_, tname)) => format!("{tname} (técnico)"),
-                    None => from_name,
+                    None => requester_name(&from_name),
                 };
                 let on = state.online.lock().await;
                 let Some(host) = on.get(&target).and_then(|v| v.last()) else {
@@ -494,6 +658,11 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     continue;
                 }
                 let user = gestao::norm_user(&user);
+                // Por usuário também: vários IPs não somam tentativas sem fim na mesma conta.
+                if !state.limits.lock().await.allow_in(&format!("login-usuario:{user}"), 10, Duration::from_secs(900)) {
+                    err(ErrorCode::RateLimited, "muitas tentativas para esse usuário; aguarde 15 minutos");
+                    continue;
+                }
                 if user.is_empty() || password.chars().count() < 8 {
                     err(ErrorCode::Auth, "informe o usuário e uma senha de 8 caracteres ou mais");
                     continue;
@@ -513,12 +682,12 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     {
                         let mut g = state.gestao.lock().await;
                         let name = if display.trim().is_empty() { user.clone() } else { display.trim().to_string() };
-                        g.techs.push(TechRec { user: user.clone(), name, hash, admin: true, tokens: Vec::new() });
+                        g.techs.push(TechRec { user: user.clone(), name, hash, admin: true, tokens: Vec::new(), token_seen: HashMap::new() });
                         state.save_gestao(&g);
                     }
                     *state.setup.lock().await = None;
                     gestao::remove_setup_file(&state.data);
-                    eprintln!("[técnico] administrador {user} criado");
+                    eprintln!("[técnico] administrador {user:?} criado");
                 } else {
                     if !has_techs {
                         let _ = tx.try_send(FromServer::NeedsSetup);
@@ -537,7 +706,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     .await
                     .unwrap_or(false);
                     if !ok {
-                        eprintln!("[técnico] senha errada para {user} de {peer}");
+                        eprintln!("[técnico] senha errada para {user:?} de {peer}");
                         err(ErrorCode::Auth, "usuário ou senha incorretos");
                         continue;
                     }
@@ -546,11 +715,14 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let me = {
                     let mut g = state.gestao.lock().await;
                     let me = g.techs.iter_mut().find(|t| t.user == user).map(|t| {
-                        t.tokens.push(gestao::token_hash(&token));
+                        let h = gestao::token_hash(&token);
+                        t.tokens.push(h.clone());
+                        t.token_seen.insert(h, now_secs());
                         let n = t.tokens.len();
                         if n > 20 {
                             t.tokens.drain(..n - 20);
                         }
+                        t.prune_tokens(now_secs());
                         (t.user.clone(), t.name.clone(), t.admin)
                     });
                     state.save_gestao(&g);
@@ -566,7 +738,15 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     err(ErrorCode::RateLimited, "muitas tentativas de entrar; aguarde um minuto");
                     continue;
                 }
-                let me = state.gestao.lock().await.by_token(&token).map(|t| (t.user.clone(), t.name.clone(), t.admin));
+                let me = {
+                    let mut g = state.gestao.lock().await;
+                    let me = g.by_token(&token).map(|t| (t.user.clone(), t.name.clone(), t.admin));
+                    // A validade foi renovada: grava.
+                    if me.is_some() {
+                        state.save_gestao(&g);
+                    }
+                    me
+                };
                 match me {
                     Some((user, name, admin)) => {
                         token_h = Some(gestao::token_hash(&token));
@@ -745,7 +925,7 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
             let hash = tokio::task::spawn_blocking(move || gestao::hash_password(&password)).await.map_err(|e| e.to_string())??;
             let mut g = state.gestao.lock().await;
             let name = if name.trim().is_empty() { user.clone() } else { clean(&name, 80) };
-            g.techs.push(TechRec { user: user.clone(), name, hash, admin: is_admin, tokens: Vec::new() });
+            g.techs.push(TechRec { user: user.clone(), name, hash, admin: is_admin, tokens: Vec::new(), token_seen: HashMap::new() });
             state.save_gestao(&g);
             eprintln!("[técnico] {me} criou a conta {user}");
         }
@@ -768,9 +948,12 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
             eprintln!("[técnico] {me} removeu a conta {user}");
         }
         Manage::SetPassword { user, password } => {
-            if user != me {
-                need_admin()?;
+            // Trocar a própria senha exigiria a atual (quem achou o token não
+            // pode tomar a conta); por enquanto, só um administrador troca a dos outros.
+            if user == me {
+                return Err("peça a outro administrador para trocar a sua senha".into());
             }
+            need_admin()?;
             if password.chars().count() < 8 {
                 return Err("a senha precisa de 8 caracteres ou mais".into());
             }
@@ -807,9 +990,9 @@ async fn relay(a: BoxStream, b: BoxStream) -> (u64, u64) {
         let mut buf = vec![0u8; 32 * 1024];
         let mut open = true;
         loop {
-            let k = match r.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(k) => k,
+            let k = match tokio::time::timeout(RELAY_IDLE, r.read(&mut buf)).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(k)) => k,
             };
             if open {
                 if w.write_all(&buf[..k]).await.is_err() || w.flush().await.is_err() {
@@ -922,15 +1105,6 @@ async fn handle(state: Arc<State>, s: BoxStream, peer: SocketAddr) {
     }
 }
 
-/// Proxy em que se confia para informar o IP real do cliente: o próprio
-/// computador ou uma rede privada (ex.: cloudflared num contêiner Docker).
-fn trusted_proxy(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local(),
-        std::net::IpAddr::V6(v) => v.is_loopback() || v.is_unique_local() || v.to_ipv4_mapped().is_some_and(|m| m.is_loopback() || m.is_private()),
-    }
-}
-
 /// IP real do cliente atrás do proxy (só confiável quando o proxy é local).
 fn forwarded_ip(req: &tokio_tungstenite::tungstenite::handshake::server::Request) -> Option<std::net::IpAddr> {
     let h = req.headers();
@@ -946,8 +1120,15 @@ async fn websocket(state: Arc<State>, s: tokio::io::BufReader<BoxStream>, peer: 
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
     let mut real = peer;
+    // Só o próprio computador ou um proxy configurado informam o IP real:
+    // antes, qualquer IP privado podia forjar o cabeçalho e zerar os limites.
+    let trusted = state.trusted(peer.ip());
     let cb = |req: &tokio_tungstenite::tungstenite::handshake::server::Request, resp| {
-        if trusted_proxy(peer.ip())
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !trusted && forwarded_ip(req).is_some() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("aviso: {} mandou o IP real do cliente, mas não é um proxy confiável; o cabeçalho foi ignorado. Se for o seu cloudflared, inicie com --proxy-confiavel {}", peer.ip(), peer.ip());
+        }
+        if trusted
             && let Some(ip) = forwarded_ip(req)
         {
             real = SocketAddr::new(ip, 0);
@@ -1032,6 +1213,9 @@ pub struct Config {
     pub tls: Tls,
     /// Dias que o histórico de sessões (`sessoes.jsonl`) é guardado; 0 = para sempre.
     pub retention_days: u32,
+    /// Proxies que podem falar sem TLS e informar o IP real do cliente
+    /// ("10.0.0.5" ou "172.16.0.0/12"). O próprio computador sempre pode.
+    pub trusted_proxies: Vec<String>,
 }
 
 /// Impressão digital SHA-256 (hex) de um certificado DER.
@@ -1073,11 +1257,9 @@ fn tls_config(cfg: &Config) -> std::io::Result<Option<(Arc<rustls::ServerConfig>
             if !cp.exists() || !kp.exists() {
                 let ck = rcgen::generate_simple_self_signed(vec!["elo".into(), "localhost".into()]).map_err(std::io::Error::other)?;
                 std::fs::write(&cp, ck.cert.pem())?;
-                std::fs::write(&kp, ck.key_pair.serialize_pem())?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&kp, std::fs::Permissions::from_mode(0o600));
+                // A chave nasce só para o dono (antes ficava aberta por um instante).
+                if !gestao::write_private(&kp, ck.key_pair.serialize_pem().as_bytes()) {
+                    return Err(std::io::Error::other(format!("não foi possível gravar {}", kp.display())));
                 }
             }
             let (c, k) = load_pem(&cp, &kp)?;
@@ -1110,7 +1292,17 @@ impl Server {
     /// Prepara a pasta de dados, o TLS e abre a porta.
     pub async fn bind(cfg: Config) -> std::io::Result<Server> {
         std::fs::create_dir_all(&cfg.data)?;
-        let ids: HashMap<String, String> = std::fs::read(cfg.data.join("ids.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&cfg.data, std::fs::Permissions::from_mode(0o700));
+        }
+        let mut proxies = Vec::new();
+        for p in &cfg.trusted_proxies {
+            proxies.push(parse_net(p).ok_or_else(|| std::io::Error::other(format!("proxy confiável inválido: {p} (use um IP ou uma rede como 172.16.0.0/12)")))?);
+        }
+        // Arquivo ilegível impede a subida: começar vazio apagaria os IDs e as empresas.
+        let ids: HashMap<String, String> = gestao::load_json(&cfg.data.join("ids.json"))?;
         let (tls, fingerprint) = match tls_config(&cfg)? {
             Some((t, fp)) => (Some(tokio_rustls::TlsAcceptor::from(t)), fp),
             None => (None, None),
@@ -1118,13 +1310,14 @@ impl Server {
         let listener = TcpListener::bind(&cfg.listen).await.map_err(|e| std::io::Error::new(e.kind(), format!("porta {}: {e}", cfg.listen)))?;
         let local_addr = listener.local_addr()?;
         prune_log(&cfg.data, cfg.retention_days);
-        let known: HashMap<String, Known> = std::fs::read(cfg.data.join("dispositivos.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let gestao = Gestao::load(&cfg.data);
+        let known: HashMap<String, Known> = gestao::load_json(&cfg.data.join("dispositivos.json"))?;
+        let gestao = Gestao::load(&cfg.data)?;
         // Sem técnicos: código de primeiro acesso para criar o administrador.
         let setup = if gestao.techs.is_empty() {
             let code = gestao::setup_code();
             gestao::write_setup_file(&cfg.data, &code);
-            eprintln!("Primeiro acesso: no app do Elo, em Configurações → Conta de técnico, crie o administrador com o código {code}");
+            // O código não vai para os registros (outros usuários podem lê-los).
+            eprintln!("Primeiro acesso: no app do Elo, em Configurações → Conta de técnico, crie o administrador com o código que está em {}", cfg.data.join("primeiro-acesso.txt").display());
             Some(code)
         } else {
             gestao::remove_setup_file(&cfg.data);
@@ -1143,6 +1336,9 @@ impl Server {
             setup: Mutex::new(setup),
             help: Mutex::new(HashMap::new()),
             techs_online: Mutex::new(Vec::new()),
+            proxies,
+            conns: std::sync::Mutex::new(HashMap::new()),
+            notify_queued: std::sync::atomic::AtomicBool::new(false),
         });
         Ok(Server { listener, tls, state, local_addr, fingerprint })
     }
@@ -1163,10 +1359,13 @@ impl Server {
                 // Retenção do histórico: uma vez por hora.
                 if last_prune.elapsed() > Duration::from_secs(3600) {
                     last_prune = Instant::now();
-                    prune_log(&st.data, st.retention_days.load(std::sync::atomic::Ordering::Relaxed));
+                    let (data, days) = (st.data.clone(), st.retention_days.load(std::sync::atomic::Ordering::Relaxed));
+                    let _ = tokio::task::spawn_blocking(move || prune_log(&data, days)).await;
+                    st.expire_ids().await;
                 }
                 st.pending.lock().await.retain(|_, p| p.created.elapsed() < Duration::from_secs(150));
-                st.limits.lock().await.hits.retain(|_, v| v.last().is_some_and(|t| t.elapsed() < Duration::from_secs(60)));
+                // Janelas de até um dia (IDs novos por IP): só some quando a mais longa passou.
+                st.limits.lock().await.hits.retain(|_, v| v.last().is_some_and(|t| t.elapsed() < Duration::from_secs(24 * 3600)));
             }
         });
         // Para a limpeza quando o servidor é descartado.
@@ -1188,9 +1387,12 @@ impl Server {
                 }
             };
             let _ = sock.set_nodelay(true);
+            // Sem limite, milhares de conexões paradas esgotavam os descritores.
+            let Some(slot) = state.slot(peer.ip()) else { continue };
             let state = state.clone();
             let tls = tls.clone();
             tokio::spawn(async move {
+                let _slot = slot;
                 let s: BoxStream = match tls {
                     Some(acc) => {
                         // TLS começa com 0x16 (handshake). Sem TLS, só do próprio
@@ -1202,13 +1404,15 @@ impl Server {
                                 Ok(Ok(t)) => Box::new(t),
                                 _ => return,
                             }
-                        } else if peer.ip().is_loopback() {
+                        } else if state.trusted(peer.ip()) {
                             Box::new(sock)
                         } else {
                             return;
                         }
                     }
-                    None => Box::new(sock),
+                    // Sem TLS (`--no-tls`): senhas e tokens iriam abertos pela rede.
+                    None if state.trusted(peer.ip()) => Box::new(sock),
+                    None => return,
                 };
                 handle(state, s, peer).await;
             });

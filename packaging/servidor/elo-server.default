@@ -10,5 +10,10 @@
 #                             --data /var/lib/elo-server)
 #   --cert C.pem --key K.pem  certificado público (Let's Encrypt etc.)
 #   --no-tls                  só atrás de um túnel/proxy que já faz TLS
-#                             (Cloudflare Tunnel usa WebSocket na mesma porta)
+#                             (Cloudflare Tunnel usa WebSocket na mesma porta);
+#                             aceita só o próprio computador e os proxies abaixo
+#
+#   --proxy-confiavel IP|REDE proxy em outro endereço (ex.: cloudflared num
+#                             contêiner, 172.16.0.0/12) que pode falar sem TLS e
+#                             informar o IP real dos clientes; repita para vários
 ELO_SERVER_ARGS="--listen 0.0.0.0:21116 --data /var/lib/elo-server --self-signed --retencao-dias 90"

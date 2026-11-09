@@ -592,7 +592,7 @@ impl EloApp {
                         self.toast(t!("Senha copiada"));
                     }
                     if light_button(ui, Icon::Refresh, t!("Gerar nova senha")).clicked() {
-                        self.temp_password = elo_core::temp_password();
+                        self.new_temp_password();
                         self.toast(t!("Nova senha temporária gerada (a anterior deixa de valer)"));
                     }
                 });

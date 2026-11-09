@@ -138,29 +138,50 @@ pub struct Decoder {
 }
 
 
+/// Maior lado de uma tela recebida.
+pub const MAX_SIDE: u32 = 16384;
+/// Maior área (8K dos dois lados cabe; 256 MiB de RGBA no máximo).
+pub const MAX_PIXELS: u64 = 8192 * 8192;
+
 impl Decoder {
-    pub fn resize(&mut self, w: u32, h: u32) {
+    /// `false` se o tamanho não faz sentido: sem o teto, um anfitrião
+    /// malicioso derrubava o app de quem acessa com `w * h * 4` estourando.
+    pub fn resize(&mut self, w: u32, h: u32) -> bool {
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || w as u64 * h as u64 > MAX_PIXELS {
+            return false;
+        }
         if w != self.w || h != self.h {
             self.w = w;
             self.h = h;
-            self.rgba = vec![0; (w * h * 4) as usize];
+            self.rgba = vec![0; w as usize * h as usize * 4];
         }
+        true
     }
 
     pub fn apply(&mut self, t: &Tile) -> bool {
         let (tw, th) = (t.w as u32, t.h as u32);
-        if t.x as u32 + tw > self.w || t.y as u32 + th > self.h {
+        if tw == 0 || th == 0 || t.x as u32 + tw > self.w || t.y as u32 + th > self.h {
             return false;
         }
+        let need = tw as usize * th as usize * 4;
         let px: Vec<u8> = if t.raw {
+            if t.data.len() != need {
+                return false;
+            }
             t.data.clone()
         } else {
-            match image::load_from_memory_with_format(&t.data, image::ImageFormat::Jpeg) {
+            // Confere o tamanho no cabeçalho antes de descomprimir: um JPEG
+            // pequeno pode declarar 65535 x 65535 e pedir gigabytes.
+            let reader = || image::ImageReader::with_format(std::io::Cursor::new(&t.data), image::ImageFormat::Jpeg);
+            if reader().into_dimensions().ok() != Some((tw, th)) {
+                return false;
+            }
+            match reader().decode() {
                 Ok(img) => img.to_rgba8().into_raw(),
                 Err(_) => return false,
             }
         };
-        if px.len() < (tw * th * 4) as usize {
+        if px.len() < need {
             return false;
         }
         for y in 0..th {
@@ -196,12 +217,27 @@ mod tests {
         assert_eq!(enc.refine(90, 100).len(), 12);
         assert!(enc.refine(90, 100).is_empty());
         let mut dec = Decoder::default();
-        dec.resize(w, h);
-        for t in enc.encode(&img, w, h, 95, true).0 {
-            assert!(dec.apply(&t));
+        assert!(dec.resize(w, h));
+        let tiles = enc.encode(&img, w, h, 95, true).0;
+        for t in &tiles {
+            assert!(dec.apply(t));
         }
         // JPEG com perdas: o branco continua quase branco.
         assert!(dec.rgba[0] > 240);
         let _ = enc.hash_of(0, 0);
+        // Bloco que diz um tamanho e traz outro é recusado.
+        let jpeg = tiles.iter().find(|t| !t.raw).expect("jpeg").clone();
+        assert!(!dec.apply(&Tile { w: jpeg.w / 2, ..jpeg.clone() }));
+        assert!(!dec.apply(&Tile { x: 0, y: 0, w: 2, h: 2, data: vec![0; 15], raw: true }));
+    }
+
+    #[test]
+    fn absurd_screen_size_is_refused() {
+        let mut dec = Decoder::default();
+        assert!(!dec.resize(u32::MAX, u32::MAX));
+        assert!(!dec.resize(65535, 65535));
+        assert!(!dec.resize(0, 1080));
+        assert!(dec.rgba.is_empty());
+        assert!(dec.resize(3840, 2160));
     }
 }

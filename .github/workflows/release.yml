@@ -6,16 +6,21 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Só leitura por padrão; quem publica pede mais (o job release e o docker).
+# Ações fixadas por SHA (o comentário diz a versão): etiqueta móvel deixaria
+# quem controla a ação trocar o código que roda aqui.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   linux:
     # A versão mais antiga suportada: o .deb pede a glibc daqui (2.35) ou mais nova.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb1-dev libxdo-dev libasound2-dev libpipewire-0.3-0 libclang-dev fakeroot
       # O libspa 0.10 precisa de cabeçalhos do PipeWire mais novos que os do 22.04.
       - run: scripts/pipewire-cabecalhos.sh
@@ -23,7 +28,7 @@ jobs:
       - run: scripts/pacote-linux.sh
         env:
           VARIANTE: cliente
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: elo-linux
           path: dist/*
@@ -40,15 +45,17 @@ jobs:
             arq: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - run: sudo apt-get update && sudo apt-get install -y fakeroot
       - run: scripts/pacote-servidor.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: elo-servidor-${{ matrix.arq }}
           path: dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: binario-servidor-${{ matrix.arq }}
           path: docker-bin/*
@@ -62,15 +69,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: binario-servidor-*
           path: packaging/docker
           merge-multiple: true
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -80,7 +89,7 @@ jobs:
         run: |
           V="${GITHUB_REF_NAME#v}"
           echo "lista=ghcr.io/stringari-consultoria/elo-server:$V,ghcr.io/stringari-consultoria/elo-server:latest" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: packaging/docker
           platforms: linux/amd64,linux/arm64
@@ -95,20 +104,32 @@ jobs:
     runs-on: macos-latest
     # Assinatura e notarização da Apple: só acontecem com estes secrets
     # configurados no repositório (veja o README). Sem eles, assinatura ad hoc.
+    # Os secrets ficam só no passo do certificado: a compilação (centenas de
+    # pacotes de terceiros, com scripts de build) roda antes e sem eles.
     env:
-      APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
-      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-      APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      TEM_CERTIFICADO: ${{ secrets.APPLE_CERT_P12 != '' }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Compilar (sem secrets)
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$t" -p elo -p elo-server
+          done
       - name: Certificado Developer ID (se configurado)
-        if: env.APPLE_CERT_P12 != ''
+        if: env.TEM_CERTIFICADO == 'true'
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           KC="$RUNNER_TEMP/elo.keychain-db"
           security create-keychain -p "" "$KC"
@@ -129,7 +150,7 @@ jobs:
       - run: scripts/pacote-macos.sh
         env:
           VARIANTE: cliente
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: elo-macos
           path: |
@@ -140,31 +161,35 @@ jobs:
     runs-on: windows-latest
     # Assinatura Authenticode pela SignPath (gratuita para código aberto):
     # só acontece com os secrets configurados (veja o README). Sem eles, sai
-    # sem assinatura, como antes.
+    # sem assinatura, como antes. O token fica só no passo da assinatura.
     env:
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      ASSINAR: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: choco install innosetup -y --no-progress
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - run: choco install innosetup --version 6.7.1 -y --no-progress
       - run: scripts/pacote-windows.ps1
         shell: pwsh
       - run: scripts/pacote-windows.ps1
         shell: pwsh
         env:
           VARIANTE: cliente
+      # Nome fora do padrão elo-*: senão o job release baixava este junto e
+      # o arquivo sem assinatura podia sobrescrever o assinado.
       - name: Pacotes para assinar
-        if: env.SIGNPATH_API_TOKEN != ''
+        if: env.ASSINAR == 'true'
         id: sem-assinatura
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: elo-windows-sem-assinatura
+          name: para-assinar-windows
           path: |
             dist/*.exe
             dist/*.zip
       - name: Assinatura (SignPath)
-        if: env.SIGNPATH_API_TOKEN != ''
-        uses: signpath/github-action-submit-signing-request@v1
+        if: env.ASSINAR == 'true'
+        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
@@ -173,7 +198,7 @@ jobs:
           github-artifact-id: ${{ steps.sem-assinatura.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: elo-windows
           path: |
@@ -184,9 +209,13 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [linux, macos, windows, servidor]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: elo-*
           path: dist
@@ -206,7 +235,7 @@ jobs:
           openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/chave.pem" -in dist/latest.json -out dist/latest.json.sig
           rm -f "$RUNNER_TEMP/chave.pem"
           cat dist/latest.json
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           generate_release_notes: true

@@ -74,6 +74,10 @@ impl Conn {
     pub fn set_read_timeout(&self, d: Option<Duration>) {
         let _ = self.tcp().set_read_timeout(d);
     }
+
+    pub fn set_write_timeout(&self, d: Option<Duration>) {
+        let _ = self.tcp().set_write_timeout(d);
+    }
 }
 
 impl Read for Conn {
@@ -231,6 +235,8 @@ fn transport(addr: &str, tls: bool, pin: &str) -> Result<Conn, String> {
 /// Leitor de quadros que tolera timeouts no meio de um quadro.
 pub struct Framer {
     buf: Vec<u8>,
+    /// Maior quadro aceito (menor enquanto o outro lado não foi aceito).
+    max: usize,
 }
 
 impl Default for Framer {
@@ -241,35 +247,63 @@ impl Default for Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(1 << 16) }
+        Self { buf: Vec::with_capacity(1 << 16), max: elo_proto::frame::MAX_FRAME }
+    }
+
+    /// Muda o maior quadro aceito.
+    pub fn set_max(&mut self, max: usize) {
+        self.max = max;
     }
 
     /// Próximo quadro completo, `Ok(None)` se ainda não chegou.
     pub fn poll(&mut self, r: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
         loop {
-            if let Some(f) = self.take() {
+            if let Some(f) = self.take()? {
                 return Ok(Some(f));
             }
             let mut tmp = [0u8; 64 * 1024];
             match r.read(&mut tmp) {
                 Ok(0) => return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "conexão encerrada")),
                 Ok(n) => self.buf.extend_from_slice(&tmp[..n]),
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => return Ok(self.take()),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted) => return self.take(),
                 Err(e) => return Err(e),
             }
         }
     }
 
-    fn take(&mut self) -> Option<Vec<u8>> {
+    fn take(&mut self) -> std::io::Result<Option<Vec<u8>>> {
         if self.buf.len() < 4 {
-            return None;
+            return Ok(None);
         }
         let n = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        // Sem isto, um tamanho de 4 GiB fazia a memória crescer até lá.
+        if n > self.max {
+            return Err(std::io::Error::new(ErrorKind::InvalidData, "o outro lado mandou um bloco grande demais"));
+        }
         if self.buf.len() < 4 + n {
-            return None;
+            return Ok(None);
         }
         let f = self.buf[4..4 + n].to_vec();
         self.buf.drain(..4 + n);
-        Some(f)
+        Ok(Some(f))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Framer;
+
+    #[test]
+    fn oversized_frame_is_an_error_not_a_wait() {
+        let mut fr = Framer::new();
+        fr.set_max(1024);
+        let mut data: Vec<u8> = Vec::new();
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(b"abc");
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        data.extend_from_slice(&[0; 100]);
+        let mut r = &data[..];
+        assert_eq!(fr.poll(&mut r).unwrap().as_deref(), Some(&b"abc"[..]));
+        assert!(fr.poll(&mut r).is_err());
     }
 }

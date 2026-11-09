@@ -23,6 +23,10 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+# Limites: uma enxurrada de conexões não derruba o computador inteiro.
+MemoryMax=1G
+LimitNOFILE=20000
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

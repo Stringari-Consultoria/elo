@@ -235,7 +235,7 @@ fn tls_with_pinned_certificate() {
 #[test]
 fn background_server_restarts_on_same_port() {
     let dir = std::env::temp_dir().join(format!("elo-bg-{}", std::process::id()));
-    let cfg = |listen: String| elo_server::Config { listen, data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 };
+    let cfg = |listen: String| elo_server::Config { listen, data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() };
     let bg = elo_server::Background::start(cfg("127.0.0.1:0".into())).unwrap();
     assert!(bg.running());
     let port = bg.local_addr.port();
@@ -263,7 +263,7 @@ fn background_server_restarts_on_same_port() {
 #[test]
 fn websocket_like_cloudflare_tunnel() {
     let dir = std::env::temp_dir().join(format!("elo-ws-{}", std::process::id()));
-    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
     let port = bg.local_addr.port();
     let fp = bg.fingerprint.clone().unwrap();
     let direct = ServerCfg { address: format!("127.0.0.1:{port}"), tls: true, pin: fp.clone() };
@@ -341,7 +341,7 @@ fn session_log_retention() {
     let nova = agora - 86_400;
     std::fs::write(dir.join("sessoes.jsonl"), format!("{{\"anfitriao\":\"111111111\",\"visualizador\":\"222222222\",\"inicio\":{velha},\"fim\":{velha},\"bytes\":1}}\n{{\"anfitriao\":\"333333333\",\"visualizador\":\"444444444\",\"inicio\":{nova},\"fim\":{nova},\"bytes\":2}}\n")).unwrap();
     // Na subida, com 90 dias: some só a de 100 dias atrás.
-    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
     let ids: Vec<String> = bg.stats().recent.iter().map(|x| x.host_id.clone()).collect();
     assert_eq!(ids, vec!["333333333".to_string()]);
     // Prazo menor que a idade da que sobrou: o histórico fica vazio.
@@ -361,7 +361,7 @@ fn wake_on_lan_relay() {
     use elo_proto::ctrl::{FromServer, ToServer};
     use elo_proto::frame::{read_frame, write_frame};
     let dir = std::env::temp_dir().join(format!("elo-wol-{}", std::process::id()));
-    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90 }).unwrap();
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
     let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
     // O computador que vai ser desligado se apresenta com o MAC dele e sai.
     let mut c = elo_core::net::connect(&cfg).unwrap();
@@ -495,8 +495,79 @@ fn companies_techs_and_help_requests() {
     let again = client::start_with(cfg.clone(), [14u8; 32], "Outro".into(), client::Identity { company: None, tech_token: Some(token) });
     assert!(matches!(wait(&again.rx, 10, |e| matches!(e, Event::LoggedIn { .. })), Some(Event::LoggedIn { user, .. }) if user == "ana"));
 
+    // Quem não é técnico não consegue aparecer como "(técnico)".
+    let fake = client::start(cfg.clone(), [15u8; 32], "Falso".into());
+    assert!(wait(&fake.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
+    fake.tx.send(client::Command::Connect { target: tech_id.clone() }).unwrap();
+    let Some(Event::Incoming { from_name, .. }) = wait(&tech.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    assert!(!from_name.contains('('), "{from_name}");
+
+    // Técnico removido perde o acesso na conexão que já estava aberta.
+    tech.tx.send(client::Command::Manage(Manage::CreateTech { user: "beto".into(), name: "Beto".into(), password: "s3nha-do-beto".into(), admin: false })).unwrap();
+    assert!(wait(&tech.rx, 5, |e| matches!(e, Event::Overview(o) if o.techs.iter().any(|t| t.user == "beto"))).is_some());
+    let beto = client::start(cfg.clone(), [16u8; 32], "Notebook do Beto".into());
+    assert!(wait(&beto.rx, 10, |e| matches!(e, Event::Online { .. })).is_some());
+    beto.tx.send(client::Command::Login { user: "beto".into(), password: "s3nha-do-beto".into(), setup: None, name: String::new() }).unwrap();
+    assert!(wait(&beto.rx, 10, |e| matches!(e, Event::LoggedIn { .. })).is_some());
+    // Beto não é administrador: não troca a senha de ninguém, nem a própria sem a atual.
+    beto.tx.send(client::Command::Manage(Manage::SetPassword { user: "beto".into(), password: "outra-senha".into() })).unwrap();
+    assert!(wait(&beto.rx, 5, |e| matches!(e, Event::Error(m) if m.contains("administrador"))).is_some());
+    tech.tx.send(client::Command::Manage(Manage::DeleteTech { user: "beto".into() })).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    beto.tx.send(client::Command::Connect { target: cli_id.clone() }).unwrap();
+    let refused = wait(&beto.rx, 5, |e| matches!(e, Event::SessionReady { .. } | Event::Error(_) | Event::AuthError(_)));
+    assert!(!matches!(refused, Some(Event::SessionReady { .. }) | None), "técnico removido ainda conectou");
+
     // O histórico guarda qual técnico fez o acesso (quando a sessão abre e fecha).
-    for c in [&tech, &cli, &bad, &again] {
+    for c in [&tech, &cli, &bad, &again, &fake, &beto] {
+        let _ = c.tx.send(client::Command::Quit);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Senha errada repetida bloqueia só quem errou: o dono, de outro computador,
+/// continua entrando, e errar e desistir no meio também conta.
+#[test]
+fn wrong_passwords_lock_only_who_tried() {
+    if std::env::var("DISPLAY").is_err() {
+        eprintln!("sem DISPLAY: teste pulado");
+        return;
+    }
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let port = 30000 + (std::process::id() % 1000) as u16;
+    let dir = std::env::temp_dir().join(format!("elo-e2e-bloqueio-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    let cfg = ServerCfg { address: format!("127.0.0.1:{port}"), tls: false, pin: String::new() };
+    let host = client::start(cfg.clone(), [21u8; 32], "Anfitrião".into());
+    let attacker = client::start(cfg.clone(), [22u8; 32], "Atacante".into());
+    let owner = client::start(cfg.clone(), [23u8; 32], "Dono".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!() };
+    let Some(Event::Online { id: attacker_id }) = wait(&attacker.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!() };
+    let Some(Event::Online { id: owner_id }) = wait(&owner.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!() };
+    // Uma tentativa: devolve se a sessão abriu.
+    let attempt = |who: &client::Control, who_id: &str, pw: &str| -> bool {
+        who.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
+        let Some(Event::SessionReady { session: s, secret, .. }) = wait(&who.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+        let Some(Event::Incoming { from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+        let (htx, _hrx) = channel();
+        let opt = HostOptions { passwords: vec!["certa-123".into()], name: "Anfitrião".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false };
+        let hh = session::host(cfg.clone(), s, secret, from_id, "x".into(), opt, htx);
+        let (vtx, vrx) = channel();
+        let vh = session::viewer(cfg.clone(), s, secret, pw.into(), who_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx);
+        let r = wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. } | ViewerEvent::Ended(_)));
+        vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        hh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(200));
+        matches!(r, Some(ViewerEvent::Connected { .. }))
+    };
+    for _ in 0..5 {
+        assert!(!attempt(&attacker, &attacker_id, "errada"));
+    }
+    assert!(!attempt(&attacker, &attacker_id, "certa-123"), "quem errou 5 vezes devia estar bloqueado");
+    assert!(attempt(&owner, &owner_id, "certa-123"), "o dono, de outro computador, devia entrar");
+    for c in [&host, &attacker, &owner] {
         let _ = c.tx.send(client::Command::Quit);
     }
     let _ = std::fs::remove_dir_all(&dir);

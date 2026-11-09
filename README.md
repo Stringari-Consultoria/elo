@@ -177,8 +177,9 @@ sem abrir portas e sem instalar nada nos outros computadores.
    `wss://elo.seudominio.com` como endereço, com a impressão digital vazia.
 
 Conexões sem TLS só são aceitas quando vêm do próprio computador, que é o caso
-do `cloudflared`. O servidor usa o IP real do cliente (`CF-Connecting-IP`) nos
-limites de tentativas. Atenção: a sessão inteira, tela incluída, passa pelo
+do `cloudflared`, ou de um proxy informado com `--proxy-confiavel` (por
+exemplo, o `cloudflared` em outro contêiner). Só desses o servidor aceita o IP
+real do cliente (`CF-Connecting-IP`), usado nos limites de tentativas. Atenção: a sessão inteira, tela incluída, passa pelo
 Cloudflare. Uso pesado de banda pode esbarrar nos termos do plano gratuito.
 
 ### Painel do servidor
@@ -226,13 +227,15 @@ docker exec elo-server elo-server --impressao --data /dados
 
 Com o Cloudflare Tunnel no mesmo `docker compose`, nem é preciso publicar a
 porta: aponte o túnel para `https://elo-server:21116` (com **No TLS Verify**)
-e use `wss://seu-endereço` nos apps.
+e use `wss://seu-endereço` nos apps. O `--proxy-confiavel` diz ao servidor que
+o `cloudflared` (na rede interna do Docker) informa o IP real dos clientes.
 
 ```yaml
 services:
   elo-server:
     image: ghcr.io/stringari-consultoria/elo-server
     restart: unless-stopped
+    command: [--listen, "0.0.0.0:21116", --data, /dados, --self-signed, --retencao-dias, "90", --proxy-confiavel, "172.16.0.0/12"]
     volumes: [elo-dados:/dados]
   cloudflared:
     image: cloudflare/cloudflared
@@ -264,10 +267,11 @@ técnicos conseguem entrar, sempre com o aceite de quem está no computador.
 
 **Técnicos.** No Elo, em **Configurações → Conta de técnico**, entre com
 usuário e senha do servidor. Num servidor novo, a primeira conta vira
-administrador com o **código de primeiro acesso**: ele aparece nos registros
-do servidor (`journalctl -u elo-server`, `docker logs elo-server`) e no
-arquivo `primeiro-acesso.txt` da pasta de dados; com o servidor embutido no
-app, o próprio Elo já preenche. Administradores criam e removem técnicos na
+administrador com o **código de primeiro acesso**: ele fica no arquivo
+`primeiro-acesso.txt` da pasta de dados (por exemplo,
+`sudo cat /var/lib/elo-server/primeiro-acesso.txt` ou
+`docker cp elo-server:/dados/primeiro-acesso.txt - | tar -xO`); com o servidor
+embutido no app, o próprio Elo já preenche. Administradores criam e removem técnicos na
 aba **Clientes → Técnicos**. O servidor guarda só o hash (Argon2) das senhas,
 e o app guarda só um token de entrada.
 

@@ -19,10 +19,16 @@ pub fn write_frame(w: &mut impl Write, data: &[u8]) -> Result<()> {
 }
 
 pub fn read_frame(r: &mut impl Read) -> Result<Vec<u8>> {
+    read_frame_max(r, MAX_FRAME)
+}
+
+/// Como `read_frame`, com teto próprio (o aperto de mão só troca mensagens
+/// pequenas: sem isto, 4 bytes de quem nem tem a senha reservavam 32 MiB).
+pub fn read_frame_max(r: &mut impl Read, max: usize) -> Result<Vec<u8>> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
     let n = u32::from_le_bytes(len) as usize;
-    if n > MAX_FRAME {
+    if n > max {
         return Err(Error::Other("quadro grande demais".into()));
     }
     let mut buf = vec![0u8; n];

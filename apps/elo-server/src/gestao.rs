@@ -44,6 +44,28 @@ pub struct TechRec {
     /// SHA-256 dos tokens das entradas ativas (um por app).
     #[serde(default)]
     pub tokens: Vec<String>,
+    /// Último uso de cada token (segundos desde 1970): sem uso por
+    /// `TOKEN_DAYS` dias, a entrada expira.
+    #[serde(default)]
+    pub token_seen: HashMap<String, u64>,
+}
+
+/// Dias sem uso que uma entrada de técnico vale.
+pub const TOKEN_DAYS: u64 = 30;
+
+impl TechRec {
+    /// O token (já em hash) ainda vale?
+    pub fn token_ok(&self, h: &str, now: u64) -> bool {
+        self.tokens.iter().any(|t| t == h) && self.token_seen.get(h).is_some_and(|s| now.saturating_sub(*s) <= TOKEN_DAYS * 86_400)
+    }
+
+    /// Esquece as entradas vencidas.
+    pub fn prune_tokens(&mut self, now: u64) {
+        let seen = &self.token_seen;
+        self.tokens.retain(|t| seen.get(t).is_some_and(|s| now.saturating_sub(*s) <= TOKEN_DAYS * 86_400));
+        let tokens = &self.tokens;
+        self.token_seen.retain(|t, _| tokens.contains(t));
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -56,20 +78,23 @@ pub struct DevRec {
 }
 
 impl Gestao {
-    pub fn load(data: &Path) -> Gestao {
-        std::fs::read(file(data)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    /// Arquivo ilegível é erro, não lista vazia: antes, um `gestao.json`
+    /// corrompido reabria o primeiro acesso e era sobrescrito.
+    pub fn load(data: &Path) -> std::io::Result<Gestao> {
+        let mut g: Gestao = load_json(&file(data))?;
+        // Entradas de antes da validade: contam a partir de agora.
+        let now = crate::now_secs();
+        for t in g.techs.iter_mut() {
+            for h in t.tokens.clone() {
+                t.token_seen.entry(h).or_insert(now);
+            }
+        }
+        Ok(g)
     }
 
     pub fn save(&self, data: &Path) {
-        let Ok(j) = serde_json::to_vec_pretty(self) else { return };
-        let tmp = data.join("gestao.json.tmp");
-        if std::fs::write(&tmp, j).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-            }
-            let _ = std::fs::rename(&tmp, file(data));
+        if let Ok(j) = serde_json::to_vec_pretty(self) {
+            write_private(&file(data), &j);
         }
     }
 
@@ -85,11 +110,48 @@ impl Gestao {
         self.techs.iter().find(|t| t.user == user)
     }
 
-    /// Técnico dono do token (já em hash).
-    pub fn by_token(&self, token: &str) -> Option<&TechRec> {
+    /// Técnico dono do token, se ele ainda vale. Renova a validade.
+    pub fn by_token(&mut self, token: &str) -> Option<&TechRec> {
         let h = token_hash(token);
-        self.techs.iter().find(|t| t.tokens.contains(&h))
+        let now = crate::now_secs();
+        let t = self.techs.iter_mut().find(|t| t.token_ok(&h, now))?;
+        t.token_seen.insert(h, now);
+        Some(t)
     }
+}
+
+/// JSON de `p`: ausente = valor padrão; presente e ilegível = erro.
+pub fn load_json<T: Default + serde::de::DeserializeOwned>(p: &Path) -> std::io::Result<T> {
+    match std::fs::read(p) {
+        Ok(b) => serde_json::from_slice(&b).map_err(|e| std::io::Error::other(format!("{} está ilegível ({e}). Corrija o arquivo ou renomeie-o para começar do zero; o servidor não sobe para não apagar os dados.", p.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(std::io::Error::new(e.kind(), format!("{}: {e}", p.display()))),
+    }
+}
+
+/// Grava só para o dono (0600), inteiro ou nada: temporário, `fsync` e troca.
+pub fn write_private(p: &Path, data: &[u8]) -> bool {
+    use std::io::Write;
+    // Nome próprio por gravação: duas ao mesmo tempo não se misturam.
+    let mut tmp = p.as_os_str().to_os_string();
+    tmp.push(format!(".tmp-{:x}", rand::thread_rng().r#gen::<u64>()));
+    let tmp = PathBuf::from(tmp);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let ok = o.open(&tmp).and_then(|mut f| {
+        f.write_all(data)?;
+        f.sync_all()
+    });
+    if ok.is_err() || std::fs::rename(&tmp, p).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 fn file(data: &Path) -> PathBuf {
@@ -134,13 +196,7 @@ pub fn write_setup_file(data: &Path, code: &str) {
     let text = format!(
         "Código de primeiro acesso do servidor do Elo: {code}\n\nNo app do Elo, em Configurações → Conta de técnico, use este código para\ncriar a conta de administrador. Ele deixa de valer depois disso.\n"
     );
-    if std::fs::write(&p, text).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-        }
-    }
+    write_private(&p, text.as_bytes());
 }
 
 pub fn remove_setup_file(data: &Path) {
@@ -158,6 +214,39 @@ mod tests {
         assert!(verify_password(&h, "s3nha-boa"));
         assert!(!verify_password(&h, "outra"));
         assert!(!verify_password("lixo", "s3nha-boa"));
+    }
+
+    #[test]
+    fn unreadable_file_is_an_error_and_is_kept() {
+        let d = std::env::temp_dir().join(format!("elo-gestao-{}", rand::thread_rng().r#gen::<u64>()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(Gestao::load(&d).unwrap().techs.is_empty(), "sem arquivo: começa vazio");
+        std::fs::write(file(&d), b"{ quebrado").unwrap();
+        assert!(Gestao::load(&d).is_err());
+        assert_eq!(std::fs::read(file(&d)).unwrap(), b"{ quebrado");
+        let g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: "h".into(), admin: true, tokens: Vec::new(), token_seen: HashMap::new() }], ..Default::default() };
+        g.save(&d);
+        assert_eq!(Gestao::load(&d).unwrap().techs.len(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(file(&d)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unused_tech_entry_expires_and_use_renews_it() {
+        let h = token_hash("tok");
+        let now = crate::now_secs();
+        let mut g = Gestao { techs: vec![TechRec { user: "a".into(), name: "A".into(), hash: String::new(), admin: false, tokens: vec![h.clone()], token_seen: HashMap::from([(h.clone(), now - (TOKEN_DAYS + 1) * 86_400)]) }], ..Default::default() };
+        assert!(g.by_token("tok").is_none(), "vencida");
+        g.techs[0].token_seen.insert(h.clone(), now - (TOKEN_DAYS - 1) * 86_400);
+        assert!(g.by_token("tok").is_some());
+        assert!(g.techs[0].token_seen[&h] >= now, "o uso renova");
+        g.techs[0].token_seen.insert(h.clone(), 0);
+        g.techs[0].prune_tokens(now);
+        assert!(g.techs[0].tokens.is_empty());
     }
 
     #[test]

@@ -209,8 +209,8 @@ fn session(cfg: &ServerCfg, token: &[u8; 32], name: &str, ident: &mut Identity, 
                     FromServer::NeedsSetup => Event::NeedsSetup,
                     FromServer::HelpStatus { taken_by } => Event::HelpStatus { taken_by },
                     FromServer::Overview(o) => Event::Overview(Box::new(o)),
-                    FromServer::Incoming { session, secret, from_id, from_name } => Event::Incoming { session, secret, from_id, from_name },
-                    FromServer::SessionReady { session, secret, target_name, target_os } => Event::SessionReady { session, secret, target_name, target_os },
+                    FromServer::Incoming { session, secret, from_id, from_name } => Event::Incoming { session, secret, from_id, from_name: elo_proto::plain_text(&from_name, 80) },
+                    FromServer::SessionReady { session, secret, target_name, target_os } => Event::SessionReady { session, secret, target_name: elo_proto::plain_text(&target_name, 64), target_os: elo_proto::plain_text(&target_os, 64) },
                     FromServer::Declined { .. } => Event::Declined,
                     FromServer::Error { message, code } => {
                         if code == elo_proto::ctrl::ErrorCode::Version {

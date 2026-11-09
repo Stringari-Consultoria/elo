@@ -81,7 +81,7 @@ mkdir -p "$DIST"
 DMG="$DIST/$ARQUIVO-$VERSAO-macos.dmg"
 rm -f "$DMG"
 DMGBUILD="$(command -v dmgbuild || true)"
-if [[ -z "$DMGBUILD" ]] && python3 -m venv "$TMP/venv" >/dev/null 2>&1 && "$TMP/venv/bin/pip" install -q dmgbuild >/dev/null 2>&1; then
+if [[ -z "$DMGBUILD" ]] && python3 -m venv "$TMP/venv" >/dev/null 2>&1 && "$TMP/venv/bin/pip" install -q dmgbuild==1.6.7 >/dev/null 2>&1; then
     DMGBUILD="$TMP/venv/bin/dmgbuild"
 fi
 if [[ -n "$DMGBUILD" ]]; then

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 
-use crate::frame::{read_frame, write_frame};
+use crate::frame::{read_frame, read_frame_max, write_frame};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ fn send_hs(w: &mut impl Write, m: &Hs) -> Result<()> {
 }
 
 fn recv_hs(r: &mut impl Read) -> Result<Hs> {
-    Ok(postcard::from_bytes(&read_frame(r)?)?)
+    Ok(postcard::from_bytes(&read_frame_max(r, 4096)?)?)
 }
 
 /// Chaves da sessão, já confirmadas.
@@ -131,19 +131,24 @@ pub fn host_handshake(s: &mut (impl Read + Write), passwords: &[String]) -> Resu
         let _ = send_hs(s, &Hs::Fail);
         return Err(Error::Auth);
     }
+    // Depois de uma senha errada, desistir no meio também conta como erro:
+    // senão bastava desconectar após a primeira tentativa para nunca bloquear.
+    let mut wrong = false;
+    let after = |wrong: bool| move |e: Error| if wrong { Error::Auth } else { e };
     for (attempt, p) in list.iter().enumerate() {
         let attempt = attempt as u8;
         let (st, mb) = Spake2::<Ed25519Group>::start_b(&Password::new(p.as_bytes()), &Identity::new(ID_A), &Identity::new(ID_B));
-        send_hs(s, &Hs::PakeB { attempt, msg: mb })?;
-        let Hs::PakeA { msg: ma, .. } = recv_hs(s)? else { return Err(Error::Auth) };
-        let Hs::ConfirmA { mac: m, .. } = recv_hs(s)? else { return Err(Error::Auth) };
+        send_hs(s, &Hs::PakeB { attempt, msg: mb }).map_err(after(wrong))?;
+        let Hs::PakeA { msg: ma, .. } = recv_hs(s).map_err(after(wrong))? else { return Err(Error::Auth) };
+        let Hs::ConfirmA { mac: m, .. } = recv_hs(s).map_err(after(wrong))? else { return Err(Error::Auth) };
         let Ok(k) = st.finish(&ma) else { return Err(Error::Auth) };
         if m == mac(&k, b"confirm-a") {
             send_hs(s, &Hs::ConfirmB { mac: mac(&k, b"confirm-b") })?;
             return Ok(derive(&k, false, mode, attempt));
         }
+        wrong = true;
         if (attempt as usize) + 1 < list.len() {
-            send_hs(s, &Hs::Retry { attempt })?;
+            send_hs(s, &Hs::Retry { attempt }).map_err(after(wrong))?;
         }
     }
     let _ = send_hs(s, &Hs::Fail);
@@ -258,6 +263,24 @@ mod tests {
         assert!(matches!(viewer_handshake(&mut a, "senha-certa"), Err(Error::Auth)));
         drop(a);
         assert_eq!(fake_host.join().unwrap(), MAX_ROUNDS);
+    }
+
+    #[test]
+    fn giving_up_after_a_wrong_password_counts_as_wrong() {
+        let (a, mut b) = socket_pair();
+        let host = std::thread::spawn(move || {
+            let mut a = a;
+            host_handshake(&mut a, &["certa".into(), "outra".into()])
+        });
+        send_hs(&mut b, &Hs::Start { mode: AuthMode::Password, version: crate::PROTOCOL_VERSION }).unwrap();
+        let Hs::PakeB { msg: mb, .. } = recv_hs(&mut b).unwrap() else { panic!() };
+        let (st, ma) = Spake2::<Ed25519Group>::start_a(&Password::new(b"errada"), &Identity::new(ID_A), &Identity::new(ID_B));
+        let k = st.finish(&mb).unwrap();
+        send_hs(&mut b, &Hs::PakeA { attempt: 0, msg: ma }).unwrap();
+        send_hs(&mut b, &Hs::ConfirmA { attempt: 0, mac: mac(&k, b"confirm-a") }).unwrap();
+        assert!(matches!(recv_hs(&mut b).unwrap(), Hs::Retry { .. }));
+        drop(b);
+        assert!(matches!(host.join().unwrap(), Err(Error::Auth)));
     }
 
     #[test]

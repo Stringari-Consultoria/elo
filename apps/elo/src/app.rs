@@ -33,7 +33,7 @@ impl Local {
         }
         let data = crate::settings::server_data_dir();
         let host = if cfg.lan { "0.0.0.0" } else { "127.0.0.1" };
-        let c = elo_server::Config { listen: format!("{host}:{}", cfg.port), data: data.clone(), tls: elo_server::Tls::SelfSigned, retention_days: cfg.retention_days };
+        let c = elo_server::Config { listen: format!("{host}:{}", cfg.port), data: data.clone(), tls: elo_server::Tls::SelfSigned, retention_days: cfg.retention_days, trusted_proxies: Vec::new() };
         match elo_server::Background::start(c) {
             Ok(b) => {
                 l.fingerprint = b.fingerprint.clone().unwrap_or_default();
@@ -177,6 +177,8 @@ pub struct HostSession {
     pub started: bool,
     pub sas: String,
     pub with_password: bool,
+    /// Entrou com a senha temporária (ela é trocada depois).
+    pub temporary: bool,
     pub permissions: Permissions,
     pub chat: Vec<ChatLine>,
     pub chat_input: String,
@@ -199,11 +201,78 @@ pub struct Ask {
     pub at: Instant,
 }
 
+/// Atende os pedidos de acesso fora da janela. Com a senha de administrador
+/// do GNOME aberta (placa NVIDIA, X11), o desenho da janela trava; se o
+/// pedido esperasse a janela, ninguém conseguia acessar o computador.
+pub struct Answer {
+    /// Servidor e opções de anfitrião atuais (a janela atualiza a cada quadro).
+    opts: Arc<Mutex<Option<(ServerCfg, HostOptions)>>>,
+    started_tx: Sender<HostSession>,
+    pub started: Receiver<HostSession>,
+    ctx: egui::Context,
+}
+
+impl Answer {
+    fn new(ctx: &egui::Context) -> Self {
+        let (started_tx, started) = channel();
+        Answer { opts: Arc::new(Mutex::new(None)), started_tx, started, ctx: ctx.clone() }
+    }
+
+    fn set(&self, cfg: ServerCfg, opt: HostOptions) {
+        *self.opts.lock().unwrap_or_else(|e| e.into_inner()) = Some((cfg, opt));
+    }
+
+    /// Repassa os eventos da conexão com o servidor; pedidos de acesso já
+    /// começam aqui, e a janela só recebe a sessão pronta.
+    fn wire(&self, control: Control) -> Control {
+        let (tx, rx) = channel();
+        let (opts, started, ctx) = (self.opts.clone(), self.started_tx.clone(), self.ctx.clone());
+        let events = control.rx;
+        std::thread::Builder::new()
+            .name("elo-pedidos".into())
+            .spawn(move || {
+                for e in events.iter() {
+                    let e = match e {
+                        Event::Incoming { session, secret, from_id, from_name } => {
+                            let current = opts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                            match current {
+                                Some((cfg, opt)) => {
+                                    let permissions = opt.default_permissions;
+                                    let (etx, erx) = channel();
+                                    let handle = session::host(cfg, session, secret, from_id.clone(), from_name.clone(), opt, etx);
+                                    let h = HostSession { session, from_id, from_name, handle, events: erx, started: false, sas: String::new(), with_password: false, temporary: false, permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false, audio: true };
+                                    if started.send(h).is_err() {
+                                        return;
+                                    }
+                                    ctx.request_repaint();
+                                    continue;
+                                }
+                                None => Event::Incoming { session, secret, from_id, from_name },
+                            }
+                        }
+                        e => e,
+                    };
+                    if tx.send(e).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .expect("thread");
+        Control { tx: control.tx, rx }
+    }
+}
+
 pub struct EloApp {
     pub settings: Settings,
     pub status: Status,
     pub control: Control,
+    pub answer: Answer,
     pub temp_password: String,
+    /// Quando a senha temporária foi gerada (vale no máximo um dia).
+    pub temp_since: Instant,
+    /// Trocar a senha temporária a partir daqui (já foi usada).
+    pub rotate_temp_at: Option<Instant>,
     pub show_temp: bool,
     pub target: String,
     pub password: String,
@@ -294,13 +363,17 @@ impl EloApp {
         // O servidor local sobe antes do cliente, que já conecta nele.
         // O Elo Cliente não roda servidor: usa o da empresa.
         let local = Local::start(&if client_mode { LocalServer { enabled: false, ..settings.local_server.clone() } } else { settings.local_server.clone() });
-        let control = client::start_with(server_cfg(&settings, &local), settings.token, settings.device_name.clone(), identity(&settings, client_mode));
+        let answer = Answer::new(&cc.egui_ctx);
+        let control = answer.wire(client::start_with(server_cfg(&settings, &local), settings.token, settings.device_name.clone(), identity(&settings, client_mode)));
         let local_error = local.error.clone();
         let mut app = Self {
             settings,
             status: Status::Connecting,
             control,
+            answer,
             temp_password: elo_core::temp_password(),
+            temp_since: Instant::now(),
+            rotate_temp_at: None,
             show_temp: false,
             target: String::new(),
             password: String::new(),
@@ -337,6 +410,7 @@ impl EloApp {
             help_text: String::new(),
             invite_input: String::new(),
         };
+        app.answer.set(app.server_cfg(), app.host_options());
         if !app.settings.onboarded && !app.client_mode() {
             app.onboarding = Some(crate::onboarding::Onboarding::new(&app.settings, app.autostart));
         }
@@ -344,6 +418,13 @@ impl EloApp {
             app.error(t!("Servidor local: {}", crate::i18n::tr_dyn(&e)));
         }
         app
+    }
+
+    /// Nova senha temporária (a anterior deixa de valer).
+    pub fn new_temp_password(&mut self) {
+        self.temp_password = elo_core::temp_password();
+        self.temp_since = Instant::now();
+        self.rotate_temp_at = None;
     }
 
     pub fn toast(&mut self, t: impl Into<String>) {
@@ -572,7 +653,7 @@ impl EloApp {
     /// e ele só é enviado ao conectar).
     pub fn restart_control(&mut self) {
         let _ = self.control.tx.send(Command::Quit);
-        self.control = client::start_with(self.server_cfg(), self.settings.token, self.settings.device_name.clone(), identity(&self.settings, self.client_mode()));
+        self.control = self.answer.wire(client::start_with(self.server_cfg(), self.settings.token, self.settings.device_name.clone(), identity(&self.settings, self.client_mode())));
         self.status = Status::Connecting;
         self.overview = None;
         self.help = None;
@@ -604,6 +685,8 @@ impl EloApp {
 
     /// Processa eventos de rede (chamado a cada quadro).
     pub fn pump(&mut self, ctx: &egui::Context) {
+        self.answer.set(self.server_cfg(), self.host_options());
+        self.hosts.extend(self.answer.started.try_iter());
         let evs: Vec<Event> = self.control.rx.try_iter().collect();
         for e in evs {
             match e {
@@ -764,14 +847,9 @@ impl EloApp {
                     self.password.clear();
                 }
                 Event::Incoming { session, secret, from_id, from_name } => {
-                    if elo_core::session::host_locked() {
-                        let _ = self.control.tx.send(Command::Decline { session });
-                        self.error(t!("Conexão de {} bloqueada: muitas senhas erradas nos últimos minutos.", elo_proto::ctrl::pretty_id(&from_id)));
-                        continue;
-                    }
                     let (tx, rx) = channel();
                     let handle = session::host(self.server_cfg(), session, secret, from_id.clone(), from_name.clone(), self.host_options(), tx);
-                    self.hosts.push(HostSession { session, from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false, audio: true });
+                    self.hosts.push(HostSession { session, from_id, from_name, handle, events: rx, started: false, sas: String::new(), with_password: false, temporary: false, permissions: self.settings.default_permissions, chat: Vec::new(), chat_input: String::new(), transfers: Vec::new(), ended: None, since: Instant::now(), chat_open: false, audio: true });
                 }
             }
         }
@@ -779,6 +857,7 @@ impl EloApp {
         let mut show = false;
         let mut new_asks = Vec::new();
         let mut toasts = Vec::new();
+        let mut rotate = false;
         for h in self.hosts.iter_mut() {
             for e in h.events.try_iter() {
                 match e {
@@ -786,10 +865,12 @@ impl EloApp {
                         new_asks.push(Ask { session: h.session, from_id, from_name, sas, reply, permissions: h.permissions, at: Instant::now() });
                         show = true;
                     }
-                    HostEvent::Started { sas, with_password, .. } => {
+                    HostEvent::Started { sas, password, .. } => {
                         h.started = true;
                         h.sas = sas;
-                        h.with_password = with_password;
+                        h.with_password = password.is_some();
+                        // A primeira da lista de `host_options` é a temporária.
+                        h.temporary = password == Some(0);
                         h.since = Instant::now();
                         // Quem está aqui precisa ver o aviso de que está sendo acessado.
                         show = true;
@@ -807,8 +888,25 @@ impl EloApp {
                         upsert(&mut h.transfers, t);
                     }
                     HostEvent::AuthFailed { from_id } => toasts.push((t!("Tentativa de acesso com senha errada de {}", elo_proto::ctrl::pretty_id(&from_id)), true)),
-                    HostEvent::Ended(r) => h.ended = Some(r),
+                    HostEvent::Ended(r) => {
+                        rotate |= h.temporary;
+                        h.ended = Some(r);
+                    }
                 }
+            }
+        }
+        // Senha temporária já usada: troca daqui a pouco (dá tempo de quem
+        // caiu voltar). Quem a recebeu não volta dias depois sem aceite.
+        if rotate {
+            self.rotate_temp_at = Some(Instant::now() + std::time::Duration::from_secs(180));
+        }
+        let in_use = self.hosts.iter().any(|h| h.temporary && h.ended.is_none());
+        let used = self.rotate_temp_at.is_some_and(|at| Instant::now() >= at);
+        let old = self.temp_since.elapsed() > std::time::Duration::from_secs(24 * 3600);
+        if !in_use && (used || old) {
+            self.new_temp_password();
+            if used {
+                toasts.push((t!("A senha temporária foi trocada porque já foi usada.").to_string(), false));
             }
         }
         self.asks.extend(new_asks);
@@ -839,7 +937,7 @@ impl EloApp {
         for v in self.views.iter_mut() {
             for e in v.events.try_iter() {
                 match e {
-                    ViewerEvent::Connected { name, os, sas, monitors, permissions } => {
+                    ViewerEvent::Connected { name, os, sas, monitors, permissions, password } => {
                         v.connected = true;
                         v.waiting = false;
                         v.target_name = name;
@@ -851,8 +949,9 @@ impl EloApp {
                         }
                         v.monitors = monitors;
                         v.permissions = permissions;
-                        // Entrou com senha: ela está certa, guarda no favorito (se a de lá mudou).
-                        if !v.password.is_empty() {
+                        // Entrou com a senha fixa: guarda no favorito (se a de lá mudou).
+                        // A temporária não: ela vale uma vez e não deve ficar salva.
+                        if !v.password.is_empty() && password == Some(1) {
                             learned.push((v.target_id.clone(), v.password.clone()));
                         }
                     }

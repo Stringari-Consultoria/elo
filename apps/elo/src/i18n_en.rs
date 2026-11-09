@@ -2,6 +2,11 @@
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
 pub static EN: &[(&str, &str)] = &[
+    ("A senha temporária foi trocada porque já foi usada.", "The temporary password was changed because it has already been used."),
+    ("senha bloqueada por alguns minutos: muitas tentativas erradas", "password blocked for a few minutes: too many wrong attempts"),
+    ("o texto copiado é grande demais para colar lá (mais de 8 MB)", "the copied text is too large to paste there (over 8 MB)"),
+    ("arquivos demais chegando ao mesmo tempo", "too many files arriving at once"),
+    ("o outro lado mandou um bloco grande demais", "the other side sent a block that is too large"),
     ("Arquivo {} não foi transferido: {}", "File {} was not transferred: {}"),
     ("falhou", "failed"),
     ("o arquivo chegou incompleto", "the file arrived incomplete"),
@@ -476,6 +481,7 @@ pub static EN: &[(&str, &str)] = &[
 
 /// Trechos das mensagens do núcleo e do servidor com partes variáveis.
 pub static PARTS: &[(&str, &str)] = &[
+    ("o outro lado mandou uma tela de tamanho inválido", "the other side sent a screen of invalid size"),
     ("certificado do servidor não confere com a impressão digital configurada", "server certificate does not match the configured fingerprint"),
     ("conexão com o servidor caiu: ", "connection to the server dropped: "),
     ("não foi possível conectar a ", "could not connect to "),

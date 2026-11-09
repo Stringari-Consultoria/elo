@@ -34,3 +34,31 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Texto vindo do outro lado para mostrar numa linha (nome, sistema): sem
+/// quebras, sem caracteres de controle e sem os invisíveis que invertem a
+/// ordem das letras ("fatura\u{202E}fdp.exe" aparece como "fatura exe.pdf").
+pub fn plain_text(s: &str, max: usize) -> String {
+    let invisible = |c: char| matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}');
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !invisible(*c)) {
+        let c = if c.is_control() || c.is_whitespace() { ' ' } else { c };
+        // Espaços repetidos viram um (nome com 500 espaços empurra os botões para fora).
+        if c == ' ' && (out.is_empty() || out.ends_with(' ')) {
+            continue;
+        }
+        out.push(c);
+    }
+    out.trim_end().chars().take(max).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn plain_text_has_no_tricks() {
+        assert_eq!(super::plain_text("fatura\u{202E}fdp.exe", 64), "faturafdp.exe");
+        assert_eq!(super::plain_text("  Carlos\n(técnico)\t\t ok  ", 64), "Carlos (técnico) ok");
+        assert_eq!(super::plain_text(&"a".repeat(100), 64).len(), 64);
+        assert_eq!(super::plain_text("\u{200B}\u{FEFF}", 64), "");
+    }
+}

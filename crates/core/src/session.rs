@@ -18,6 +18,13 @@ use crate::net::{Conn, Framer, ServerCfg, connect};
 use crate::platform::{self, Clip};
 
 const CHUNK: usize = 192 * 1024;
+/// Maior bloco antes do aceite (o aperto de mão e o aviso de boas-vindas são pequenos).
+const PRE_ACCEPT_FRAME: usize = 1024 * 1024;
+/// Arquivos chegando ao mesmo tempo.
+const MAX_INCOMING: usize = 8;
+/// Maior texto sincronizado pela área de transferência (o bloco tem 32 MiB:
+/// passar disso encerrava a sessão).
+pub const MAX_CLIP: usize = 8 * 1024 * 1024;
 
 /// Canal cifrado com leitura não bloqueante.
 struct Chan {
@@ -85,6 +92,9 @@ impl Chan {
 /// Entra no relay e espera o par.
 fn join(cfg: &ServerCfg, session: u64, secret: [u8; 16], host: bool) -> Result<Conn, String> {
     let mut c = connect(cfg)?;
+    // Sem prazo, um outro lado que para de ler prende esta thread no `write`
+    // e "Encerrar" não fecha a sessão.
+    c.set_write_timeout(Some(Duration::from_secs(30)));
     write_frame(&mut c, &postcard::to_stdvec(&ToServer::Join { session, secret, host }).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     c.set_read_timeout(Some(Duration::from_secs(125)));
     let f = read_frame(&mut c).map_err(|e| format!("o outro lado não entrou: {e}"))?;
@@ -149,6 +159,20 @@ pub struct Transfer {
     pub path: Option<PathBuf>,
     /// Terminou sem dar certo (com `finished`).
     pub error: Option<String>,
+}
+
+/// Nome de arquivo vindo do outro lado: sem caminho, sem caracteres que
+/// enganam a leitura (inversão de texto) e sem os nomes que o Windows reserva.
+fn safe_file_name(name: &str) -> String {
+    let s: String = elo_proto::plain_text(name, 200).chars().map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+    // O Windows ignora ponto e espaço no fim ("x.exe." vira "x.exe").
+    let s = s.trim_end_matches(['.', ' ']).trim_start().to_string();
+    if s.trim_matches('.').is_empty() {
+        return "arquivo".into();
+    }
+    let stem = s.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+    if reserved { format!("_{s}") } else { s }
 }
 
 fn part_of(p: &Path) -> PathBuf {
@@ -259,11 +283,11 @@ impl Files {
     }
 
     fn start_incoming(&mut self, dir: &Path, id: u32, name: &str, size: u64) -> Result<PathBuf, String> {
+        if self.incoming.len() >= MAX_INCOMING {
+            return Err("arquivos demais chegando ao mesmo tempo".into());
+        }
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        // Nome seguro (sem caminhos) e sem sobrescrever.
-        let clean: String = name.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '\0')).collect();
-        let clean = if clean.trim_matches('.').is_empty() { "arquivo".to_string() } else { clean };
-        let path = free_path(dir, &clean);
+        let path = free_path(dir, &safe_file_name(name));
         let part = part_of(&path);
         let file = File::options().write(true).create_new(true).open(&part).map_err(|e| e.to_string())?;
         self.incoming.push(Incoming { id, file, part, path: path.clone(), done: 0, total: size });
@@ -508,7 +532,8 @@ pub const GAVE_UP: &str = "quem pediu desistiu do pedido";
 pub enum HostEvent {
     /// Pedido sem senha: responda com as permissões (ou `None` para recusar).
     Ask { from_id: String, from_name: String, sas: String, reply: Sender<Option<Permissions>> },
-    Started { from_id: String, from_name: String, sas: String, with_password: bool },
+    /// `password`: qual senha da lista de `HostOptions` foi usada (`None` = aceite na tela).
+    Started { from_id: String, from_name: String, sas: String, password: Option<u8> },
     Chat(String),
     File(Transfer),
     AuthFailed { from_id: String },
@@ -555,17 +580,24 @@ fn new_handle() -> (Handle, Receiver<Cmd>) {
     (Handle { stop: Arc::new(AtomicBool::new(false)), cmd: tx, bytes_sent: Arc::new(AtomicU64::new(0)), bytes_recv: Arc::new(AtomicU64::new(0)), fps: Arc::new(AtomicU32::new(0)) }, rx)
 }
 
-/// Tentativas erradas recentes (bloqueio contra força bruta).
-static FAILS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+/// Tentativas erradas recentes e de quem (bloqueio contra força bruta).
+static FAILS: Mutex<Vec<(Instant, String)>> = Mutex::new(Vec::new());
+/// Erros seguidos de um mesmo ID que bloqueiam as senhas para ele.
+const FAILS_PER_ORIGIN: usize = 5;
+/// Erros de todos juntos que bloqueiam as senhas para todos (ataque de muitos IDs).
+const FAILS_TOTAL: usize = 20;
 
-pub fn host_locked() -> bool {
+/// Senhas bloqueadas para este ID (5 erros dele ou 20 de todos em 5 minutos).
+/// Pedir acesso com aceite na tela continua valendo: o bloqueio não tranca
+/// o computador para quem está do outro lado esperando ajuda.
+pub fn host_locked(from_id: &str) -> bool {
     let mut f = FAILS.lock().unwrap_or_else(|e| e.into_inner());
-    f.retain(|t| t.elapsed() < Duration::from_secs(300));
-    f.len() >= 5
+    f.retain(|(t, _)| t.elapsed() < Duration::from_secs(300));
+    f.len() >= FAILS_TOTAL || f.iter().filter(|(_, id)| id == from_id).count() >= FAILS_PER_ORIGIN
 }
 
-fn note_fail() {
-    FAILS.lock().unwrap_or_else(|e| e.into_inner()).push(Instant::now());
+fn note_fail(from_id: &str) {
+    FAILS.lock().unwrap_or_else(|e| e.into_inner()).push((Instant::now(), from_id.to_string()));
 }
 
 pub fn host(cfg: ServerCfg, session: u64, secret: [u8; 16], from_id: String, from_name: String, opt: HostOptions, events: Sender<HostEvent>) -> Handle {
@@ -574,6 +606,8 @@ pub fn host(cfg: ServerCfg, session: u64, secret: [u8; 16], from_id: String, fro
     std::thread::Builder::new()
         .name("elo-anfitriao".into())
         .spawn(move || {
+            // O nome vem de quem pede: numa linha só, sem truques de texto.
+            let from_name = elo_proto::plain_text(&from_name, 80);
             let r = host_run(&cfg, session, secret, &from_id, &from_name, &opt, &events, &h2, rx);
             let _ = events.send(HostEvent::Ended(r.err().unwrap_or_else(|| "sessão encerrada".into())));
         })
@@ -584,11 +618,15 @@ pub fn host(cfg: ServerCfg, session: u64, secret: [u8; 16], from_id: String, fro
 fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from_name: &str, opt: &HostOptions, ev: &Sender<HostEvent>, h: &Handle, rx: Receiver<Cmd>) -> Result<(), String> {
     let mut c = join(cfg, session, secret, true)?;
     c.set_read_timeout(Some(Duration::from_secs(30)));
-    let keys = match host_handshake(&mut c, &opt.passwords) {
+    let locked = host_locked(from_id);
+    let keys = match host_handshake(&mut c, if locked { &[] } else { &opt.passwords }) {
         Ok(k) => k,
         Err(e) => {
+            if locked {
+                return Err("senha bloqueada por alguns minutos: muitas tentativas erradas".into());
+            }
             if matches!(e, elo_proto::Error::Auth) {
-                note_fail();
+                note_fail(from_id);
                 let _ = ev.send(HostEvent::AuthFailed { from_id: from_id.into() });
                 return Err("senha incorreta".into());
             }
@@ -597,6 +635,8 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     };
     let mut ch = Chan::new(c, &keys);
     let mut perms = opt.default_permissions;
+    // Antes do aceite, quem pediu só sabe o ID: nada de blocos grandes.
+    ch.fr.set_max(PRE_ACCEPT_FRAME);
     if keys.mode == AuthMode::Request {
         let (tx, rrx) = channel();
         let _ = ev.send(HostEvent::Ask { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), reply: tx });
@@ -626,12 +666,13 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
             }
         }
     }
+    ch.fr.set_max(elo_proto::frame::MAX_FRAME);
     let mut screen = platform::open_screen()?;
     let mut control = platform::open_control().ok().map(Injector::new);
     let mut clip = Clip::new();
     let monitors = screen.monitors();
     ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
-    let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), with_password: keys.mode == AuthMode::Password });
+    let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), password: (keys.mode == AuthMode::Password).then_some(keys.which) });
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
     let mut enc = Encoder::new();
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
@@ -830,7 +871,8 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         // Área de transferência local → visualizador.
         if perms.clipboard && last_clip.elapsed() > Duration::from_millis(600) {
             last_clip = Instant::now();
-            if let Some(t) = clip.changed() {
+            // Texto enorme não vai: passaria do tamanho do bloco e derrubaria a sessão.
+            if let Some(t) = clip.changed().filter(|t| t.len() <= MAX_CLIP) {
                 ch.send(&Msg::Clipboard(t))?;
             }
         }
@@ -900,7 +942,8 @@ pub struct Remote {
 }
 
 pub enum ViewerEvent {
-    Connected { name: String, os: String, sas: String, monitors: Vec<Monitor>, permissions: Permissions },
+    /// `password`: qual senha do outro lado valeu (0 = a temporária, 1 = a fixa; `None` = aceite).
+    Connected { name: String, os: String, sas: String, monitors: Vec<Monitor>, permissions: Permissions, password: Option<u8> },
     /// Se o outro lado sabe mandar som (versões antigas não sabem).
     Audio { available: bool },
     /// Recursos que o anfitrião anunciou ("audio", "rolagem-fina"…).
@@ -947,6 +990,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
         e => e.to_string(),
     })?;
     let mut ch = Chan::new(c, &keys);
+    ch.fr.set_max(PRE_ACCEPT_FRAME);
     if keys.mode == AuthMode::Request {
         let _ = ev.send(ViewerEvent::Waiting { sas: keys.sas.clone() });
     }
@@ -966,12 +1010,13 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
     };
     let mut perms = match welcome {
         Msg::Welcome { name, os, monitors, permissions } => {
-            let _ = ev.send(ViewerEvent::Connected { name, os, sas: keys.sas.clone(), monitors, permissions });
+            let _ = ev.send(ViewerEvent::Connected { name, os, sas: keys.sas.clone(), monitors, permissions, password: (keys.mode == AuthMode::Password).then_some(keys.which) });
             permissions
         }
         Msg::Bye(r) => return Err(r),
         _ => return Err("resposta inesperada".into()),
     };
+    ch.fr.set_max(elo_proto::frame::MAX_FRAME);
     ch.send(&Msg::Hello { name: my_name.into(), from_id: my_id.into() })?;
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
     // Som: liga sozinho se o outro lado sabe mandar.
@@ -1015,7 +1060,9 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
             match m {
                 Msg::FrameStart { width, height, .. } => {
                     let mut r = remote.lock().unwrap_or_else(|e| e.into_inner());
-                    r.dec.resize(width, height);
+                    if !r.dec.resize(width, height) {
+                        return Err(format!("o outro lado mandou uma tela de tamanho inválido ({width} x {height})"));
+                    }
                 }
                 Msg::Tiles(ts) => {
                     let mut r = remote.lock().unwrap_or_else(|e| e.into_inner());
@@ -1126,7 +1173,9 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 Cmd::Clipboard(on) => clip_sync = on,
                 Cmd::PasteText(t) => {
                     // Só manda se a sincronia permite e o outro lado ainda não tem esse texto.
-                    if clip_sync && perms.clipboard && clip.note_sent(&t) {
+                    if t.len() > MAX_CLIP {
+                        let _ = ev.send(ViewerEvent::Notice("o texto copiado é grande demais para colar lá (mais de 8 MB)".into()));
+                    } else if clip_sync && perms.clipboard && clip.note_sent(&t) {
                         ch.send(&Msg::Clipboard(t))?;
                     }
                 }
@@ -1156,7 +1205,8 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
         }
         if clip_sync && perms.clipboard && last_clip.elapsed() > Duration::from_millis(600) {
             last_clip = Instant::now();
-            if let Some(t) = clip.changed() {
+            // Texto enorme não vai: passaria do tamanho do bloco e derrubaria a sessão.
+            if let Some(t) = clip.changed().filter(|t| t.len() <= MAX_CLIP) {
                 ch.send(&Msg::Clipboard(t))?;
             }
         }
@@ -1302,6 +1352,29 @@ mod tests {
         assert_ne!(p, d.join("c.txt"));
         assert_eq!(std::fs::read(d.join("c.txt")).unwrap(), b"antigo");
         assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), b"n");
+    }
+
+    #[test]
+    fn received_names_cannot_fool_or_escape() {
+        assert_eq!(super::safe_file_name("fatura\u{202E}fdp.exe"), "faturafdp.exe");
+        assert_eq!(super::safe_file_name("../../.bashrc"), ".._.._.bashrc");
+        assert_eq!(super::safe_file_name("x.exe. . "), "x.exe");
+        assert_eq!(super::safe_file_name("CON.txt"), "_CON.txt");
+        assert_eq!(super::safe_file_name("com1"), "_com1");
+        assert_eq!(super::safe_file_name("console.txt"), "console.txt");
+        assert_eq!(super::safe_file_name(".."), "arquivo");
+        assert_eq!(super::safe_file_name("a\nb"), "a b");
+        assert!(super::safe_file_name(&"a".repeat(1000)).len() <= 200);
+    }
+
+    #[test]
+    fn too_many_files_at_once_are_refused() {
+        let d = temp_dir("muitos");
+        let mut f = Files::default();
+        for id in 0..super::MAX_INCOMING as u32 {
+            f.start_incoming(&d, id, "x", 10).unwrap();
+        }
+        assert!(f.start_incoming(&d, 99, "x", 10).is_err());
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
