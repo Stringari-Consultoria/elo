@@ -25,7 +25,7 @@ sha2 = "0.10"
 hmac = "0.12"
 hkdf = "0.12"
 spake2 = "0.4"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 jpeg-encoder = "0.7"
