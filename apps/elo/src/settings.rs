@@ -1,6 +1,7 @@
 //! Preferências (JSON na pasta de configuração do usuário).
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use elo_core::net::ServerCfg;
 use elo_proto::msg::Permissions;
@@ -175,12 +176,54 @@ pub fn server_data_dir() -> PathBuf {
     config_dir().join("servidor")
 }
 
+/// Lê as configurações. Arquivo que existe mas não dá para usar é guardado ao
+/// lado (`.bad-<hora>`), em vez de ser sobrescrito: nele estão o token do
+/// dispositivo (o ID) e os favoritos.
+fn read_or_set_aside(p: &Path) -> Option<Settings> {
+    let why = match std::fs::read(p) {
+        Ok(b) => match serde_json::from_slice(&b) {
+            Ok(s) => return Some(s),
+            Err(e) => e.to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => e.to_string(),
+    };
+    let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let bad = p.with_extension(format!("json.bad-{when}"));
+    let _ = std::fs::rename(p, &bad);
+    eprintln!("configurações ilegíveis ({why}): guardadas em {}", bad.display());
+    None
+}
+
+/// Grava de uma vez: num temporário só do usuário (guarda o segredo do
+/// dispositivo e a senha fixa) e depois renomeia. Queda de energia no meio não
+/// estraga o arquivo que já existia.
+fn write_private(p: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = p.with_extension(format!("json.tmp-{}", std::process::id()));
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let written = o.open(&tmp).and_then(|mut f| {
+        f.write_all(data)?;
+        f.sync_all()
+    });
+    let result = written.and_then(|_| std::fs::rename(&tmp, p));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 impl Settings {
     pub fn load() -> Self {
         let p = config_dir().join("elo.json");
         // Sempre regrava: campos novos (inclusive o token do dispositivo, que
         // define o ID) ficam persistidos já na primeira abertura.
-        let mut s = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Settings>(&b).ok()).unwrap_or_default();
+        let mut s = read_or_set_aside(&p).unwrap_or_default();
         // Padrão antigo, de um servidor que não existe: vira "sem servidor".
         if s.server.address.trim() == "elo.stringari.com.br:21116" {
             s.server.address.clear();
@@ -193,14 +236,10 @@ impl Settings {
         let dir = config_dir();
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("elo.json");
-        if let Ok(b) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(&p, b);
-            // O arquivo guarda o segredo do dispositivo e a senha fixa: só o usuário lê.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
-            }
+        if let Ok(b) = serde_json::to_vec_pretty(self)
+            && let Err(e) = write_private(&p, &b)
+        {
+            eprintln!("não foi possível salvar {}: {e}", p.display());
         }
     }
 
@@ -250,5 +289,51 @@ impl Settings {
         let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         self.recent.insert(0, Recent { id: id.into(), name: name.into(), os: os.into(), when });
         self.recent.truncate(12);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("elo-config-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn unreadable_settings_are_kept_aside_not_overwritten() {
+        let d = temp_dir("ruim");
+        let p = d.join("elo.json");
+        std::fs::write(&p, b"{ truncado").unwrap();
+        assert!(read_or_set_aside(&p).is_none());
+        assert!(!p.exists());
+        let bad: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().collect();
+        assert_eq!(bad.len(), 1);
+        assert_eq!(std::fs::read(bad[0].path()).unwrap(), b"{ truncado");
+    }
+
+    #[test]
+    fn missing_settings_are_not_an_error() {
+        let d = temp_dir("novo");
+        assert!(read_or_set_aside(&d.join("elo.json")).is_none());
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn save_replaces_the_file_and_leaves_no_temporary() {
+        let d = temp_dir("grava");
+        let p = d.join("elo.json");
+        write_private(&p, b"um").unwrap();
+        write_private(&p, b"dois").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"dois");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 }

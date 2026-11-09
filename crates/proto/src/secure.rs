@@ -82,13 +82,21 @@ fn derive(shared: &[u8], viewer: bool, mode: AuthMode, which: u8) -> Keys {
     Keys { send, recv, sas: format!("{:03} {:03}", code / 1000, code % 1000), mode, which }
 }
 
+/// Rodadas de SPAKE2 num aperto de mão (senha temporária e senha fixa).
+const MAX_ROUNDS: u8 = 2;
+
 /// Lado de quem acessa. `password` vazio = pedir acesso (aceite na tela).
 pub fn viewer_handshake(s: &mut (impl Read + Write), password: &str) -> Result<Keys> {
     let mode = if password.is_empty() { AuthMode::Request } else { AuthMode::Password };
     send_hs(s, &Hs::Start { mode, version: crate::PROTOCOL_VERSION })?;
     let pw = Password::new(password.as_bytes());
-    loop {
+    // O anfitrião tenta no máximo duas senhas. Mais rodadas seriam alguém
+    // (relay ou falso anfitrião) usando esta conexão para adivinhar a nossa.
+    for round in 0..MAX_ROUNDS {
         let Hs::PakeB { attempt, msg: mb } = recv_hs(s)? else { return Err(Error::Auth) };
+        if attempt != round {
+            return Err(Error::Auth);
+        }
         let (st, ma) = Spake2::<Ed25519Group>::start_a(&pw, &Identity::new(ID_A), &Identity::new(ID_B));
         send_hs(s, &Hs::PakeA { attempt, msg: ma })?;
         let k = st.finish(&mb).map_err(|_| Error::Auth)?;
@@ -104,6 +112,7 @@ pub fn viewer_handshake(s: &mut (impl Read + Write), password: &str) -> Result<K
             _ => return Err(Error::Auth),
         }
     }
+    Err(Error::Auth)
 }
 
 /// Lado de quem é acessado. `passwords`: senhas aceitas, na ordem de tentativa.
@@ -229,6 +238,26 @@ mod tests {
         let (v, h) = (v.unwrap(), h.unwrap());
         assert_eq!(h.mode, AuthMode::Request);
         assert_eq!(v.sas, h.sas);
+    }
+
+    #[test]
+    fn viewer_stops_answering_after_two_rounds() {
+        let (mut a, mut b) = socket_pair();
+        let fake_host = std::thread::spawn(move || {
+            let _ = recv_hs(&mut b);
+            let mut rounds = 0u8;
+            loop {
+                let (_, msg) = Spake2::<Ed25519Group>::start_b(&Password::new(b"palpite"), &Identity::new(ID_A), &Identity::new(ID_B));
+                if send_hs(&mut b, &Hs::PakeB { attempt: rounds, msg }).is_err() || recv_hs(&mut b).is_err() || recv_hs(&mut b).is_err() {
+                    return rounds;
+                }
+                rounds += 1;
+                let _ = send_hs(&mut b, &Hs::Retry { attempt: rounds - 1 });
+            }
+        });
+        assert!(matches!(viewer_handshake(&mut a, "senha-certa"), Err(Error::Auth)));
+        drop(a);
+        assert_eq!(fake_host.join().unwrap(), MAX_ROUNDS);
     }
 
     #[test]

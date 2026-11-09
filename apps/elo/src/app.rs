@@ -147,6 +147,10 @@ pub struct ViewSession {
     pub mods: egui::Modifiers,
     /// Modificadores apertados lá agora: Ctrl, Shift, Alt, Meta.
     pub held: [bool; 4],
+    /// Teclas e botões apertados lá, para soltar exatamente o que foi apertado
+    /// (mesmo que os modificadores tenham mudado ou o mouse tenha saído da tela).
+    pub keys_down: Vec<(egui::Key, elo_proto::msg::Key)>,
+    pub buttons_down: Vec<elo_proto::msg::Button>,
     pub started: Instant,
     /// Último movimento do mouse local sobre a tela remota.
     pub last_move: Instant,
@@ -745,6 +749,8 @@ impl EloApp {
                         quality: q,
                         mods: egui::Modifiers::NONE,
                         held: [false; 4],
+                        keys_down: Vec::new(),
+                        buttons_down: Vec::new(),
                         started: Instant::now(),
                         last_move: Instant::now(),
                         scroll_acc: egui::Vec2::ZERO,
@@ -793,7 +799,9 @@ impl EloApp {
                         h.chat_open = true;
                     }
                     HostEvent::File(t) => {
-                        if t.finished && t.incoming {
+                        if let (true, Some(e)) = (t.finished, &t.error) {
+                            toasts.push((t!("Arquivo {} não foi transferido: {}", t.name, crate::i18n::tr_dyn(e)), true));
+                        } else if t.finished && t.incoming {
                             toasts.push((t!("Arquivo recebido: {}", t.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()), false));
                         }
                         upsert(&mut h.transfers, t);
@@ -848,7 +856,10 @@ impl EloApp {
                             learned.push((v.target_id.clone(), v.password.clone()));
                         }
                     }
-                    ViewerEvent::Waiting => v.waiting = true,
+                    ViewerEvent::Waiting { sas } => {
+                        v.waiting = true;
+                        v.sas = sas;
+                    }
                     ViewerEvent::Audio { available } => v.audio_available = available,
                     ViewerEvent::Features(f) => {
                         v.fine_scroll = f.iter().any(|x| x == "rolagem-fina");
@@ -937,6 +948,11 @@ fn server_cfg(s: &Settings, local: &Local) -> ServerCfg {
 
 fn upsert(list: &mut Vec<Transfer>, t: Transfer) {
     match list.iter_mut().find(|x| x.id == t.id && x.incoming == t.incoming) {
+        // Aviso de falha sem nome: mantém o nome e o tamanho que já estavam na lista.
+        Some(x) if t.name.is_empty() => {
+            x.finished = t.finished;
+            x.error = t.error;
+        }
         Some(x) => *x = t,
         None => list.push(t),
     }

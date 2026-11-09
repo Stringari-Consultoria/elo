@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use elo_proto::codec::{Decoder, Encoder};
 use elo_proto::ctrl::{FromServer, ToServer};
 use elo_proto::frame::{read_frame, write_frame};
-use elo_proto::msg::{DirEntry, Input, Key, Monitor, Msg, Permissions};
+use elo_proto::msg::{Button, DirEntry, Input, Key, Monitor, Msg, Permissions};
 use elo_proto::secure::{AuthMode, Opener, Sealer, host_handshake, viewer_handshake};
 
 use crate::net::{Conn, Framer, ServerCfg, connect};
@@ -99,9 +99,43 @@ fn join(cfg: &ServerCfg, session: u64, secret: [u8; 16], host: bool) -> Result<C
 #[derive(Default)]
 struct Files {
     outgoing: Vec<(u32, File, u64, u64, String)>,
-    incoming: Vec<(u32, File, PathBuf, u64, u64)>,
+    incoming: Vec<Incoming>,
     next: u32,
     offered: Vec<(u32, PathBuf, u64)>,
+}
+
+/// Arquivo chegando: fica em `<nome>.part` e só ganha o nome final inteiro.
+struct Incoming {
+    id: u32,
+    file: File,
+    part: PathBuf,
+    path: PathBuf,
+    done: u64,
+    total: u64,
+}
+
+impl Incoming {
+    fn name(&self) -> String {
+        self.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
+    /// Desiste: apaga o parcial.
+    fn fail(self, why: &str) -> Transfer {
+        let name = self.name();
+        let Incoming { id, file, part, done, total, .. } = self;
+        drop(file);
+        let _ = std::fs::remove_file(part);
+        Transfer { id, name, done, total, incoming: true, finished: true, path: None, error: Some(why.into()) }
+    }
+}
+
+impl Drop for Files {
+    /// A sessão acabou no meio: não deixa arquivo pela metade.
+    fn drop(&mut self) {
+        for x in self.incoming.drain(..) {
+            x.fail("");
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +147,27 @@ pub struct Transfer {
     pub incoming: bool,
     pub finished: bool,
     pub path: Option<PathBuf>,
+    /// Terminou sem dar certo (com `finished`).
+    pub error: Option<String>,
+}
+
+fn part_of(p: &Path) -> PathBuf {
+    let mut s = p.as_os_str().to_os_string();
+    s.push(".part");
+    PathBuf::from(s)
+}
+
+/// Caminho livre em `dir` para `name` (não sobrescreve nada).
+fn free_path(dir: &Path, name: &str) -> PathBuf {
+    let mut p = dir.join(name);
+    let mut k = 1;
+    while p.exists() || part_of(&p).exists() {
+        let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = Path::new(name).extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+        p = dir.join(format!("{stem} ({k}){ext}"));
+        k += 1;
+    }
+    p
 }
 
 impl Files {
@@ -121,42 +176,86 @@ impl Files {
         if meta.is_dir() {
             return Err("pastas ainda não podem ser enviadas; envie os arquivos".into());
         }
+        if !meta.is_file() {
+            return Err("só arquivos comuns podem ser enviados".into());
+        }
         let size = meta.len();
         self.next += 1;
         let id = self.next;
         let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "arquivo".into());
         ch.send(&Msg::FileOffer { id, name: name.clone(), size, dir })?;
         self.offered.push((id, path.to_path_buf(), size));
-        Ok(Transfer { id, name, done: 0, total: size, incoming: false, finished: false, path: Some(path.to_path_buf()) })
+        Ok(Transfer { id, name, done: 0, total: size, incoming: false, finished: false, path: Some(path.to_path_buf()), error: None })
     }
 
-    fn accepted(&mut self, id: u32) -> Result<(), String> {
-        let Some(k) = self.offered.iter().position(|x| x.0 == id) else { return Ok(()) };
+    /// O destino aceitou. Se o arquivo não abrir, só esta transferência falha
+    /// (`FileEnd` antes da hora: o destino vê que ficou incompleto).
+    fn accepted(&mut self, ch: &mut Chan, id: u32) -> Result<Option<Transfer>, String> {
+        let Some(k) = self.offered.iter().position(|x| x.0 == id) else { return Ok(None) };
         let (id, path, size) = self.offered.remove(k);
-        let f = File::open(&path).map_err(|e| e.to_string())?;
-        self.outgoing.push((id, f, 0, size, path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
-        Ok(())
+        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match File::open(&path) {
+            Ok(f) => {
+                self.outgoing.push((id, f, 0, size, name));
+                Ok(None)
+            }
+            Err(e) => {
+                ch.send(&Msg::FileEnd { id })?;
+                Ok(Some(Transfer { id, name, done: 0, total: size, incoming: false, finished: true, path: None, error: Some(e.to_string()) }))
+            }
+        }
     }
 
     /// Envia um pedaço de cada envio em andamento. Devolve progresso.
     fn pump(&mut self, ch: &mut Chan, out: &mut Vec<Transfer>) -> Result<(), String> {
         let mut done = Vec::new();
         for (id, f, sent, total, name) in self.outgoing.iter_mut() {
-            let mut buf = vec![0u8; CHUNK];
-            let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+            // Nunca mais do que o anunciado, mesmo que o arquivo tenha crescido.
+            let mut buf = vec![0u8; CHUNK.min(total.saturating_sub(*sent).min(CHUNK as u64) as usize)];
+            let (n, error) = match f.read(&mut buf) {
+                Ok(0) => (0, (*sent < *total).then(|| "o arquivo diminuiu durante o envio".to_string())),
+                Ok(n) => (n, None),
+                Err(e) => (0, Some(e.to_string())),
+            };
             if n == 0 {
                 ch.send(&Msg::FileEnd { id: *id })?;
                 done.push(*id);
-                out.push(Transfer { id: *id, name: name.clone(), done: *sent, total: *total, incoming: false, finished: true, path: None });
+                out.push(Transfer { id: *id, name: name.clone(), done: *sent, total: *total, incoming: false, finished: true, path: None, error });
                 continue;
             }
             buf.truncate(n);
             ch.send(&Msg::FileChunk { id: *id, data: buf })?;
             *sent += n as u64;
-            out.push(Transfer { id: *id, name: name.clone(), done: *sent, total: *total, incoming: false, finished: false, path: None });
+            out.push(Transfer { id: *id, name: name.clone(), done: *sent, total: *total, incoming: false, finished: false, path: None, error: None });
         }
         self.outgoing.retain(|x| !done.contains(&x.0));
         Ok(())
+    }
+
+    /// O destino recusou ou não conseguiu gravar: para de enviar. O nome vazio
+    /// mantém o que já estava na lista.
+    fn cancel_send(&mut self, id: u32) -> Transfer {
+        self.offered.retain(|x| x.0 != id);
+        self.outgoing.retain(|x| x.0 != id);
+        Transfer { id, name: String::new(), done: 0, total: 0, incoming: false, finished: true, path: None, error: Some("o outro lado recusou ou não conseguiu gravar o arquivo".into()) }
+    }
+
+    /// Permissão de arquivos retirada: para tudo o que estava em andamento.
+    fn revoke(&mut self, ch: &mut Chan) -> Result<Vec<Transfer>, String> {
+        const WHY: &str = "a permissão de arquivos foi retirada";
+        let mut out = Vec::new();
+        for (id, ..) in std::mem::take(&mut self.offered) {
+            ch.send(&Msg::FileEnd { id })?;
+        }
+        for (id, _, sent, total, name) in std::mem::take(&mut self.outgoing) {
+            ch.send(&Msg::FileEnd { id })?;
+            out.push(Transfer { id, name, done: sent, total, incoming: false, finished: true, path: None, error: Some(WHY.into()) });
+        }
+        for x in std::mem::take(&mut self.incoming) {
+            ch.send(&Msg::FileCancel { id: x.id })?;
+            out.push(x.fail(WHY));
+        }
+        Ok(out)
     }
 
     fn start_incoming(&mut self, dir: &Path, id: u32, name: &str, size: u64) -> Result<PathBuf, String> {
@@ -164,59 +263,119 @@ impl Files {
         // Nome seguro (sem caminhos) e sem sobrescrever.
         let clean: String = name.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '\0')).collect();
         let clean = if clean.trim_matches('.').is_empty() { "arquivo".to_string() } else { clean };
-        let mut p = dir.join(&clean);
-        let mut k = 1;
-        while p.exists() {
-            let stem = Path::new(&clean).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let ext = Path::new(&clean).extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
-            p = dir.join(format!("{stem} ({k}){ext}"));
-            k += 1;
-        }
-        let f = File::create(&p).map_err(|e| e.to_string())?;
-        self.incoming.push((id, f, p.clone(), 0, size));
-        Ok(p)
+        let path = free_path(dir, &clean);
+        let part = part_of(&path);
+        let file = File::options().write(true).create_new(true).open(&part).map_err(|e| e.to_string())?;
+        self.incoming.push(Incoming { id, file, part, path: path.clone(), done: 0, total: size });
+        Ok(path)
     }
 
+    /// Grava um pedaço. Falhou (`error` preenchido): o parcial já foi apagado.
     fn chunk(&mut self, id: u32, data: &[u8]) -> Option<Transfer> {
-        let x = self.incoming.iter_mut().find(|x| x.0 == id)?;
-        if x.1.write_all(data).is_err() {
-            return None;
+        let k = self.incoming.iter().position(|x| x.id == id)?;
+        let x = &mut self.incoming[k];
+        let too_much = x.done.saturating_add(data.len() as u64) > x.total;
+        if too_much || x.file.write_all(data).is_err() {
+            let why = if too_much { "o outro lado enviou mais dados do que o combinado" } else { "não foi possível gravar o arquivo (disco cheio?)" };
+            return Some(self.incoming.remove(k).fail(why));
         }
-        x.3 += data.len() as u64;
-        Some(Transfer { id, name: x.2.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), done: x.3, total: x.4, incoming: true, finished: false, path: Some(x.2.clone()) })
+        x.done += data.len() as u64;
+        Some(Transfer { id, name: x.name(), done: x.done, total: x.total, incoming: true, finished: false, path: Some(x.path.clone()), error: None })
     }
 
+    /// Só dá o arquivo como recebido se chegou inteiro e foi para o disco.
     fn end(&mut self, id: u32) -> Option<Transfer> {
-        let k = self.incoming.iter().position(|x| x.0 == id)?;
-        let (id, f, p, done, total) = self.incoming.remove(k);
-        drop(f);
-        Some(Transfer { id, name: p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), done, total, incoming: true, finished: true, path: Some(p) })
+        let k = self.incoming.iter().position(|x| x.id == id)?;
+        let x = self.incoming.remove(k);
+        if x.done != x.total {
+            return Some(x.fail("o arquivo chegou incompleto"));
+        }
+        if x.file.sync_all().is_err() {
+            return Some(x.fail("não foi possível gravar o arquivo (disco cheio?)"));
+        }
+        let name = x.name();
+        // Pode ter aparecido um arquivo com esse nome enquanto chegava.
+        let path = if x.path.exists() { x.path.parent().map(|d| free_path(d, &name)).unwrap_or_else(|| x.path.clone()) } else { x.path.clone() };
+        if std::fs::rename(&x.part, &path).is_err() {
+            return Some(x.fail("não foi possível gravar o arquivo (disco cheio?)"));
+        }
+        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(name);
+        Some(Transfer { id, name, done: x.done, total: x.total, incoming: true, finished: true, path: Some(path), error: None })
     }
 }
 
 /// Modificadores que transformam uma letra em atalho.
 const SHORTCUT_MODS: [Key; 3] = [Key::Control, Key::Alt, Key::Meta];
 
-/// Repassa a entrada ao sistema. Texto nunca é digitado com Ctrl, Alt ou Meta
-/// apertado: cada letra viraria um atalho no programa aberto. Vale também para
-/// visualizadores antigos, que colavam com o Ctrl da colagem ainda apertado.
-fn apply_input(ctl: &mut dyn platform::Control, held: &mut [bool; 3], input: &Input, monitor: u8) {
-    if let Input::Key { key, down } = input
-        && let Some(i) = SHORTCUT_MODS.iter().position(|m| m == key)
-    {
-        held[i] = *down;
+/// Texto maior do que isto de uma vez é ignorado: a digitação não dá para
+/// interromper. Colar não passa por aqui (vai pela área de transferência).
+const MAX_TYPED: usize = 4096;
+
+/// Aplica a entrada do visualizador neste computador e lembra o que ficou
+/// apertado, para soltar tudo quando a sessão acaba ou o controle é retirado.
+struct Injector {
+    ctl: Box<dyn platform::Control>,
+    keys: Vec<Key>,
+    buttons: Vec<Button>,
+}
+
+impl Injector {
+    fn new(ctl: Box<dyn platform::Control>) -> Self {
+        Self { ctl, keys: Vec::new(), buttons: Vec::new() }
     }
-    let text = matches!(input, Input::Text(_));
-    let mods = |ctl: &mut dyn platform::Control, down: bool| {
-        for (key, on) in SHORTCUT_MODS.iter().zip(held.iter()) {
-            if *on && text {
-                ctl.apply(&Input::Key { key: *key, down }, monitor);
+
+    fn apply(&mut self, input: &Input, monitor: u8) {
+        match input {
+            Input::Text(t) => {
+                if t.chars().count() > MAX_TYPED {
+                    return;
+                }
+                // Texto nunca é digitado com Ctrl, Alt ou Meta apertado: cada letra
+                // viraria um atalho no programa aberto (visualizadores antigos colavam assim).
+                let mods: Vec<Key> = self.keys.iter().copied().filter(|k| SHORTCUT_MODS.contains(k)).collect();
+                for key in &mods {
+                    self.ctl.apply(&Input::Key { key: *key, down: false }, monitor);
+                }
+                self.ctl.apply(input, monitor);
+                for key in &mods {
+                    self.ctl.apply(&Input::Key { key: *key, down: true }, monitor);
+                }
+                return;
             }
+            Input::Key { key, down } => {
+                self.keys.retain(|k| k != key);
+                if *down {
+                    self.keys.push(*key);
+                }
+            }
+            Input::MouseButton { button, down } => {
+                self.buttons.retain(|b| b != button);
+                if *down {
+                    self.buttons.push(*button);
+                }
+            }
+            _ => {}
         }
-    };
-    mods(ctl, false);
-    ctl.apply(input, monitor);
-    mods(ctl, true);
+        self.ctl.apply(input, monitor);
+    }
+
+    /// Solta tudo e descarta o que ainda não foi aplicado.
+    fn release_all(&mut self) {
+        self.ctl.discard_pending();
+        for key in std::mem::take(&mut self.keys).into_iter().rev() {
+            self.ctl.apply(&Input::Key { key, down: false }, 0);
+        }
+        for button in std::mem::take(&mut self.buttons) {
+            self.ctl.apply(&Input::MouseButton { button, down: false }, 0);
+        }
+        self.ctl.settle();
+    }
+}
+
+impl Drop for Injector {
+    fn drop(&mut self) {
+        self.release_all();
+    }
 }
 
 /// Pasta pessoal do usuário.
@@ -382,6 +541,8 @@ pub enum Cmd {
     Refresh,
     Permissions(Permissions),
     Clipboard(bool),
+    /// Vai colar lá: o texto que está na área de transferência daqui agora.
+    PasteText(String),
     SecureAttention,
     /// Visualizador: ouvir ou não o som de lá. Anfitrião: permitir ou não.
     Audio(bool),
@@ -466,7 +627,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         }
     }
     let mut screen = platform::open_screen()?;
-    let mut control = platform::open_control().ok();
+    let mut control = platform::open_control().ok().map(Injector::new);
     let mut clip = Clip::new();
     let monitors = screen.monitors();
     ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
@@ -475,8 +636,6 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut enc = Encoder::new();
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
     let mut monitor = 0u8;
-    // Ctrl/Alt/Meta que o visualizador deixou apertados (ver `apply_input`).
-    let mut shortcut_mods = [false; 3];
     let mut seq = 0u32;
     let mut acked = 0u32;
     let mut last_frame = Instant::now() - Duration::from_secs(1);
@@ -500,6 +659,10 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         }
         // Mensagens do visualizador.
         for _ in 0..64 {
+            // "Encerrar" vale também no meio de um lote de entradas.
+            if h.stop.load(Ordering::Relaxed) {
+                break;
+            }
             let Some(m) = ch.poll()? else { break };
             last_rx = Instant::now();
             match m {
@@ -509,7 +672,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     if perms.control
                         && let Some(ctl) = control.as_mut()
                     {
-                        apply_input(ctl.as_mut(), &mut shortcut_mods, &i, monitor);
+                        ctl.apply(&i, monitor);
                     }
                 }
                 Msg::Clipboard(t) => {
@@ -542,14 +705,27 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         ch.send(&Msg::FileCancel { id })?;
                     }
                 }
-                Msg::FileAccept { id } => files.accepted(id)?,
-                Msg::FileChunk { id, data } => {
-                    if let Some(t) = files.chunk(id, &data) {
+                Msg::FileAccept { id } if perms.files => {
+                    if let Some(t) = files.accepted(&mut ch, id)? {
                         let _ = ev.send(HostEvent::File(t));
                     }
                 }
-                Msg::FileEnd { id } => {
+                Msg::FileCancel { id } => {
+                    let _ = ev.send(HostEvent::File(files.cancel_send(id)));
+                }
+                Msg::FileChunk { id, data } if perms.files => {
+                    if let Some(t) = files.chunk(id, &data) {
+                        if t.error.is_some() {
+                            ch.send(&Msg::FileCancel { id })?;
+                        }
+                        let _ = ev.send(HostEvent::File(t));
+                    }
+                }
+                Msg::FileEnd { id } if perms.files => {
                     if let Some(t) = files.end(id) {
+                        if t.error.is_some() {
+                            ch.send(&Msg::FileCancel { id })?;
+                        }
                         let _ = ev.send(HostEvent::File(t));
                     }
                 }
@@ -601,6 +777,17 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     }
                 }
                 Cmd::Permissions(p) => {
+                    // Retirou o controle no meio de um arrasto ou atalho: não fica nada apertado.
+                    if !p.control
+                        && let Some(c) = control.as_mut()
+                    {
+                        c.release_all();
+                    }
+                    if !p.files {
+                        for t in files.revoke(&mut ch)? {
+                            let _ = ev.send(HostEvent::File(t));
+                        }
+                    }
                     perms = p;
                     ch.send(&Msg::Permissions(p))?;
                 }
@@ -718,7 +905,8 @@ pub enum ViewerEvent {
     Audio { available: bool },
     /// Recursos que o anfitrião anunciou ("audio", "rolagem-fina"…).
     Features(Vec<String>),
-    Waiting,
+    /// Esperando o aceite. `sas`: o código a conferir com quem vai aceitar.
+    Waiting { sas: String },
     Chat(String),
     File(Transfer),
     Permissions(Permissions),
@@ -760,7 +948,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
     })?;
     let mut ch = Chan::new(c, &keys);
     if keys.mode == AuthMode::Request {
-        let _ = ev.send(ViewerEvent::Waiting);
+        let _ = ev.send(ViewerEvent::Waiting { sas: keys.sas.clone() });
     }
     // Espera o aceite (até 90 s).
     ch.c.set_read_timeout(Some(Duration::from_millis(200)));
@@ -863,17 +1051,27 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                     Ok(_) => ch.send(&Msg::FileAccept { id })?,
                     Err(_) => ch.send(&Msg::FileCancel { id })?,
                 },
-                Msg::FileAccept { id } => files.accepted(id)?,
+                Msg::FileAccept { id } => {
+                    if let Some(t) = files.accepted(&mut ch, id)? {
+                        let _ = ev.send(ViewerEvent::File(t));
+                    }
+                }
                 Msg::FileCancel { id } => {
-                    let _ = ev.send(ViewerEvent::File(Transfer { id, name: "envio recusado pelo outro lado".into(), done: 0, total: 0, incoming: false, finished: true, path: None }));
+                    let _ = ev.send(ViewerEvent::File(files.cancel_send(id)));
                 }
                 Msg::FileChunk { id, data } => {
                     if let Some(t) = files.chunk(id, &data) {
+                        if t.error.is_some() {
+                            ch.send(&Msg::FileCancel { id })?;
+                        }
                         let _ = ev.send(ViewerEvent::File(t));
                     }
                 }
                 Msg::FileEnd { id } => {
                     if let Some(t) = files.end(id) {
+                        if t.error.is_some() {
+                            ch.send(&Msg::FileCancel { id })?;
+                        }
                         let _ = ev.send(ViewerEvent::File(t));
                     }
                 }
@@ -926,6 +1124,12 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
                 Cmd::Monitor(i) => ch.send(&Msg::SelectMonitor(i))?,
                 Cmd::Refresh => ch.send(&Msg::Refresh)?,
                 Cmd::Clipboard(on) => clip_sync = on,
+                Cmd::PasteText(t) => {
+                    // Só manda se a sincronia permite e o outro lado ainda não tem esse texto.
+                    if clip_sync && perms.clipboard && clip.note_sent(&t) {
+                        ch.send(&Msg::Clipboard(t))?;
+                    }
+                }
                 Cmd::Permissions(_) => {}
                 Cmd::Audio(on) => {
                     if !audio_ok {
@@ -979,12 +1183,18 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, m
 mod tests {
     use super::*;
 
-    #[derive(Default)]
-    struct Fake(Vec<Input>);
+    #[derive(Clone, Default)]
+    struct Fake(Arc<Mutex<Vec<Input>>>);
 
     impl platform::Control for Fake {
         fn apply(&mut self, input: &Input, _monitor: u8) {
-            self.0.push(input.clone());
+            self.0.lock().unwrap().push(input.clone());
+        }
+    }
+
+    impl Fake {
+        fn seen(&self) -> Vec<Input> {
+            self.0.lock().unwrap().clone()
         }
     }
 
@@ -994,22 +1204,104 @@ mod tests {
 
     #[test]
     fn text_never_goes_out_with_a_shortcut_modifier_held() {
-        let (mut c, mut held) = (Fake::default(), [false; 3]);
+        let fake = Fake::default();
+        let mut inj = Injector::new(Box::new(fake.clone()));
         let paste = Input::Text("a-b".into());
         for i in [key(Key::Control, true), paste.clone(), key(Key::Control, false)] {
-            apply_input(&mut c, &mut held, &i, 0);
+            inj.apply(&i, 0);
         }
-        assert_eq!(c.0, [key(Key::Control, true), key(Key::Control, false), paste, key(Key::Control, true), key(Key::Control, false)]);
+        assert_eq!(fake.seen(), [key(Key::Control, true), key(Key::Control, false), paste, key(Key::Control, true), key(Key::Control, false)]);
     }
 
     #[test]
     fn shortcuts_and_shift_stay_as_they_are() {
-        let (mut c, mut held) = (Fake::default(), [false; 3]);
+        let fake = Fake::default();
+        let mut inj = Injector::new(Box::new(fake.clone()));
         let typed = [key(Key::Shift, true), Input::Text("A".into()), key(Key::Shift, false), key(Key::Control, true), key(Key::Char('s'), true), key(Key::Char('s'), false), key(Key::Control, false)];
         for i in &typed {
-            apply_input(&mut c, &mut held, i, 0);
+            inj.apply(i, 0);
         }
-        assert_eq!(c.0, typed);
+        assert_eq!(fake.seen(), typed);
+    }
+
+    #[test]
+    fn huge_text_is_ignored() {
+        let fake = Fake::default();
+        let mut inj = Injector::new(Box::new(fake.clone()));
+        inj.apply(&Input::Text("x".repeat(MAX_TYPED + 1)), 0);
+        assert!(fake.seen().is_empty());
+    }
+
+    #[test]
+    fn everything_is_released_when_the_session_ends() {
+        let fake = Fake::default();
+        {
+            let mut inj = Injector::new(Box::new(fake.clone()));
+            inj.apply(&key(Key::Alt, true), 0);
+            inj.apply(&Input::MouseButton { button: Button::Left, down: true }, 0);
+            inj.apply(&key(Key::Char('f'), true), 0);
+            inj.apply(&key(Key::Char('f'), false), 0);
+        }
+        let seen = fake.seen();
+        assert_eq!(seen[seen.len() - 2..], [key(Key::Alt, false), Input::MouseButton { button: Button::Left, down: false }]);
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("elo-arquivos-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn file_only_gets_its_name_when_complete() {
+        let d = temp_dir("completo");
+        let mut f = Files::default();
+        let path = f.start_incoming(&d, 1, "a.txt", 3).unwrap();
+        assert!(!path.exists() && part_of(&path).exists());
+        assert!(f.chunk(1, b"abc").unwrap().error.is_none());
+        let t = f.end(1).unwrap();
+        assert!(t.error.is_none() && t.finished);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        assert!(!part_of(&path).exists());
+    }
+
+    #[test]
+    fn incomplete_or_oversized_file_is_removed_and_reported() {
+        let d = temp_dir("incompleto");
+        let mut f = Files::default();
+        let curto = f.start_incoming(&d, 1, "curto.txt", 10).unwrap();
+        f.chunk(1, b"abc");
+        assert!(f.end(1).unwrap().error.is_some());
+        assert!(!curto.exists() && !part_of(&curto).exists());
+        let longo = f.start_incoming(&d, 2, "longo.txt", 2).unwrap();
+        assert!(f.chunk(2, b"abc").unwrap().error.is_some());
+        assert!(!longo.exists() && !part_of(&longo).exists());
+    }
+
+    #[test]
+    fn session_ending_midway_leaves_no_partial_file() {
+        let d = temp_dir("queda");
+        let path = {
+            let mut f = Files::default();
+            let p = f.start_incoming(&d, 1, "b.txt", 10).unwrap();
+            f.chunk(1, b"abc");
+            p
+        };
+        assert!(!path.exists() && !part_of(&path).exists());
+    }
+
+    #[test]
+    fn same_name_never_overwrites() {
+        let d = temp_dir("nome");
+        std::fs::write(d.join("c.txt"), b"antigo").unwrap();
+        let mut f = Files::default();
+        let p = f.start_incoming(&d, 1, "c.txt", 1).unwrap();
+        f.chunk(1, b"n");
+        let t = f.end(1).unwrap();
+        assert_ne!(p, d.join("c.txt"));
+        assert_eq!(std::fs::read(d.join("c.txt")).unwrap(), b"antigo");
+        assert_eq!(std::fs::read(t.path.unwrap()).unwrap(), b"n");
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]

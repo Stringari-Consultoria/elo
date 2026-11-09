@@ -288,12 +288,10 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
         }
         #[cfg(target_os = "linux")]
         Install::LinuxDir(dir) => {
-            let tmp = std::env::temp_dir().join(format!("elo-atualizacao-{}", std::process::id()));
+            let tmp = private_dir(file.parent().unwrap_or(Path::new("."))).map_err(|e| e.to_string())?;
+            let replaced = run(Command::new("tar").arg("-xzf").arg(file).arg("-C").arg(&tmp)).and_then(|_| replace_binaries(&tmp, dir));
             let _ = std::fs::remove_dir_all(&tmp);
-            std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-            run(Command::new("tar").arg("-xzf").arg(file).arg("-C").arg(&tmp))?;
-            replace_binaries(&tmp, dir)?;
-            let _ = std::fs::remove_dir_all(&tmp);
+            replaced?;
             let args = if background { format!(" {}", crate::autostart::ARG) } else { String::new() };
             relaunch(&format!("exec {}{}", sh_quote(&dir.join(exe_name())), args))
         }
@@ -307,6 +305,16 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
         #[allow(unreachable_patterns)]
         _ => Err(t!("atualização automática não disponível neste sistema").into()),
     }
+}
+
+/// Pasta nova, só deste usuário e com nome imprevisível, para extrair o pacote.
+/// Num `/tmp` compartilhado, outra conta poderia plantar o executável.
+#[cfg(target_os = "linux")]
+fn private_dir(base: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = base.join(format!("extracao-{:016x}", rand::random::<u64>()));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    Ok(dir)
 }
 
 /// Troca `elo` e `elo-server` em `dir` pelos que estão em `extracted/<pasta do pacote>/`.
@@ -530,6 +538,18 @@ mod tests {
         // Conteúdo diferente do anunciado: recusado e apagado.
         assert!(download_to(&format!("{base}/errado.tar.gz"), &a, &dir, &prog).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn extraction_folder_is_private_and_new() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("elo-extracao-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let (a, b) = (private_dir(&base).unwrap(), private_dir(&base).unwrap());
+        assert_ne!(a, b);
+        assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[cfg(target_os = "linux")]

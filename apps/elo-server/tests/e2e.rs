@@ -36,6 +36,40 @@ fn wait<T>(rx: &std::sync::mpsc::Receiver<T>, secs: u64, mut f: impl FnMut(&T) -
     None
 }
 
+/// Conexão de controle crua, sem TLS: `Hello` com o nome dado.
+fn raw_hello(port: u16, token: u8, name: &str) -> std::net::TcpStream {
+    let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let hello = elo_proto::ctrl::ToServer::Hello { token: [token; 32], name: name.into(), os: "Linux".into(), version: elo_proto::PROTOCOL_VERSION, mac: String::new() };
+    elo_proto::frame::send(&mut c, &hello).unwrap();
+    c
+}
+
+#[test]
+fn flood_of_control_messages_loses_the_connection() {
+    let port = 29000 + (std::process::id() % 1000) as u16;
+    let dir = std::env::temp_dir().join(format!("elo-e2e-inundacao-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _srv = Server(Command::new(env!("CARGO_BIN_EXE_elo-server")).args(["--listen", &format!("127.0.0.1:{port}"), "--data", dir.to_str().unwrap(), "--no-tls"]).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500));
+    // Nome enorme com quebra de linha: guardado curto e sem o controle.
+    let enorme = format!("a\nb{}", "x".repeat(60_000));
+    let mut c = raw_hello(port, 9, &enorme);
+    std::thread::sleep(Duration::from_millis(300));
+    let saved = std::fs::read_to_string(dir.join("dispositivos.json")).unwrap();
+    assert!(saved.len() < 2000 && !saved.contains("a\\nb"), "{}", &saved[..saved.len().min(200)]);
+    // Manda sem ler as respostas: o servidor corta em vez de acumular.
+    c.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut cut = false;
+    for _ in 0..50_000 {
+        if elo_proto::frame::send(&mut c, &elo_proto::ctrl::ToServer::Ping).is_err() {
+            cut = true;
+            break;
+        }
+    }
+    assert!(cut, "o servidor continuou aceitando a inundação");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn session_through_relay() {
     if std::env::var("DISPLAY").is_err() {
@@ -145,6 +179,18 @@ fn session_through_relay() {
         let up = t.path.unwrap();
         assert!(up.starts_with(shared.join("sub")), "{}", up.display());
         assert_eq!(std::fs::metadata(&up).unwrap().len(), 500_000);
+        // Retirar "Arquivos" para o que já está em andamento, dos dois lados, e sem deixar parcial.
+        let grande = dir.join("grande.bin");
+        std::fs::write(&grande, vec![7u8; 64 * 1024 * 1024]).unwrap();
+        let destino = shared.join("revogado");
+        std::fs::create_dir_all(&destino).unwrap();
+        vh.cmd.send(session::Cmd::Upload(grande, destino.to_string_lossy().into_owned())).unwrap();
+        assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.incoming && t.done > 0)).is_some(), "o envio não começou");
+        hh.cmd.send(session::Cmd::Permissions(elo_proto::msg::Permissions { files: false, ..Default::default() })).unwrap();
+        assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::File(t) if t.incoming && t.error.is_some())).is_some(), "o recebimento continuou depois de retirar a permissão");
+        assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::File(t) if !t.incoming && t.error.is_some())).is_some(), "quem enviava não soube");
+        assert_eq!(std::fs::read_dir(&destino).unwrap().count(), 0, "ficou arquivo pela metade");
+        hh.cmd.send(session::Cmd::Permissions(Default::default())).unwrap();
         // Reiniciar: o anfitrião responde com o motivo combinado (o visualizador reconecta).
         let antes = REINICIOS.load(std::sync::atomic::Ordering::SeqCst);
         vh.cmd.send(session::Cmd::Restart).unwrap();
@@ -365,7 +411,7 @@ fn cancelled_request_disappears() {
     // Sem senha: vira pedido na tela do anfitrião.
     // (Guarda o pedido, como a tela do app: ninguém respondeu ainda.)
     let Some(HostEvent::Ask { reply: _pending, .. }) = wait(&hrx, 10, |e| matches!(e, HostEvent::Ask { .. })) else { panic!("o pedido não chegou ao anfitrião") };
-    assert!(wait(&vrx, 5, |e| matches!(e, ViewerEvent::Waiting)).is_some());
+    assert!(wait(&vrx, 5, |e| matches!(e, ViewerEvent::Waiting { sas } if !sas.is_empty())).is_some(), "o código de verificação tem de aparecer antes do aceite");
     // Quem pediu cancela.
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let ended = wait(&hrx, 8, |e| matches!(e, HostEvent::Ended(_)));

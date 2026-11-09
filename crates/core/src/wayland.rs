@@ -6,7 +6,7 @@
 //! próximas, o portal não pergunta de novo (até alguém revogar).
 
 use std::os::fd::OwnedFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -42,7 +42,12 @@ struct Portal {
     streams: Vec<StreamMeta>,
     /// Último quadro de cada monitor.
     frames: Vec<Arc<Mutex<Option<Frame>>>>,
-    cmd: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    /// Comandos com a época em que foram pedidos (ver `epoch`).
+    cmd: tokio::sync::mpsc::UnboundedSender<(u64, Cmd)>,
+    /// Sobe no fim da sessão: o que ainda estava na fila é descartado.
+    epoch: Arc<AtomicU64>,
+    /// Comandos na fila, para não acumular texto sem limite.
+    pending: Arc<AtomicUsize>,
     quit_pw: Mutex<Option<pipewire::channel::Sender<()>>>,
     stop: Arc<AtomicBool>,
     /// Alguém está capturando (sem ninguém, os quadros são descartados).
@@ -156,7 +161,10 @@ async fn apply(rd: &RemoteDesktop, s: &Session<RemoteDesktop>, c: Cmd) {
 
 fn start() -> Result<Arc<Portal>, String> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(Vec<StreamMeta>, OwnedFd), String>>();
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Cmd>();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Cmd)>();
+    let epoch = Arc::new(AtomicU64::new(0));
+    let pending = Arc::new(AtomicUsize::new(0));
+    let (run_epoch, run_pending) = (epoch.clone(), pending.clone());
     std::thread::Builder::new()
         .name("elo-portal".into())
         .spawn(move || {
@@ -172,8 +180,11 @@ fn start() -> Result<Arc<Portal>, String> {
                     Ok((rd, session, streams, fd)) => {
                         let _ = ready_tx.send(Ok((streams, fd)));
                         // Entradas até a sessão acabar (o `Portal` é descartado).
-                        while let Some(c) = cmd_rx.recv().await {
-                            apply(&rd, &session, c).await;
+                        while let Some((e, c)) = cmd_rx.recv().await {
+                            run_pending.fetch_sub(1, Ordering::Relaxed);
+                            if e == run_epoch.load(Ordering::Relaxed) {
+                                apply(&rd, &session, c).await;
+                            }
                         }
                         let _ = session.close().await;
                         eprintln!("[portal] sessão fechada");
@@ -202,7 +213,7 @@ fn start() -> Result<Arc<Portal>, String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(Arc::new(Portal { streams, frames, cmd: cmd_tx, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted }))
+    Ok(Arc::new(Portal { streams, frames, cmd: cmd_tx, epoch, pending, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted }))
 }
 
 /// Recebe os quadros de cada monitor e guarda o último, em RGBA.
@@ -393,13 +404,17 @@ impl Screen for WaylandScreen {
     }
 }
 
+/// Acima disto na fila, texto novo é ignorado.
+const MAX_QUEUED: usize = 8192;
+
 struct WaylandControl {
     portal: Arc<Portal>,
 }
 
 impl WaylandControl {
     fn send(&self, c: Cmd) {
-        let _ = self.portal.cmd.send(c);
+        self.portal.pending.fetch_add(1, Ordering::Relaxed);
+        let _ = self.portal.cmd.send((self.portal.epoch.load(Ordering::Relaxed), c));
     }
 
     fn key(&self, sym: u32, down: bool) {
@@ -408,6 +423,10 @@ impl WaylandControl {
 }
 
 impl Control for WaylandControl {
+    fn discard_pending(&mut self) {
+        self.portal.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn apply(&mut self, input: &Input, monitor: u8) {
         let node = self.portal.streams.get(monitor as usize).or(self.portal.streams.first()).map(|s| s.node).unwrap_or(0);
         match input {
@@ -434,6 +453,9 @@ impl Control for WaylandControl {
             Input::ScrollFine { dx, dy } => self.send(Cmd::Axis(-*dx as f64 / 8.0, -*dy as f64 / 8.0)),
             Input::Key { key, down } => self.key(crate::platform::keysym_of(*key), *down),
             Input::Text(t) => {
+                if self.portal.pending.load(Ordering::Relaxed) > MAX_QUEUED {
+                    return;
+                }
                 for c in t.chars() {
                     let k = crate::platform::char_keysym(c);
                     self.key(k, true);

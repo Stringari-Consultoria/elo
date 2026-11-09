@@ -2,6 +2,16 @@
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
 pub static EN: &[(&str, &str)] = &[
+    ("Arquivo {} não foi transferido: {}", "File {} was not transferred: {}"),
+    ("falhou", "failed"),
+    ("o arquivo chegou incompleto", "the file arrived incomplete"),
+    ("não foi possível gravar o arquivo (disco cheio?)", "could not write the file (disk full?)"),
+    ("o outro lado enviou mais dados do que o combinado", "the other side sent more data than agreed"),
+    ("o outro lado recusou ou não conseguiu gravar o arquivo", "the other side refused or could not write the file"),
+    ("o arquivo diminuiu durante o envio", "the file got smaller while being sent"),
+    ("a permissão de arquivos foi retirada", "the file permission was removed"),
+    ("só arquivos comuns podem ser enviados", "only regular files can be sent"),
+    ("muitos computadores novos vindos deste endereço hoje; tente amanhã", "too many new computers from this address today; try again tomorrow"),
     ("Unidades e discos", "Drives and disks"),
     ("Unidades", "Drives"),
     ("Sobre", "About"),

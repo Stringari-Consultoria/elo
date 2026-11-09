@@ -61,7 +61,7 @@ async fn write_raw(s: &mut (impl AsyncWrite + Unpin), data: &[u8]) -> std::io::R
 }
 
 struct Device {
-    tx: mpsc::UnboundedSender<FromServer>,
+    tx: mpsc::Sender<FromServer>,
     name: String,
     os: String,
     ip: String,
@@ -83,7 +83,7 @@ struct Pending {
 struct TechConn {
     conn: u64,
     user: String,
-    tx: mpsc::UnboundedSender<FromServer>,
+    tx: mpsc::Sender<FromServer>,
 }
 
 #[derive(Default)]
@@ -94,9 +94,14 @@ struct Limits {
 impl Limits {
     /// No máximo `n` eventos por minuto para a chave.
     fn allow(&mut self, key: &str, n: usize) -> bool {
+        self.allow_in(key, n, Duration::from_secs(60))
+    }
+
+    /// No máximo `n` eventos para a chave dentro da janela.
+    fn allow_in(&mut self, key: &str, n: usize, window: Duration) -> bool {
         let now = Instant::now();
         let v = self.hits.entry(key.to_string()).or_default();
-        v.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
+        v.retain(|t| now.duration_since(*t) < window);
         if v.len() >= n {
             return false;
         }
@@ -201,10 +206,10 @@ impl State {
 
     /// Manda o painel atualizado a todos os técnicos logados.
     async fn notify_techs(&self) {
-        let list: Vec<(String, mpsc::UnboundedSender<FromServer>)> = self.techs_online.lock().await.iter().map(|t| (t.user.clone(), t.tx.clone())).collect();
+        let list: Vec<(String, mpsc::Sender<FromServer>)> = self.techs_online.lock().await.iter().map(|t| (t.user.clone(), t.tx.clone())).collect();
         for (user, tx) in list {
             if let Some(o) = self.overview(&user).await {
-                let _ = tx.send(FromServer::Overview(o));
+                let _ = tx.try_send(FromServer::Overview(o));
             }
         }
     }
@@ -244,6 +249,18 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// Respostas à espera de cada conexão de controle.
+const OUTBOX: usize = 256;
+/// Mensagens de controle por segundo em cada conexão.
+const MAX_FRAMES_PER_SEC: u32 = 120;
+/// IDs novos por endereço e por dia (uma empresa instalando em massa cabe aqui).
+const NEW_IDS_PER_DAY: usize = 200;
+
+/// Texto do cliente, curto e sem caracteres de controle.
+fn short_text(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
 async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 32], name: String, os: String, version: u32, mac: String) {
     let (mut rd, mut wr) = tokio::io::split(s);
     if version != elo_proto::PROTOCOL_VERSION {
@@ -254,12 +271,23 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
         let _ = write_msg(&mut wr, &FromServer::Error { code: ErrorCode::RateLimited, message: "muitas tentativas, aguarde um minuto".into() }).await;
         return;
     }
+    // Nome e sistema vêm do cliente e vão para o disco e para a tela dos técnicos.
+    let name = short_text(&name);
+    let os = short_text(&os);
     let key = format!("{:x}", Sha256::digest(token));
+    let mut new_id = false;
     let id = {
         let mut ids = state.ids.lock().await;
         if let Some(id) = ids.get(&key) {
             id.clone()
         } else {
+            // Cada token novo cria um ID permanente: sem limite, enche o disco.
+            if !state.limits.lock().await.allow_in(&format!("novo-id:{}", peer.ip()), NEW_IDS_PER_DAY, Duration::from_secs(24 * 3600)) {
+                drop(ids);
+                let _ = write_msg(&mut wr, &FromServer::Error { code: ErrorCode::RateLimited, message: "muitos computadores novos vindos deste endereço hoje; tente amanhã".into() }).await;
+                return;
+            }
+            new_id = true;
             let used: std::collections::HashSet<String> = ids.values().cloned().collect();
             let mut rng = rand::thread_rng();
             let id = loop {
@@ -273,8 +301,10 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
             id
         }
     };
-    state.save_ids().await;
-    let (tx, mut rx) = mpsc::unbounded_channel::<FromServer>();
+    if new_id {
+        state.save_ids().await;
+    }
+    let (tx, mut rx) = mpsc::channel::<FromServer>(OUTBOX);
     {
         let mut on = state.online.lock().await;
         on.entry(id.clone()).or_default().push(Device { tx: tx.clone(), name: name.clone(), os: os.clone(), ip: peer.ip().to_string(), since: now_secs() });
@@ -308,7 +338,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     let mut tech: Option<(String, String)> = None;
     let mut token_h: Option<String> = None;
     let err = |code: ErrorCode, m: &str| {
-        let _ = tx.send(FromServer::Error { code, message: m.into() });
+        let _ = tx.try_send(FromServer::Error { code, message: m.into() });
     };
     let writer = tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
@@ -317,26 +347,36 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
             }
         }
     });
+    let mut window = (Instant::now(), 0u32);
     loop {
         let frame = match tokio::time::timeout(Duration::from_secs(90), read_frame(&mut rd)).await {
             Ok(Ok(f)) => f,
             _ => break,
         };
+        // Quem manda sem parar, ou não lê as respostas, perde a conexão: sem isto
+        // a fila de saída crescia até acabar a memória do servidor.
+        if window.0.elapsed() >= Duration::from_secs(1) {
+            window = (Instant::now(), 0);
+        }
+        window.1 += 1;
+        if window.1 > MAX_FRAMES_PER_SEC || tx.capacity() == 0 {
+            break;
+        }
         let Ok(m) = postcard::from_bytes::<ToServer>(&frame) else { break };
         match m {
             ToServer::Ping => {
-                let _ = tx.send(FromServer::Pong);
+                let _ = tx.try_send(FromServer::Pong);
             }
             ToServer::Connect { target, from_name } => {
                 let target = elo_proto::ctrl::clean_id(&target);
                 let ok_ip = state.limits.lock().await.allow(&format!("connect:{}", peer.ip()), 20);
                 let ok_target = state.limits.lock().await.allow(&format!("target:{target}"), 30);
                 if !ok_ip || !ok_target {
-                    let _ = tx.send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitas tentativas de conexão; aguarde um minuto".into() });
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitas tentativas de conexão; aguarde um minuto".into() });
                     continue;
                 }
                 if target == id {
-                    let _ = tx.send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse é o ID deste computador".into() });
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse é o ID deste computador".into() });
                     continue;
                 }
                 // Computadores de empresa (Elo Cliente): só recebem, e só de técnicos.
@@ -359,13 +399,13 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let on = state.online.lock().await;
                 let Some(host) = on.get(&target).and_then(|v| v.last()) else {
                     let known = state.ids.lock().await.values().any(|v| *v == target);
-                    let _ = tx.send(FromServer::Error { code: if known { ErrorCode::Offline } else { ErrorCode::NotFound }, message: if known { "o computador está desligado ou sem o Elo aberto".into() } else { "ID não encontrado".into() } });
+                    let _ = tx.try_send(FromServer::Error { code: if known { ErrorCode::Offline } else { ErrorCode::NotFound }, message: if known { "o computador está desligado ou sem o Elo aberto".into() } else { "ID não encontrado".into() } });
                     continue;
                 };
                 let session: u64 = rand::thread_rng().r#gen();
                 let secret: [u8; 16] = rand::thread_rng().r#gen();
-                let _ = host.tx.send(FromServer::Incoming { session, secret, from_id: id.clone(), from_name: from_name.clone() });
-                let _ = tx.send(FromServer::SessionReady { session, secret, target_name: host.name.clone(), target_os: host.os.clone() });
+                let _ = host.tx.try_send(FromServer::Incoming { session, secret, from_id: id.clone(), from_name: from_name.clone() });
+                let _ = tx.try_send(FromServer::SessionReady { session, secret, target_name: host.name.clone(), target_os: host.os.clone() });
                 drop(on);
                 state.pending.lock().await.insert(session, Pending { secret, host_id: target.clone(), viewer_id: id.clone(), created: Instant::now(), waiting: None, tech: tech.as_ref().map(|t| t.0.clone()) });
                 // Técnico entrando num computador que pediu ajuda: o pedido é dele.
@@ -373,7 +413,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     let taken = state.help.lock().await.get_mut(&target).map(|r| r.taken_by = Some(tname.clone())).is_some();
                     if taken {
                         if let Some(d) = state.online.lock().await.get(&target).and_then(|v| v.last()) {
-                            let _ = d.tx.send(FromServer::HelpStatus { taken_by: Some(tname.clone()) });
+                            let _ = d.tx.try_send(FromServer::HelpStatus { taken_by: Some(tname.clone()) });
                         }
                         state.notify_techs().await;
                     }
@@ -382,7 +422,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
             ToServer::Wake { target } => {
                 let target = elo_proto::ctrl::clean_id(&target);
                 if !state.limits.lock().await.allow(&format!("wake:{}", peer.ip()), 10) {
-                    let _ = tx.send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitos pedidos para ligar computadores; aguarde um minuto".into() });
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::RateLimited, message: "muitos pedidos para ligar computadores; aguarde um minuto".into() });
                     continue;
                 }
                 if tech.is_none() && state.gestao.lock().await.company_of(&target).is_some() {
@@ -390,11 +430,11 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     continue;
                 }
                 if state.online.lock().await.contains_key(&target) {
-                    let _ = tx.send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse computador já está ligado e com o Elo aberto".into() });
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::BadRequest, message: "esse computador já está ligado e com o Elo aberto".into() });
                     continue;
                 }
                 let Some(k) = state.known.lock().await.get(&target).cloned().filter(|k| !k.mac.is_empty()) else {
-                    let _ = tx.send(FromServer::Error { code: ErrorCode::NotFound, message: "o servidor ainda não sabe o endereço da placa de rede desse computador (abra nele uma vez a versão nova do Elo)".into() });
+                    let _ = tx.try_send(FromServer::Error { code: ErrorCode::NotFound, message: "o servidor ainda não sabe o endereço da placa de rede desse computador (abra nele uma vez a versão nova do Elo)".into() });
                     continue;
                 };
                 // O próprio servidor manda na rede dele (servidor embutido no escritório)...
@@ -407,18 +447,18 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                         && d.ip == k.ip
                         && *oid != target
                     {
-                        let _ = d.tx.send(FromServer::WakeRequest { mac: k.mac.clone() });
+                        let _ = d.tx.try_send(FromServer::WakeRequest { mac: k.mac.clone() });
                         relays += 1;
                     }
                 }
                 eprintln!("[~] {id} pediu para ligar {target} ({relays} na rede dele)");
-                let _ = tx.send(FromServer::WakeSent { target, relays });
+                let _ = tx.try_send(FromServer::WakeSent { target, relays });
             }
             ToServer::Decline { session } => {
                 if let Some(p) = state.pending.lock().await.remove(&session)
                     && let Some(v) = state.online.lock().await.get(&p.viewer_id).and_then(|v| v.last())
                 {
-                    let _ = v.tx.send(FromServer::Declined { session });
+                    let _ = v.tx.try_send(FromServer::Declined { session });
                 }
             }
             ToServer::JoinCompany { company, key } => {
@@ -442,7 +482,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 };
                 match joined {
                     Some(name) => {
-                        let _ = tx.send(FromServer::Company { name });
+                        let _ = tx.try_send(FromServer::Company { name });
                         state.notify_techs().await;
                     }
                     None => err(ErrorCode::BadRequest, "código de convite inválido ou trocado: peça um novo à empresa de suporte"),
@@ -481,7 +521,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     eprintln!("[técnico] administrador {user} criado");
                 } else {
                     if !has_techs {
-                        let _ = tx.send(FromServer::NeedsSetup);
+                        let _ = tx.try_send(FromServer::NeedsSetup);
                         continue;
                     }
                     let hash = state.gestao.lock().await.tech(&user).map(|t| t.hash.clone());
@@ -555,7 +595,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                 let message: String = message.trim().chars().take(500).collect();
                 eprintln!("[ajuda] {id} ({name}) pediu ajuda");
                 state.help.lock().await.insert(id.clone(), HelpRequest { device: id.clone(), name: name.clone(), company, message, since: now_secs(), taken_by: None });
-                let _ = tx.send(FromServer::HelpStatus { taken_by: None });
+                let _ = tx.try_send(FromServer::HelpStatus { taken_by: None });
                 state.notify_techs().await;
             }
             ToServer::CancelHelp => {
@@ -578,7 +618,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
                     Ok(true) => state.notify_techs().await,
                     Ok(false) => {
                         if let Some(o) = state.overview(&me).await {
-                            let _ = tx.send(FromServer::Overview(o));
+                            let _ = tx.try_send(FromServer::Overview(o));
                         }
                     }
                     Err(e) => err(ErrorCode::BadRequest, &e),
@@ -614,16 +654,16 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
 }
 
 /// Técnico entrou nesta conexão: registra e manda o painel.
-async fn enter_tech(state: &Arc<State>, conn: u64, tx: &mpsc::UnboundedSender<FromServer>, user: &str, name: &str, admin: bool, token: String) {
+async fn enter_tech(state: &Arc<State>, conn: u64, tx: &mpsc::Sender<FromServer>, user: &str, name: &str, admin: bool, token: String) {
     {
         let mut t = state.techs_online.lock().await;
         t.retain(|x| x.conn != conn);
         t.push(TechConn { conn, user: user.to_string(), tx: tx.clone() });
     }
     eprintln!("[técnico] {user} entrou");
-    let _ = tx.send(FromServer::LoggedIn { user: user.to_string(), name: name.to_string(), admin, token });
+    let _ = tx.try_send(FromServer::LoggedIn { user: user.to_string(), name: name.to_string(), admin, token });
     if let Some(o) = state.overview(user).await {
-        let _ = tx.send(FromServer::Overview(o));
+        let _ = tx.try_send(FromServer::Overview(o));
     }
 }
 
@@ -722,7 +762,7 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
             // Quem estava logado com essa conta sai na hora.
             let mut on = state.techs_online.lock().await;
             for t in on.iter().filter(|t| t.user == user) {
-                let _ = t.tx.send(FromServer::Error { code: ErrorCode::Auth, message: "sua conta de técnico foi removida".into() });
+                let _ = t.tx.try_send(FromServer::Error { code: ErrorCode::Auth, message: "sua conta de técnico foi removida".into() });
             }
             on.retain(|t| t.user != user);
             eprintln!("[técnico] {me} removeu a conta {user}");
@@ -748,7 +788,7 @@ async fn manage(state: &Arc<State>, me: &str, me_name: &str, admin: bool, m: Man
                 return Err("esse pedido de ajuda não existe mais".into());
             }
             if let Some(d) = state.online.lock().await.get(&device).and_then(|v| v.last()) {
-                let _ = d.tx.send(FromServer::HelpStatus { taken_by: Some(me_name.to_string()) });
+                let _ = d.tx.try_send(FromServer::HelpStatus { taken_by: Some(me_name.to_string()) });
             }
         }
     }

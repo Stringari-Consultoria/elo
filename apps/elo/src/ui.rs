@@ -77,6 +77,12 @@ impl eframe::App for EloApp {
             egui::Panel::bottom("status").exact_size(26.0).frame(egui::Frame::new().fill(p.chrome).stroke(Stroke::new(1.0, p.border)).inner_margin(Margin::symmetric(12, 0))).show(ui, |ui| self.status_bar(ui));
         }
         let tab = self.active_tab;
+        // Sessão fora da aba aberta não recebe eventos: não pode ficar nada apertado.
+        for (i, v) in self.views.iter_mut().enumerate() {
+            if i + 1 != tab {
+                release_remote_input(v, true);
+            }
+        }
         if tab == 0 || tab > self.views.len() {
             self.active_tab = 0;
             egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg).inner_margin(Margin::same(24))).show(ui, |ui| {
@@ -870,8 +876,14 @@ impl EloApp {
         }
         let remote_mac = v.os == "macOS";
         let focused = ctx.input(|i| i.focused);
+        // Campo do próprio Elo em foco (chat, caminho): o teclado fica nele até
+        // clicar na tela remota. O mouse continua indo para lá.
+        let clicked_here = hovered && ctx.input(|i| i.pointer.any_pressed());
+        let keyboard = clicked_here || ctx.memory(|m| m.focused()).is_none_or(|id| id == resp.id);
         if hovered && focused {
-            resp.request_focus();
+            if keyboard {
+                resp.request_focus();
+            }
             let to_remote = |pos: egui::Pos2| { (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32)};
             let cmd = &v.handle.cmd;
             let send = |i: Input| {
@@ -897,10 +909,15 @@ impl EloApp {
                                 egui::PointerButton::Middle => Some(Button::Middle),
                                 _ => None,
                             };
-                            if let Some(b) = b {
+                            // Só solta lá o que foi apertado lá.
+                            if let Some(b) = b.filter(|b| pressed || v.buttons_down.contains(b)) {
                                 let (x, y) = to_remote(pos);
                                 send(Input::MouseMove { x, y });
                                 send(Input::MouseButton { button: b, down: pressed });
+                                v.buttons_down.retain(|d| *d != b);
+                                if pressed {
+                                    v.buttons_down.push(b);
+                                }
                             }
                         }
                     }
@@ -920,11 +937,11 @@ impl EloApp {
                         }
                     }
                     egui::Event::Text(t) => {
-                        if !v.mods.ctrl && !v.mods.alt && !v.mods.command {
+                        if keyboard && !v.mods.ctrl && !v.mods.alt && !v.mods.command {
                             send(Input::Text(t));
                         }
                     }
-                    egui::Event::Key { key, pressed, modifiers, .. } => {
+                    egui::Event::Key { key, pressed, modifiers, .. } if keyboard => {
                         // Modificadores como estavam nesta tecla (vão antes dela).
                         sync_mods(&mut v.held, remote_mods(modifiers, remote_mac), &send);
                         v.mods = modifiers;
@@ -959,45 +976,34 @@ impl EloApp {
                             k if modifiers.ctrl || modifiers.alt || modifiers.command => k.symbol_or_name().chars().next().filter(|c| c.is_ascii_alphanumeric()).map(Key::Char),
                             _ => None,
                         };
-                        if let Some(k) = special {
-                            send(Input::Key { key: k, down: pressed });
-                        }
+                        forward_key(&mut v.keys_down, key, pressed, special, &send);
                     }
-                    egui::Event::Copy | egui::Event::Cut => {
-                        // O egui consome Ctrl/Cmd+C/X: repassa como atalho (Cmd num Mac).
-                        let c = if matches!(e, egui::Event::Copy) { 'c' } else { 'x' };
-                        let (m, i) = if remote_mac { (Key::Meta, 3) } else { (Key::Control, 0) };
-                        let had = v.held[i];
-                        if !had {
-                            send(Input::Key { key: m, down: true });
-                        }
-                        send(Input::Key { key: Key::Char(c), down: true });
-                        send(Input::Key { key: Key::Char(c), down: false });
-                        if !had {
-                            send(Input::Key { key: m, down: false });
-                        }
+                    // O egui consome Ctrl/Cmd+C/X/V: repassa como atalho (Cmd num Mac).
+                    egui::Event::Copy if keyboard => tap_shortcut(&mut v.held, remote_mac, 'c', &send),
+                    egui::Event::Cut if keyboard => tap_shortcut(&mut v.held, remote_mac, 'x', &send),
+                    egui::Event::Paste(t) if keyboard => {
+                        // Colar de verdade: o texto vai para a área de transferência de lá
+                        // (se a sincronia permitir) e o programa aberto cola sozinho. Digitar
+                        // letra por letra executava comandos em terminais a cada quebra de linha.
+                        let _ = cmd.send(Cmd::PasteText(t));
+                        tap_shortcut(&mut v.held, remote_mac, 'v', &send);
                     }
-                    egui::Event::Paste(t) => {
-                        // Cmd/Ctrl+V ainda está apertado: sem soltar lá, cada letra
-                        // colada vira um atalho (o "-" vira Ctrl+-, que tira o zoom).
-                        sync_mods(&mut v.held, [false; 4], &send);
-                        send(Input::Text(t));
-                    }
+                    egui::Event::PasteImage(_) if keyboard => tap_shortcut(&mut v.held, remote_mac, 'v', &send),
                     _ => {}
                 }
             }
-            // Estado real agora: soltar só o Shift (ou o Cmd) não gera evento de
-            // tecla, e sem isto ele ficava apertado lá (clique virava Shift+clique).
-            let now = ctx.input(|i| i.modifiers);
-            sync_mods(&mut v.held, remote_mods(now, remote_mac), &send);
-            v.mods = now;
-        } else if v.held.iter().any(|h| *h) || v.mods.any() {
-            // Saiu da tela ou da janela (Cmd+Tab) com modificador apertado: solta tudo.
-            let cmd = v.handle.cmd.clone();
-            sync_mods(&mut v.held, [false; 4], &|i| {
-                let _ = cmd.send(Cmd::Input(i));
-            });
-            v.mods = egui::Modifiers::NONE;
+            if keyboard {
+                // Estado real agora: soltar só o Shift (ou o Cmd) não gera evento de
+                // tecla, e sem isto ele ficava apertado lá (clique virava Shift+clique).
+                let now = ctx.input(|i| i.modifiers);
+                sync_mods(&mut v.held, remote_mods(now, remote_mac), &send);
+                v.mods = now;
+            } else {
+                release_remote_input(v, false);
+            }
+        } else {
+            // Saiu da tela ou da janela (Cmd+Tab) com algo apertado: solta tudo.
+            release_remote_input(v, true);
         }
     }
 
@@ -1889,14 +1895,16 @@ fn files_panel(ui: &mut egui::Ui, m: &mac::Mac, v: &mut ViewSession, downloads: 
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 42.0), Sense::hover());
             let p = ui.painter();
             let ic = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), Vec2::splat(28.0));
-            mac::icon_tile(p, ic, if t.incoming { Icon::Download } else { Icon::Upload }, if t.finished { m.green } else { m.accent });
+            mac::icon_tile(p, ic, if t.incoming { Icon::Download } else { Icon::Upload }, if t.error.is_some() { m.red } else if t.finished { m.green } else { m.accent });
             let x = rect.left() + 38.0;
             let right_w = if t.finished && t.incoming && t.path.is_some() { 66.0 } else { 0.0 };
             let mut job = egui::text::LayoutJob::simple_singleline(t.name.clone(), egui::FontId::proportional(12.5), m.label);
             job.wrap = egui::text::TextWrapping { max_width: (rect.right() - x - right_w - 4.0).max(40.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
             let g = ui.fonts_mut(|fo| fo.layout_job(job));
             p.galley(egui::pos2(x, rect.top() + 5.0), g, m.label);
-            if t.finished {
+            if let Some(e) = &t.error {
+                p.text(egui::pos2(x, rect.bottom() - 9.0), Align2::LEFT_CENTER, crate::i18n::tr_dyn(e), egui::FontId::proportional(11.0), m.red);
+            } else if t.finished {
                 p.text(egui::pos2(x, rect.bottom() - 9.0), Align2::LEFT_CENTER, format!("{} · {}", if t.incoming { t!("Recebido") } else { t!("Enviado") }, human_bytes(t.total)), egui::FontId::proportional(11.0), m.label2);
             } else {
                 let bar = egui::Rect::from_min_size(egui::pos2(x, rect.bottom() - 12.0), Vec2::new((rect.right() - x - 54.0).max(20.0), 4.0));
@@ -1958,7 +1966,7 @@ fn chat_panel(ui: &mut egui::Ui, m: &mac::Mac, chat: &mut Vec<ChatLine>, input: 
         for t in transfers {
             let pct = if t.total > 0 { t.done as f32 / t.total as f32 } else { 1.0 };
             ui.vertical_centered(|ui| {
-                let state = if t.finished { t!("concluído").into() } else { format!("{:.0}%", pct * 100.0) };
+                let state = if t.error.is_some() { t!("falhou").into() } else if t.finished { t!("concluído").into() } else { format!("{:.0}%", pct * 100.0) };
                 ui.label(RichText::new(t!("{} {} · {}", if t.incoming { t!("Recebendo") } else { t!("Enviando") }, t.name, state)).size(11.0).color(m.label2));
             });
             if !t.finished {
@@ -2636,6 +2644,50 @@ fn remote_mods(m: egui::Modifiers, remote_mac: bool) -> [bool; 4] {
     [m.ctrl || (cmd && !remote_mac), m.shift, m.alt, cmd && remote_mac]
 }
 
+/// Aperta e solta `c` com o modificador de atalho de lá (e só ele). O estado
+/// real dos modificadores volta no fim do quadro.
+fn tap_shortcut(held: &mut [bool; 4], remote_mac: bool, c: char, send: &dyn Fn(Input)) {
+    let mut only = [false; 4];
+    only[if remote_mac { 3 } else { 0 }] = true;
+    sync_mods(held, only, send);
+    send(Input::Key { key: Key::Char(c), down: true });
+    send(Input::Key { key: Key::Char(c), down: false });
+}
+
+/// Repassa uma tecla. O soltar vale pelo que foi apertado: se o Ctrl sair antes
+/// da letra, ela deixa de parecer um atalho e ficaria presa lá.
+fn forward_key(down: &mut Vec<(egui::Key, Key)>, key: egui::Key, pressed: bool, remote: Option<Key>, send: &dyn Fn(Input)) {
+    if pressed {
+        if let Some(k) = remote {
+            send(Input::Key { key: k, down: true });
+            if !down.iter().any(|(e, _)| *e == key) {
+                down.push((key, k));
+            }
+        }
+    } else if let Some(i) = down.iter().position(|(e, _)| *e == key) {
+        let (_, k) = down.remove(i);
+        send(Input::Key { key: k, down: false });
+    }
+}
+
+/// Solta lá as teclas e os modificadores apertados (e os botões, se `buttons`).
+fn release_remote_input(v: &mut ViewSession, buttons: bool) {
+    let cmd = v.handle.cmd.clone();
+    let send = |i: Input| {
+        let _ = cmd.send(Cmd::Input(i));
+    };
+    for (_, key) in v.keys_down.drain(..) {
+        send(Input::Key { key, down: false });
+    }
+    sync_mods(&mut v.held, [false; 4], &send);
+    v.mods = egui::Modifiers::NONE;
+    if buttons {
+        for button in v.buttons_down.drain(..) {
+            send(Input::MouseButton { button, down: false });
+        }
+    }
+}
+
 /// Manda só o que mudou (apertar ou soltar) e guarda o estado de lá.
 fn sync_mods(held: &mut [bool; 4], want: [bool; 4], send: &dyn Fn(Input)) {
     const KEYS: [Key; 4] = [Key::Control, Key::Shift, Key::Alt, Key::Meta];
@@ -2682,6 +2734,35 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn letter_is_released_even_if_ctrl_went_first() {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let send = |i: Input| sent.borrow_mut().push(i);
+        let mut down = Vec::new();
+        forward_key(&mut down, egui::Key::S, true, Some(Key::Char('s')), &send);
+        // Ctrl já solto: a tecla não parece mais atalho (`None`), mas sai mesmo assim.
+        forward_key(&mut down, egui::Key::S, false, None, &send);
+        assert_eq!(*sent.borrow(), vec![Input::Key { key: Key::Char('s'), down: true }, Input::Key { key: Key::Char('s'), down: false }]);
+        assert!(down.is_empty());
+    }
+
+    #[test]
+    fn release_of_what_was_never_pressed_is_not_sent() {
+        let sent = std::cell::RefCell::new(Vec::new());
+        forward_key(&mut Vec::new(), egui::Key::V, false, Some(Key::Char('v')), &|i: Input| sent.borrow_mut().push(i));
+        assert!(sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn paste_is_only_the_shortcut_with_nothing_else_held() {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let send = |i: Input| sent.borrow_mut().push(i);
+        let mut held = [false, true, false, false];
+        tap_shortcut(&mut held, false, 'v', &send);
+        assert_eq!(*sent.borrow(), vec![Input::Key { key: Key::Control, down: true }, Input::Key { key: Key::Shift, down: false }, Input::Key { key: Key::Char('v'), down: true }, Input::Key { key: Key::Char('v'), down: false }]);
+        assert_eq!(held, [true, false, false, false]);
+    }
 
     #[test]
     fn released_shift_is_released_remotely() {

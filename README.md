@@ -296,10 +296,13 @@ histórico de sessões registra qual técnico fez cada acesso.
 
 - **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
   partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
-  repassa bytes: não tem a chave, não lê a sessão e não consegue se passar por
-  nenhum dos lados sem saber a senha.
-- **Código de verificação** de 6 dígitos nas duas telas. Se for igual, não há
-  ninguém no meio. É especialmente importante nas conexões por pedido (sem senha).
+  repassa bytes: não tem a chave, não lê a sessão e, nas conexões com senha, não
+  consegue se passar por nenhum dos lados sem saber a senha.
+- **Conexões sem senha** (pedido com aceite na tela, inclusive as de técnicos) têm
+  uma garantia menor: sem segredo combinado antes, a proteção contra um servidor
+  comprometido depende de conferir o **código de verificação** de 6 dígitos que
+  aparece nas duas telas. Esse mecanismo ainda está sendo reforçado: por enquanto,
+  use nessas conexões apenas servidores em que você confia.
 - **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
   novas conexões por um tempo. O servidor também limita tentativas por IP.
 - **TLS** entre o app e o servidor, com certificado público ou com impressão

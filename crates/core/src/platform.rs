@@ -25,6 +25,12 @@ pub trait Screen: Send {
 pub trait Control: Send {
     /// `origin` = canto do monitor no desktop virtual.
     fn apply(&mut self, input: &Input, monitor: u8);
+
+    /// Descarta o que ainda está na fila para ser aplicado (fim da sessão).
+    fn discard_pending(&mut self) {}
+
+    /// Espera o sistema aplicar o que já foi enviado (a conexão vai fechar).
+    fn settle(&mut self) {}
 }
 
 /// Este computador, como anfitrião, sabe rolar suave (1/120 de clique)?
@@ -316,6 +322,12 @@ mod x11 {
     }
 
     impl Control for X11 {
+        /// O servidor X descarta o que ainda não leu quando a conexão fecha:
+        /// sem esta volta completa, as teclas soltas no fim da sessão se perdiam.
+        fn settle(&mut self) {
+            let _ = self.conn.sync();
+        }
+
         fn apply(&mut self, input: &Input, monitor: u8) {
             let (ox, oy) = self.mons.get(monitor as usize).map(|m| (m.x as i32, m.y as i32)).unwrap_or((0, 0));
             match input {
@@ -546,6 +558,16 @@ impl Clip {
             return Some(t);
         }
         None
+    }
+
+    /// `t` acabou de ser lido daqui e o outro lado ainda não o tem? Marca como
+    /// enviado. (O egui troca CRLF por LF ao ler.)
+    pub fn note_sent(&mut self, t: &str) -> bool {
+        if t.is_empty() || self.last.replace("\r\n", "\n") == t {
+            return false;
+        }
+        self.last = t.to_string();
+        true
     }
 
     pub fn set(&mut self, t: &str) {
