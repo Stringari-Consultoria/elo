@@ -196,7 +196,9 @@ pub fn host_handshake(s: &mut (impl Read + Write), passwords: &[String], peers: 
     for (attempt, p) in list.iter().enumerate() {
         let attempt = attempt as u8;
         let (st, mb) = Spake2::<Ed25519Group>::start_b(&Password::new(p.as_bytes()), &Identity::new(&id_a), &Identity::new(&id_b));
-        send_hs(s, &Hs::PakeB { attempt, msg: mb })?;
+        // Quem errou e desligou pode cair já neste envio (no Windows a conexão
+        // fechada falha aqui, não na leitura): continua contando como errada.
+        send_hs(s, &Hs::PakeB { attempt, msg: mb }).map_err(|e| if wrong { Error::Auth } else { e })?;
         let Hs::PakeA { msg: ma, .. } = recv_hs(s).map_err(after(wrong))? else { return Err(Error::Auth) };
         if request && Sha256::digest(&ma).as_slice() != commit.as_slice() {
             let _ = send_hs(s, &Hs::Fail);
