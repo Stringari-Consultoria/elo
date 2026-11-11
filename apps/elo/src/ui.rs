@@ -130,6 +130,14 @@ impl eframe::App for EloApp {
             let central = egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(24))).show(ui, |ui| self.remote_view(ui, idx)).response.rect;
             self.drop_files(&ctx, idx, central);
             match self.session_act.take() {
+                Some(SessAct::BarSide) => {
+                    self.settings.bar_right = !self.settings.bar_right;
+                    // Só esta escolha vai para o disco (o resto fica como estava lá).
+                    let mut disk = crate::settings::Settings::load();
+                    disk.bar_right = self.settings.bar_right;
+                    disk.save();
+                }
+                Some(SessAct::Shot(area)) => self.take_shot(idx, area),
                 Some(SessAct::Fullscreen) => {
                     let on = !self.fullscreen;
                     self.set_fullscreen(&ctx, on);
@@ -747,10 +755,13 @@ impl EloApp {
         let ctx = ui.ctx().clone();
         let fav = self.settings.favorite(&self.views[idx].target_id).is_some();
         let fs = self.fullscreen;
+        let right = self.settings.bar_right;
         let act = &mut self.session_act;
         let v = &mut self.views[idx];
-        // Barra da sessão: cápsula de vidro flutuando no alto.
-        *act = session_bar(ui, v, idx, fav, fs).or(act.take());
+        // Barra da sessão: cápsula de vidro flutuando no alto ou à direita.
+        *act = session_bar(ui, v, idx, fav, fs, right).or(act.take());
+        // Barra à direita fora da tela cheia: a imagem não fica embaixo dela.
+        let reserve = if right && !fs { BAR_BAND } else { 0.0 };
         if v.confirm_restart {
             let mut close = false;
             let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
@@ -786,7 +797,8 @@ impl EloApp {
         if !v.connected {
             // Cartão de vidro no meio: quem, situação, código e Cancelar.
             let m = mac::DARK;
-            let area = ui.available_rect_before_wrap();
+            let mut area = ui.available_rect_before_wrap();
+            area.max.x -= reserve;
             let h = if v.waiting && !v.sas.is_empty() { 360.0 } else { 250.0 };
             let card = egui::Rect::from_center_size(area.center(), Vec2::new(340.0, h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(card).layout(Layout::top_down(Align::Center)), |ui| {
@@ -845,7 +857,8 @@ impl EloApp {
             }
             v.tex_version = version;
         }
-        let avail = ui.available_rect_before_wrap();
+        let mut avail = ui.available_rect_before_wrap();
+        avail.max.x -= reserve;
         let scale = if v.fit { (avail.width() / w as f32).min(avail.height() / h as f32).min(1.0) } else { 1.0 / ctx.pixels_per_point() };
         let size = Vec2::new(w as f32 * scale, h as f32 * scale);
         let rect = egui::Rect::from_center_size(avail.center(), size);
@@ -860,6 +873,14 @@ impl EloApp {
         }
         if !v.permissions.control {
             ui.painter().text(rect.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, t!("Somente visualização (o outro lado desativou o controle)"), egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
+        }
+        // Escolhendo a área do print: nada vai para o outro computador.
+        if v.shot.is_some() {
+            release_remote_input(v, true);
+            if let Some(a) = select_shot_area(ui, &resp, v, rect, scale, (w, h)) {
+                *act = Some(a);
+            }
+            return;
         }
         // Entrada: só com o mouse sobre a tela remota (ou arrastando).
         let hovered = resp.hovered() || resp.dragged();
@@ -1005,6 +1026,47 @@ impl EloApp {
             // Saiu da tela ou da janela (Cmd+Tab) com algo apertado: solta tudo.
             release_remote_input(v, true);
         }
+    }
+
+    /// Salva o print da tela remota (inteira ou a área) em PNG na pasta de
+    /// recebidos e copia para a área de transferência. Usa a imagem que já
+    /// chegou aqui: funciona com qualquer versão do Elo do outro lado.
+    fn take_shot(&mut self, idx: usize, area: Option<[u32; 4]>) {
+        let Some(v) = self.views.get(idx) else { return };
+        let (w, h, rgba) = {
+            let r = v.remote.lock().unwrap_or_else(|e| e.into_inner());
+            (r.dec.w, r.dec.h, r.dec.rgba.clone())
+        };
+        if w == 0 || h == 0 {
+            self.error(t!("Ainda não chegou imagem do outro computador."));
+            return;
+        }
+        let [x, y, cw, ch] = shot_crop(area, w, h);
+        let name = if v.target_name.is_empty() { v.target_id.clone() } else { v.target_name.clone() };
+        let dir = self.settings.downloads.clone();
+        let tx = self.shots.0.clone();
+        let clipboard = self.shot_clipboard.clone();
+        std::thread::Builder::new()
+            .name("elo-print".into())
+            .spawn(move || {
+                let r = (|| {
+                    let full = image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| "imagem incompleta".to_string())?;
+                    let mut img = image::imageops::crop_imm(&full, x, y, cw, ch).to_image();
+                    // A tela não tem transparência (alguns sistemas mandam o alfa zerado).
+                    img.pixels_mut().for_each(|p| p.0[3] = 255);
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    let path = shot_path(&dir, &name);
+                    img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+                    let mut cb = clipboard.lock().unwrap_or_else(|e| e.into_inner());
+                    if cb.is_none() {
+                        *cb = arboard::Clipboard::new().ok();
+                    }
+                    let copied = cb.as_mut().is_some_and(|c| c.set_image(arboard::ImageData { width: cw as usize, height: ch as usize, bytes: std::borrow::Cow::Borrowed(img.as_raw()) }).is_ok());
+                    Ok((path, copied))
+                })();
+                let _ = tx.send(r);
+            })
+            .ok();
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -1289,6 +1351,12 @@ impl EloApp {
                 {
                     self.settings.downloads = d;
                 }
+            });
+            ui.add_space(6.0);
+            theme::field_label(ui, t!("Barra durante o acesso"));
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.settings.bar_right, false, t!("No alto"));
+                ui.radio_value(&mut self.settings.bar_right, true, t!("Na lateral direita"));
             });
             ui.add_space(8.0);
             ui.separator();
@@ -2162,10 +2230,95 @@ fn tile(ui: &mut egui::Ui, p: &Palette, id: &str, name: &str, sub_name: &str, os
     }
 }
 
+/// Área do print dentro da tela (x, y, largura, altura), nunca vazia.
+fn shot_crop(area: Option<[u32; 4]>, w: u32, h: u32) -> [u32; 4] {
+    let [x, y, cw, ch] = area.unwrap_or([0, 0, w, h]);
+    let (x, y) = (x.min(w - 1), y.min(h - 1));
+    [x, y, cw.clamp(1, w - x), ch.clamp(1, h - y)]
+}
+
+/// Arquivo novo para o print: "Print - <computador> - N.png" (sem sobrescrever).
+fn shot_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let clean: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
+    let clean = clean.trim_matches(|c: char| c == '.' || c.is_whitespace()).chars().take(40).collect::<String>();
+    let clean = if clean.is_empty() { "Elo".to_string() } else { clean };
+    (1..).map(|n| dir.join(format!("Print - {clean} - {n}.png"))).find(|p| !p.exists()).unwrap_or_else(|| dir.join("Print.png"))
+}
+
+/// Seleção da área do print sobre a tela remota: arrastar escolhe, Esc ou
+/// o botão direito cancelam. Devolve o print a tirar quando o arrasto termina.
+fn select_shot_area(ui: &mut egui::Ui, resp: &egui::Response, v: &mut ViewSession, rect: egui::Rect, scale: f32, (w, h): (u32, u32)) -> Option<SessAct> {
+    let ctx = ui.ctx().clone();
+    ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || resp.secondary_clicked() {
+        v.shot = None;
+        return None;
+    }
+    if resp.drag_started() {
+        let origin = ctx.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
+        v.shot = Some(crate::app::ShotSel { start: origin.map(|p| p.clamp(rect.min, rect.max)) });
+    }
+    let start = v.shot.as_ref().and_then(|s| s.start);
+    let now = ctx.pointer_latest_pos().map(|p| p.clamp(rect.min, rect.max));
+    let sel = start.zip(now).map(|(a, b)| egui::Rect::from_two_pos(a, b));
+    let painter = ui.painter_at(rect);
+    let dim = Color32::from_black_alpha(120);
+    match sel {
+        Some(s) => {
+            // Escurece em volta do que está escolhido.
+            for r in [
+                egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, s.min.y)),
+                egui::Rect::from_min_max(egui::pos2(rect.min.x, s.max.y), rect.max),
+                egui::Rect::from_min_max(egui::pos2(rect.min.x, s.min.y), egui::pos2(s.min.x, s.max.y)),
+                egui::Rect::from_min_max(egui::pos2(s.max.x, s.min.y), egui::pos2(rect.max.x, s.max.y)),
+            ] {
+                painter.rect_filled(r, 0, dim);
+            }
+            painter.rect_stroke(s, 0, Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Outside);
+            let size = format!("{} × {}", (s.width() / scale).round() as u32, (s.height() / scale).round() as u32);
+            let at = egui::pos2(s.max.x, s.max.y + 6.0).min(egui::pos2(rect.max.x, rect.max.y - 22.0));
+            let g = painter.layout_no_wrap(size, egui::FontId::proportional(12.0), Color32::WHITE);
+            let bg = egui::Rect::from_min_size(egui::pos2(at.x - g.size().x - 12.0, at.y), g.size() + Vec2::new(12.0, 6.0));
+            painter.rect_filled(bg, 6, Color32::from_black_alpha(170));
+            painter.galley(bg.min + Vec2::new(6.0, 3.0), g, Color32::WHITE);
+        }
+        None => {
+            painter.rect_filled(rect, 0, dim);
+        }
+    }
+    if start.is_none() {
+        let hint = t!("Arraste para escolher a área do print · Esc cancela");
+        let g = painter.layout_no_wrap(hint.to_string(), egui::FontId::proportional(13.0), Color32::WHITE);
+        let bg = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 40.0), g.size() + Vec2::new(28.0, 14.0));
+        painter.rect_filled(bg, 12, Color32::from_rgba_unmultiplied(30, 33, 41, 230));
+        painter.galley(bg.center() - g.size() / 2.0, g, Color32::WHITE);
+    }
+    if resp.drag_stopped() {
+        v.shot = None;
+        let s = sel?;
+        if s.width() < 4.0 || s.height() < 4.0 {
+            return None;
+        }
+        let px = |d: f32| (d / scale).round().max(0.0) as u32;
+        let (x, y) = (px(s.min.x - rect.min.x), px(s.min.y - rect.min.y));
+        let (cw, ch) = (px(s.width()).max(1), px(s.height()).max(1));
+        return Some(SessAct::Shot(Some(shot_crop(Some([x, y, cw, ch]), w, h))));
+    }
+    if start.is_some() || resp.hovered() {
+        ctx.request_repaint();
+    }
+    None
+}
+
 /// Ação da barra da sessão que mexe no app (fora da sessão).
 pub enum SessAct {
     Fullscreen,
     Favorite,
+    /// Barra no alto ↔ na lateral direita (fica salvo nas configurações).
+    BarSide,
+    /// Print da tela remota: inteira ou a área (x, y, largura, altura em
+    /// pixels de lá).
+    Shot(Option<[u32; 4]>),
 }
 
 /// Cores da barra de vidro (sempre escura, sobre a tela remota, em qualquer tema).
@@ -2226,10 +2379,27 @@ fn glass_icon(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, enabled: b
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
-/// Divisória vertical entre grupos da barra.
-fn glass_divider(ui: &mut egui::Ui) {
-    let (r, _) = ui.allocate_exact_size(Vec2::new(13.0, 24.0), Sense::hover());
-    ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, Color32::from_white_alpha(26)));
+/// Divisória entre grupos da barra (em pé ou deitada, conforme a barra).
+fn glass_divider(ui: &mut egui::Ui, across: bool) {
+    let stroke = Stroke::new(1.0, Color32::from_white_alpha(26));
+    if across {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(24.0, 13.0), Sense::hover());
+        ui.painter().line_segment([r.left_center(), r.right_center()], stroke);
+    } else {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(13.0, 24.0), Sense::hover());
+        ui.painter().line_segment([r.center_top(), r.center_bottom()], stroke);
+    }
+}
+
+/// Botão redondo com um número (telas do outro computador na barra em pé).
+fn glass_number(ui: &mut egui::Ui, label: &str, tip: &str, active: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+    let hover = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let fill = if active { Color32::from_rgb(99, 99, 104) } else { Color32::from_white_alpha((22.0 * hover) as u8) };
+    ui.painter().circle_filled(rect.center(), 15.0, fill);
+    let color = if active { Color32::WHITE } else { GLASS_MUTED.lerp_to_gamma(GLASS_TEXT, hover) };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, label, theme::semibold(13.0), color);
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Controle segmentado com o destaque deslizando entre as opções.
@@ -2376,24 +2546,29 @@ fn signal(painter: &egui::Painter, at: egui::Pos2, level: usize, color: Color32)
     }
 }
 
-/// Barra da sessão: cápsula de vidro centralizada no alto. Fora da tela cheia
-/// fica numa faixa própria; na tela cheia flutua sobre a imagem e se recolhe
-/// quando o mouse sai de perto.
-fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fullscreen: bool) -> Option<SessAct> {
+/// Barra da sessão: cápsula de vidro no alto (deitada) ou na lateral direita
+/// (em pé, só ícones), conforme as configurações. Fora da tela cheia fica numa
+/// faixa própria; na tela cheia flutua sobre a imagem e se recolhe quando o
+/// mouse sai de perto.
+fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fullscreen: bool, right: bool) -> Option<SessAct> {
     let mut act = None;
     let ctx = ui.ctx().clone();
     let area = ui.max_rect();
-    if !fullscreen {
+    if !fullscreen && !right {
         ui.add_space(BAR_BAND);
     }
     let more_id = egui::Id::unique(("mais-opcoes", idx));
-    let menu_open = egui::Popup::is_id_open(&ctx, more_id);
+    let shot_id = egui::Id::unique(("print", idx));
+    let menu_open = egui::Popup::is_id_open(&ctx, more_id) || egui::Popup::is_id_open(&ctx, shot_id);
     // Recolher na tela cheia.
     let seen_id = egui::Id::unique(("barra-vista", idx));
     let now = ctx.input(|i| i.time);
     let bar_rect_id = egui::Id::unique(("barra-rect", idx));
     let last_rect = ctx.data(|d| d.get_temp::<egui::Rect>(bar_rect_id));
-    let near = ctx.pointer_hover_pos().is_some_and(|p| { p.y < area.top() + 90.0 || last_rect.is_some_and(|r| r.expand(24.0).contains(p))});
+    let near = ctx.pointer_hover_pos().is_some_and(|p| {
+        let edge = if right { p.x > area.right() - 90.0 } else { p.y < area.top() + 90.0 };
+        edge || last_rect.is_some_and(|r| r.expand(24.0).contains(p))
+    });
     if near || menu_open || !fullscreen || ctx.data(|d| d.get_temp::<f64>(seen_id)).is_none() {
         ctx.data_mut(|d| d.insert_temp(seen_id, now));
     }
@@ -2406,73 +2581,102 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
     if t < 0.02 {
         // Alça para chamar a barra de volta.
         // (Na camada da frente: a imagem remota é desenhada depois.)
-        let handle = egui::Rect::from_center_size(egui::pos2(area.center().x, area.top() + 7.0), Vec2::new(56.0, 5.0));
+        let handle = if right {
+            egui::Rect::from_center_size(egui::pos2(area.right() - 7.0, area.center().y), Vec2::new(5.0, 56.0))
+        } else {
+            egui::Rect::from_center_size(egui::pos2(area.center().x, area.top() + 7.0), Vec2::new(56.0, 5.0))
+        };
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("barra-alca", idx))));
         painter.rect_filled(handle.expand(1.0), CornerRadius::same(4), Color32::from_black_alpha(90));
         painter.rect_filled(handle, CornerRadius::same(3), Color32::from_white_alpha(150));
         return None;
     }
-    let compact = area.width() < 820.0;
-    let tiny = area.width() < 560.0;
-    let top = area.top() + 10.0 - (1.0 - t) * 70.0;
+    // Em pé: só ícones (e o nome some quando a janela é baixa).
+    let (compact, tiny) = if right { (true, area.height() < 560.0) } else { (area.width() < 820.0, area.width() < 560.0) };
+    let (pivot, pos) = if right {
+        (Align2::RIGHT_CENTER, egui::pos2(area.right() - 10.0 + (1.0 - t) * 70.0, area.center().y))
+    } else {
+        (Align2::CENTER_TOP, egui::pos2(area.center().x, area.top() + 10.0 - (1.0 - t) * 70.0))
+    };
+    let layout = if right { Layout::top_down(Align::Center) } else { Layout::left_to_right(Align::Center) };
     egui::Area::new(egui::Id::unique(("barra", idx)))
         .order(egui::Order::Foreground)
-        .pivot(Align2::CENTER_TOP)
-        .fixed_pos(egui::pos2(area.center().x, top))
+        .pivot(pivot)
+        .fixed_pos(pos)
         .constrain_to(area)
         .show(&ctx, |ui| {
             ui.multiply_opacity(t);
-            let r = glass_frame(26, Margin::symmetric(8, 6))
+            let margin = if right { Margin::symmetric(6, 8) } else { Margin::symmetric(8, 6) };
+            let r = glass_frame(26, margin)
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 2.0;
+                    if right {
+                        // Em pé, a coluna tem a largura do botão maior (senão se estica).
+                        ui.set_max_width(40.0);
+                    }
+                    ui.with_layout(layout, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::splat(2.0);
                         // Quem está do outro lado.
                         if !tiny {
                             let fps = v.handle.fps.load(std::sync::atomic::Ordering::Relaxed);
                             let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
-                            let name_w = if compact { 110.0 } else { 190.0 };
-                            let mut job = egui::text::LayoutJob::simple_singleline(name, theme::semibold(13.0), GLASS_TEXT);
-                            job.wrap = egui::text::TextWrapping { max_width: name_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
-                            let g1 = ui.fonts_mut(|f| f.layout_job(job));
                             let mins = v.started.elapsed().as_secs() / 60;
                             let line2 = if !v.connected { t!("conectando…").to_string() } else if mins == 0 { t!("{} · agora", v.os) } else { t!("{} · {} min", v.os, mins) };
-                            let g2 = ui.painter().layout_no_wrap(line2, egui::FontId::proportional(11.0), GLASS_MUTED);
-                            let w = 44.0 + g1.size().x.max(g2.size().x + 18.0) + 10.0;
-                            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::hover());
-                            let p = ui.painter();
-                            let av = egui::pos2(rect.left() + 20.0, rect.center().y);
-                            p.circle_filled(av, 18.0, os_color(&v.os));
-                            p.circle_stroke(av, 18.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
-                            icons::paint(p, egui::Rect::from_center_size(av, Vec2::splat(18.0)), Icon::Monitor, Color32::WHITE);
-                            let dot = av + Vec2::new(13.0, 13.0);
-                            p.circle_filled(dot, 5.5, Color32::from_rgb(30, 33, 41));
-                            p.circle_filled(dot, 4.0, if v.connected { GLASS_GREEN } else { GLASS_AMBER });
-                            let x = rect.left() + 46.0;
-                            p.galley(egui::pos2(x, rect.center().y - 16.0), g1, GLASS_TEXT);
                             let (level, color) = match fps {
                                 _ if !v.connected => (0, GLASS_MUTED),
                                 20.. => (3, GLASS_GREEN),
                                 8..20 => (2, GLASS_AMBER),
                                 _ => (1, GLASS_RED),
                             };
-                            signal(p, egui::pos2(x, rect.center().y + 13.0), level, color);
-                            p.galley(egui::pos2(x + 17.0, rect.center().y + 1.0), g2, GLASS_MUTED);
                             let data = human_bytes(v.handle.bytes_recv.load(std::sync::atomic::Ordering::Relaxed));
                             let code = if v.sas.is_empty() { String::new() } else { t!("Código de verificação: {}\nConfira com quem está do outro lado: se for igual nas duas telas, a conexão não foi interceptada.\n\n", v.sas) };
-                            resp.on_hover_text(t!("{}ID {} · {} quadros por segundo · {} recebidos", code, pretty_id(&v.target_id), fps, data));
-                            glass_divider(ui);
+                            let info = t!("{}ID {} · {} quadros por segundo · {} recebidos", code, pretty_id(&v.target_id), fps, data);
+                            let avatar = |p: &egui::Painter, av: egui::Pos2| {
+                                p.circle_filled(av, 18.0, os_color(&v.os));
+                                p.circle_stroke(av, 18.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+                                icons::paint(p, egui::Rect::from_center_size(av, Vec2::splat(18.0)), Icon::Monitor, Color32::WHITE);
+                                let dot = av + Vec2::new(13.0, 13.0);
+                                p.circle_filled(dot, 5.5, Color32::from_rgb(30, 33, 41));
+                                p.circle_filled(dot, 4.0, if v.connected { color } else { GLASS_AMBER });
+                            };
+                            if right {
+                                // Em pé: só o círculo; nome e situação no balão.
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                                avatar(ui.painter(), rect.center());
+                                resp.on_hover_text(format!("{name}\n{line2}\n\n{info}"));
+                            } else {
+                                let name_w = if compact { 110.0 } else { 190.0 };
+                                let mut job = egui::text::LayoutJob::simple_singleline(name, theme::semibold(13.0), GLASS_TEXT);
+                                job.wrap = egui::text::TextWrapping { max_width: name_w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                                let g1 = ui.fonts_mut(|f| f.layout_job(job));
+                                let g2 = ui.painter().layout_no_wrap(line2, egui::FontId::proportional(11.0), GLASS_MUTED);
+                                let w = 44.0 + g1.size().x.max(g2.size().x + 18.0) + 10.0;
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::hover());
+                                let p = ui.painter();
+                                avatar(p, egui::pos2(rect.left() + 20.0, rect.center().y));
+                                let x = rect.left() + 46.0;
+                                p.galley(egui::pos2(x, rect.center().y - 16.0), g1, GLASS_TEXT);
+                                signal(p, egui::pos2(x, rect.center().y + 13.0), level, color);
+                                p.galley(egui::pos2(x + 17.0, rect.center().y + 1.0), g2, GLASS_MUTED);
+                                resp.on_hover_text(info);
+                            }
+                            glass_divider(ui, right);
                         }
                         // Telas do outro computador.
                         if v.monitors.len() > 1 {
                             let n = v.monitors.len();
-                            let labels: Vec<String> = (1..=n).map(|k| if compact { k.to_string() } else { t!("Tela {}", k) }).collect();
                             let tips: Vec<String> = v.monitors.iter().map(|m| t!("{} · {}×{}{}", m.name, m.width, m.height, if m.primary { t!(" · principal") } else { "" })).collect();
                             let cur = v.monitors.iter().position(|m| m.index == v.monitor).unwrap_or(0);
-                            if let Some(i) = glass_segments(ui, egui::Id::unique(("telas", idx)), &labels, &tips, cur, None, 36.0) {
+                            let pick = if right {
+                                (0..n).find(|&i| glass_number(ui, &(i + 1).to_string(), &tips[i], i == cur).clicked() && i != cur)
+                            } else {
+                                let labels: Vec<String> = (1..=n).map(|k| if compact { k.to_string() } else { t!("Tela {}", k) }).collect();
+                                glass_segments(ui, egui::Id::unique(("telas", idx)), &labels, &tips, cur, None, 36.0)
+                            };
+                            if let Some(i) = pick {
                                 v.monitor = v.monitors[i].index;
                                 let _ = v.handle.cmd.send(Cmd::Monitor(v.monitor));
                             }
-                            glass_divider(ui);
+                            glass_divider(ui, right);
                         }
                         // Ações.
                         let (icon, tip) = if !v.audio_available {
@@ -2500,15 +2704,22 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                                 let _ = v.handle.cmd.send(Cmd::ListDir(String::new()));
                             }
                         }
+                        let shot_open = egui::Popup::is_id_open(&ctx, shot_id);
+                        let cam = glass_icon(ui, Icon::Camera, t!("Print da tela"), shot_open || v.shot.is_some(), v.connected, None);
+                        if let Some(a) = shot_menu(&cam, shot_id, right, v) {
+                            act = Some(a);
+                        }
                         if glass_icon(ui, Icon::Star, if fav { t!("Tirar dos favoritos") } else { t!("Salvar nos favoritos") }, false, true, fav.then_some(Color32::from_rgb(252, 200, 64))).clicked() {
                             act = Some(SessAct::Favorite);
                         }
                         if glass_icon(ui, if fullscreen { Icon::Shrink } else { Icon::Expand }, if fullscreen { t!("Sair da tela cheia") } else { t!("Tela cheia") }, fullscreen, true, None).clicked() {
                             act = Some(SessAct::Fullscreen);
                         }
-                        let more = glass_icon(ui, Icon::More, t!("Mais opções"), menu_open, true, None);
-                        more_menu(&more, more_id, v);
-                        glass_divider(ui);
+                        let more = glass_icon(ui, Icon::More, t!("Mais opções"), egui::Popup::is_id_open(&ctx, more_id), true, None);
+                        if let Some(a) = more_menu(&more, more_id, v, right) {
+                            act = Some(a);
+                        }
+                        glass_divider(ui, right);
                         // Encerrar.
                         let label = if compact { String::new() } else { t!("Encerrar").to_string() };
                         let g = ui.painter().layout_no_wrap(label, theme::semibold(13.0), Color32::WHITE);
@@ -2533,6 +2744,30 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                 .rect;
             glass_shine(ui.painter(), r, 26.0);
             ctx.data_mut(|d| d.insert_temp(bar_rect_id, r));
+        });
+    act
+}
+
+/// Menu do print: a tela inteira na hora, ou escolher a área arrastando.
+fn shot_menu(button: &egui::Response, id: egui::Id, right: bool, v: &mut ViewSession) -> Option<SessAct> {
+    let mut act = None;
+    egui::Popup::menu(button)
+        .id(id)
+        .align(if right { egui::RectAlign::LEFT } else { egui::RectAlign::BOTTOM })
+        .gap(12.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(glass_frame(18, Margin::same(6)))
+        .width(230.0)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if glass_row(ui, Icon::Monitor, t!("Tela inteira"), true, GLASS_TEXT).on_hover_text(t!("Salva a tela do outro computador como está agora")).clicked() {
+                act = Some(SessAct::Shot(None));
+                egui::Popup::close_id(ui.ctx(), id);
+            }
+            if glass_row(ui, Icon::Crop, t!("Selecionar área…"), true, GLASS_TEXT).on_hover_text(t!("Arraste sobre a tela para escolher o pedaço. Esc cancela.")).clicked() {
+                v.shot = Some(crate::app::ShotSel::default());
+                egui::Popup::close_id(ui.ctx(), id);
+            }
         });
     act
 }
@@ -2564,10 +2799,12 @@ fn cc_volume(ui: &mut egui::Ui, value: f32) -> Option<f32> {
 
 /// Menu "Mais opções", como a Central de Controle: módulos de ajuste,
 /// qualidade da imagem num controle deslizante e ações no outro computador.
-fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
+fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: bool) -> Option<SessAct> {
+    let mut act = None;
     egui::Popup::menu(button)
         .id(id)
-        .align(egui::RectAlign::BOTTOM_END)
+        .align(if right { egui::RectAlign::LEFT_END } else { egui::RectAlign::BOTTOM_END })
+        .align_alternatives(if right { &[egui::RectAlign::LEFT, egui::RectAlign::LEFT_START] } else { &[] })
         .gap(12.0)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .frame(glass_frame(24, Margin::same(10)))
@@ -2634,6 +2871,17 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
                     let _ = v.handle.cmd.send(Cmd::SecureAttention);
                     egui::Popup::close_id(ui.ctx(), id);
                 }
+                let (label, what) = match v.os.as_str() {
+                    "Windows" => (t!("Abrir o Prompt de Comando"), t!("Abre o Prompt de Comando (cmd) na tela do outro computador")),
+                    "macOS" => (t!("Abrir o Terminal"), t!("Abre o Terminal na tela do outro computador")),
+                    _ => (t!("Abrir o terminal"), t!("Abre o terminal na tela do outro computador")),
+                };
+                let term = glass_row(ui, Icon::Terminal, label, ctrl && v.terminal, GLASS_TEXT);
+                let term = if !ctrl { term.on_disabled_hover_text(denied) } else { term.on_disabled_hover_text(t!("O Elo do outro computador é de uma versão que ainda não abre o terminal. Atualize-o.")) };
+                if term.on_hover_text(what).clicked() {
+                    let _ = v.handle.cmd.send(Cmd::OpenTerminal);
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
                 if glass_row(ui, Icon::Refresh, t!("Reiniciar o computador…"), ctrl, Color32::from_rgb(255, 128, 124))
                     .on_hover_text(t!("Reinicia o outro computador e reconecta quando ele voltar"))
                     .on_disabled_hover_text(denied)
@@ -2643,7 +2891,15 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession) {
                     egui::Popup::close_id(ui.ctx(), id);
                 }
             });
+            cc_module(ui, |ui| {
+                let label = if right { t!("Levar a barra para o alto") } else { t!("Levar a barra para a direita") };
+                if glass_row(ui, Icon::Layers, label, true, GLASS_TEXT).on_hover_text(t!("Fica assim nas próximas sessões (também em Configurações)")).clicked() {
+                    act = Some(SessAct::BarSide);
+                    egui::Popup::close_id(ui.ctx(), id);
+                }
+            });
         });
+    act
 }
 
 /// Modificadores que devem estar apertados lá: Ctrl, Shift, Alt, Meta.
@@ -2744,6 +3000,28 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn print_area_stays_inside_the_screen() {
+        assert_eq!(shot_crop(None, 1920, 1080), [0, 0, 1920, 1080]);
+        assert_eq!(shot_crop(Some([100, 50, 300, 200]), 1920, 1080), [100, 50, 300, 200]);
+        // Passou da borda: corta no limite; vazio vira 1 pixel.
+        assert_eq!(shot_crop(Some([1800, 1000, 500, 500]), 1920, 1080), [1800, 1000, 120, 80]);
+        assert_eq!(shot_crop(Some([5000, 5000, 0, 0]), 1920, 1080), [1919, 1079, 1, 1]);
+    }
+
+    #[test]
+    fn print_file_never_overwrites_and_has_a_safe_name() {
+        let dir = std::env::temp_dir().join(format!("elo-print-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = shot_path(&dir, "../Recepção: PC/1");
+        assert_eq!(a.parent(), Some(dir.as_path()));
+        assert_eq!(a.file_name().unwrap().to_str().unwrap(), "Print - _Recepção_ PC_1 - 1.png");
+        std::fs::write(&a, b"x").unwrap();
+        assert!(shot_path(&dir, "../Recepção: PC/1").ends_with("Print - _Recepção_ PC_1 - 2.png"));
+        assert!(shot_path(&dir, "...").ends_with("Print - Elo - 1.png"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn letter_is_released_even_if_ctrl_went_first() {

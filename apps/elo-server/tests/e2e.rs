@@ -17,6 +17,13 @@ fn restart_simulado() -> Result<(), String> {
     Ok(())
 }
 
+/// Terminal de mentira: conta os pedidos (o teste não abre janelas).
+static TERMINAIS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn terminal_simulado() -> Result<(), String> {
+    TERMINAIS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
 struct Server(Child);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -107,7 +114,7 @@ fn session_through_relay() {
         assert_eq!(hs, vs);
         assert_eq!(from, viewer_id);
         let (htx, hrx) = channel();
-        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
+        let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: true, id: host_id.clone(), tech_ca: None };
         let hh = session::host(cfg.clone(), hs, hsec, from.clone(), "Visualizador".into(), opt, htx);
         let remote = Arc::new(Mutex::new(Remote::default()));
         let (vtx, vrx) = channel();
@@ -191,6 +198,18 @@ fn session_through_relay() {
         assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::File(t) if !t.incoming && t.error.is_some())).is_some(), "quem enviava não soube");
         assert_eq!(std::fs::read_dir(&destino).unwrap().count(), 0, "ficou arquivo pela metade");
         hh.cmd.send(session::Cmd::Permissions(Default::default())).unwrap();
+        // Terminal: só com permissão de controle, e quem está lá fica sabendo.
+        hh.cmd.send(session::Cmd::Permissions(elo_proto::msg::Permissions { control: false, ..Default::default() })).unwrap();
+        assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::Permissions(p) if !p.control)).is_some());
+        let antes = TERMINAIS.load(std::sync::atomic::Ordering::SeqCst);
+        vh.cmd.send(session::Cmd::OpenTerminal).unwrap();
+        assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::Notice(t) if t.contains("terminal"))).is_some(), "sem controle, o terminal não foi recusado");
+        assert_eq!(TERMINAIS.load(std::sync::atomic::Ordering::SeqCst), antes);
+        hh.cmd.send(session::Cmd::Permissions(Default::default())).unwrap();
+        assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::Permissions(p) if p.control)).is_some());
+        vh.cmd.send(session::Cmd::OpenTerminal).unwrap();
+        assert!(wait(&hrx, 10, |e| matches!(e, HostEvent::Chat(t) if t.contains("abriu o terminal"))).is_some(), "quem está lá não soube do terminal");
+        assert_eq!(TERMINAIS.load(std::sync::atomic::Ordering::SeqCst), antes + 1);
         // Reiniciar: o anfitrião responde com o motivo combinado (o visualizador reconecta).
         let antes = REINICIOS.load(std::sync::atomic::Ordering::SeqCst);
         vh.cmd.send(session::Cmd::Restart).unwrap();
@@ -289,7 +308,7 @@ fn websocket_like_cloudflare_tunnel() {
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     assert_eq!((hs, &from_id), (vs, &viewer_id));
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
+    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: true, id: host_id.clone(), tech_ca: None };
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();
@@ -404,7 +423,7 @@ fn cancelled_request_disappears() {
     let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, audio: true, id: host_id.clone(), tech_ca: None };
+    let opt = HostOptions { passwords: vec!["s3nha-temp".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: true, id: host_id.clone(), tech_ca: None };
     let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let (vtx, vrx) = channel();
     let vh = session::viewer(cfg.clone(), vs, vsec, String::new(), viewer_id, "Visualizador".into(), dir.join("baixados"), Arc::new(Mutex::new(Remote::default())), vtx, host_id.clone(), None);
@@ -552,7 +571,7 @@ fn wrong_passwords_lock_only_who_tried() {
         let Some(Event::SessionReady { session: s, secret, .. }) = wait(&who.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
         let Some(Event::Incoming { from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
         let (htx, _hrx) = channel();
-        let opt = HostOptions { passwords: vec!["certa-123".into()], name: "Anfitrião".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false, id: host_id.clone(), tech_ca: None };
+        let opt = HostOptions { passwords: vec!["certa-123".into()], name: "Anfitrião".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: host_id.clone(), tech_ca: None };
         let hh = session::host(cfg.clone(), s, secret, from_id, "x".into(), opt, htx);
         let (vtx, vrx) = channel();
         let vh = session::viewer(cfg.clone(), s, secret, pw.into(), who_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx, host_id.clone(), None);
@@ -643,7 +662,7 @@ fn only_approved_techs_reach_company_computers() {
         let Some(Event::SessionReady { session: s, secret, .. }) = wait(&who.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
         let Some(Event::Incoming { from_id, from_name, .. }) = wait(&cli.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
         let (htx, hrx) = channel();
-        let opt = HostOptions { passwords: Vec::new(), name: "Recepção".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, audio: false, id: cli_id.clone(), tech_ca: Some(ca_pub) };
+        let opt = HostOptions { passwords: Vec::new(), name: "Recepção".into(), downloads: dir.join("r"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: cli_id.clone(), tech_ca: Some(ca_pub) };
         let hh = session::host(cfg.clone(), s, secret, from_id, from_name, opt, htx);
         let (vtx, vrx) = channel();
         let vh = session::viewer(cfg.clone(), s, secret, String::new(), my_id.into(), "x".into(), dir.join("b"), Arc::new(Mutex::new(Remote::default())), vtx, cli_id.clone(), credential);

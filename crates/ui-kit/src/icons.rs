@@ -65,6 +65,10 @@ pub enum Icon {
     Music,
     Video,
     Monitor,
+    /// Janela de terminal com o prompt.
+    Terminal,
+    /// Área tracejada (seleção de um pedaço da tela).
+    Crop,
     // ── Traço (modelagem 3D) ──
     /// Marca do Traço: um traço que vira volume.
     Traco,
@@ -520,6 +524,19 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.rect(3.0, 4.0, 18.0, 12.5, 2.0);
             pen.line(&[(8.0, 20.5), (16.0, 20.5)]);
             pen.line(&[(12.0, 16.5), (12.0, 20.5)]);
+        }
+        Icon::Terminal => {
+            pen.rect(3.0, 4.0, 18.0, 16.0, 2.5);
+            pen.line(&[(7.0, 9.0), (10.0, 12.0), (7.0, 15.0)]);
+            pen.line(&[(12.5, 15.5), (17.0, 15.5)]);
+        }
+        Icon::Crop => {
+            for (a, b) in [((4.0, 4.0), (7.0, 4.0)), ((10.5, 4.0), (13.5, 4.0)), ((17.0, 4.0), (20.0, 4.0)), ((4.0, 20.0), (7.0, 20.0)), ((10.5, 20.0), (13.5, 20.0)), ((17.0, 20.0), (20.0, 20.0))] {
+                pen.line(&[a, b]);
+            }
+            for (a, b) in [((4.0, 4.0), (4.0, 7.0)), ((4.0, 10.5), (4.0, 13.5)), ((4.0, 17.0), (4.0, 20.0)), ((20.0, 4.0), (20.0, 7.0)), ((20.0, 10.5), (20.0, 13.5)), ((20.0, 17.0), (20.0, 20.0))] {
+                pen.line(&[a, b]);
+            }
         }
         Icon::Traco => {
             pen.line(&[(4.0, 18.0), (12.0, 6.0)]);

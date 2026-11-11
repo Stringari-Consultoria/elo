@@ -22,7 +22,8 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 directories = "6"
 rfd = "0.17"
-arboard = { version = "3", default-features = false }
+# image-data: o print da tela também vai para a área de transferência.
+arboard = { version = "3", default-features = false, features = ["image-data"] }
 sha2 = { workspace = true }
 image = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls"] }

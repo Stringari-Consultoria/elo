@@ -164,6 +164,16 @@ pub struct ViewSession {
     pub fine_scroll: bool,
     /// Gerenciador de arquivos (painel lateral).
     pub files: FilesPanel,
+    /// O anfitrião sabe abrir o terminal (recurso "terminal").
+    pub terminal: bool,
+    /// Escolhendo a área do print (arrastando sobre a tela remota).
+    pub shot: Option<ShotSel>,
+}
+
+/// Seleção da área do print: onde o arrasto começou (na tela daqui).
+#[derive(Default)]
+pub struct ShotSel {
+    pub start: Option<egui::Pos2>,
 }
 
 /// Sessão em que este computador está sendo acessado.
@@ -303,6 +313,12 @@ pub struct EloApp {
     pub renaming: Option<FavEdit>,
     /// Ação pedida na barra da sessão (aplicada depois de desenhar).
     pub session_act: Option<crate::ui::SessAct>,
+    /// Prints da tela remota: o PNG é gravado fora da interface e o
+    /// resultado (arquivo, se foi copiado) volta por aqui.
+    pub shots: (Sender<Result<(std::path::PathBuf, bool), String>>, Receiver<Result<(std::path::PathBuf, bool), String>>),
+    /// Área de transferência dos prints: fica viva enquanto o Elo roda
+    /// (no Linux a imagem some quando ela é destruída).
+    pub shot_clipboard: Arc<Mutex<Option<arboard::Clipboard>>>,
     pub updater: crate::update::Updater,
     /// Aberto pelo início automático (reabre assim depois de atualizar).
     pub background: bool,
@@ -400,6 +416,8 @@ impl EloApp {
             fullscreen: false,
             renaming: None,
             session_act: None,
+            shots: std::sync::mpsc::channel(),
+            shot_clipboard: Arc::new(Mutex::new(None)),
             updater: crate::update::Updater::default(),
             background,
             tray: crate::tray::create(&cc.egui_ctx),
@@ -554,7 +572,7 @@ impl EloApp {
         }
         // Elo Cliente com a chave dos técnicos: só técnico aprovado pede acesso.
         let tech_ca = if self.client_mode() { self.settings.company.as_ref().and_then(|c| c.ca_key()) } else { None };
-        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, audio: true, id: self.my_id().unwrap_or_default().to_string(), tech_ca }
+        HostOptions { passwords, name: self.settings.device_name.clone(), downloads: self.settings.downloads.clone(), default_permissions: self.settings.default_permissions, restart: elo_core::platform::restart_computer, terminal: elo_core::platform::open_terminal, audio: true, id: self.my_id().unwrap_or_default().to_string(), tech_ca }
     }
 
     /// Servidor em uso: o local (se ligado) ou o configurado.
@@ -738,6 +756,17 @@ impl EloApp {
     pub fn pump(&mut self, ctx: &egui::Context) {
         self.answer.set(self.server_cfg(), self.host_options());
         self.hosts.extend(self.answer.started.try_iter());
+        let shots: Vec<_> = self.shots.1.try_iter().collect();
+        for r in shots {
+            match r {
+                Ok((path, copied)) => {
+                    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let dir = path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                    self.toast(if copied { t!("Print salvo em {} ({}) e copiado.", dir, file) } else { t!("Print salvo em {} ({}).", dir, file) });
+                }
+                Err(e) => self.error(t!("Não foi possível salvar o print: {}", crate::i18n::tr_dyn(&e))),
+            }
+        }
         let evs: Vec<Event> = self.control.rx.try_iter().collect();
         for e in evs {
             match e {
@@ -907,6 +936,8 @@ impl EloApp {
                         volume: 1.0,
                         fine_scroll: false,
                         files: FilesPanel::default(),
+                        terminal: false,
+                        shot: None,
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();
@@ -1029,6 +1060,7 @@ impl EloApp {
                     ViewerEvent::Features(f) => {
                         v.fine_scroll = f.iter().any(|x| x == "rolagem-fina");
                         v.files.drives = f.iter().any(|x| x == "unidades");
+                        v.terminal = f.iter().any(|x| x == "terminal");
                     }
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });

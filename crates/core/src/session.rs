@@ -518,6 +518,8 @@ pub struct HostOptions {
     pub default_permissions: Permissions,
     /// Como reiniciar o computador (testes trocam por uma função que não reinicia).
     pub restart: fn() -> Result<(), String>,
+    /// Como abrir o terminal na tela deste computador (testes trocam).
+    pub terminal: fn() -> Result<(), String>,
     /// Mandar o som deste computador a quem pedir (dá para mudar na sessão).
     pub audio: bool,
     /// ID deste computador (entra no aperto de mão: o relay não desvia).
@@ -582,6 +584,8 @@ pub enum Cmd {
     Upload(PathBuf, String),
     /// Reiniciar o computador do anfitrião.
     Restart,
+    /// Abrir o terminal na tela do anfitrião.
+    OpenTerminal,
     Quality { jpeg: u8, fps: u8 },
     Monitor(u8),
     Refresh,
@@ -820,6 +824,18 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         return Err("reiniciando o computador a pedido de quem acessava".into());
                     }
                     ch.send(&Msg::Notice("sem permissão de controle para reiniciar".into()))?;
+                }
+                Msg::OpenTerminal => {
+                    if !perms.control {
+                        ch.send(&Msg::Notice("sem permissão de controle para abrir o terminal".into()))?;
+                    } else {
+                        match (opt.terminal)() {
+                            Ok(()) => {
+                                let _ = ev.send(HostEvent::Chat(format!("[{} abriu o terminal deste computador]", from_name)));
+                            }
+                            Err(e) => ch.send(&Msg::Notice(e))?,
+                        }
+                    }
                 }
                 Msg::ListDir { path } => {
                     let reply = if perms.files { list_dir(&path) } else { Msg::DirListing { path, parent: None, entries: Vec::new(), error: Some("o outro lado não liberou a transferência de arquivos".into()) } };
@@ -1206,6 +1222,13 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 Cmd::Chat(t) => ch.send(&Msg::Chat(t))?,
                 Cmd::ListDir(path) => ch.send(&Msg::ListDir { path })?,
                 Cmd::Restart => ch.send(&Msg::Restart)?,
+                Cmd::OpenTerminal => {
+                    if ch.has("terminal") {
+                        ch.send(&Msg::OpenTerminal)?;
+                    } else {
+                        let _ = ev.send(ViewerEvent::Notice("o Elo do outro computador é de uma versão que ainda não abre o terminal".into()));
+                    }
+                }
                 Cmd::Download(path) => ch.send(&Msg::FileRequest { path })?,
                 Cmd::Upload(p, dir) => match files.offer(&mut ch, &p, Some(dir)) {
                     Ok(t) => {

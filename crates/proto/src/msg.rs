@@ -133,12 +133,15 @@ pub enum Msg {
     AudioStop,
     /// Anfitrião → visualizador: um pacote Opus (48 kHz, estéreo, 20 ms).
     Audio(Vec<u8>),
+    /// Visualizador pede para abrir o terminal na tela do anfitrião (Prompt de
+    /// Comando no Windows; exige permissão de controle; recurso "terminal").
+    OpenTerminal,
 }
 
 /// Recursos que esta versão entende, além do básico. O anfitrião manda a
 /// lista logo depois do `Welcome`, no mesmo quadro: versões antigas ignoram
 /// os bytes a mais, as novas leem com `features_after`.
-pub const FEATURES: &[&str] = &["audio", "unidades"];
+pub const FEATURES: &[&str] = &["audio", "unidades", "terminal"];
 
 /// Caminho especial do `ListDir`: lista as unidades e discos do anfitrião
 /// (recurso "unidades"). Cada item vem com o caminho completo no nome.

@@ -79,6 +79,60 @@ pub fn restart_computer() -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("não foi possível reiniciar ({st})")) }
 }
 
+/// Abre o terminal na tela deste computador, na pasta pessoal (pedido de quem
+/// acessa, com permissão de controle): Prompt de Comando no Windows,
+/// Terminal no macOS e o terminal da área de trabalho no Linux.
+pub fn open_terminal() -> Result<(), String> {
+    let home = std::env::var_os(if cfg!(target_os = "windows") { "USERPROFILE" } else { "HOME" }).map(std::path::PathBuf::from).filter(|h| h.is_dir());
+    let mut cmd = terminal_command()?;
+    if let Some(h) = &home {
+        cmd.current_dir(h);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("não foi possível abrir o terminal: {e}"))?;
+    // Recolhe o processo quando fechar (sem deixar processo zumbi).
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn terminal_command() -> Result<std::process::Command, String> {
+    use std::os::windows::process::CommandExt;
+    // Janela própria: o Elo não tem console.
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let mut c = std::process::Command::new("cmd.exe");
+    c.creation_flags(CREATE_NEW_CONSOLE);
+    Ok(c)
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_command() -> Result<std::process::Command, String> {
+    // Janela nova do Terminal na pasta pessoal.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let mut c = std::process::Command::new("open");
+    c.args(["-a", "Terminal", &home]);
+    Ok(c)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn terminal_command() -> Result<std::process::Command, String> {
+    // O escolhido pelo usuário ($TERMINAL), o padrão do Debian/Ubuntu e os das
+    // áreas de trabalho mais comuns, nesta ordem.
+    const KNOWN: &[&str] = &[
+        "x-terminal-emulator", "gnome-terminal", "kgx", "ptyxis", "konsole", "xfce4-terminal", "mate-terminal", "lxterminal", "qterminal", "tilix", "terminator", "alacritty", "kitty", "foot", "wezterm", "xterm",
+    ];
+    let chosen = std::env::var("TERMINAL").ok().filter(|t| !t.trim().is_empty() && !t.contains(char::is_whitespace));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let find = |name: &str| -> Option<std::path::PathBuf> {
+        if name.contains('/') {
+            return Some(std::path::PathBuf::from(name)).filter(|p| p.is_file());
+        }
+        std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
+    };
+    chosen.iter().map(String::as_str).chain(KNOWN.iter().copied()).find_map(find).map(std::process::Command::new).ok_or_else(|| "nenhum terminal encontrado neste computador".to_string())
+}
+
 pub fn computer_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok().filter(|s| !s.is_empty()).or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string())).unwrap_or_else(|| "Computador".into())
 }

@@ -108,6 +108,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Idioma da interface: "auto" (o do sistema), "pt" ou "en".
     pub language: String,
+    /// Barra da sessão na lateral direita (em pé) em vez de no alto.
+    pub bar_right: bool,
     /// Conta de técnico neste servidor (painel de clientes).
     pub tech: Option<TechCfg>,
     /// Elo Cliente: empresa a que este computador pertence (código de convite).
@@ -183,6 +185,7 @@ impl Default for Settings {
             onboarded: false,
             auto_update: true,
             close_to_tray: true, language: "auto".into(),
+            bar_right: false,
             tech: None,
             company: None,
             tech_secret: String::new(),
