@@ -13,15 +13,20 @@ set -euo pipefail
 
 R="${PW_CABECALHOS:-$PWD/target/pw-dev}"
 VER=1.0.5-1ubuntu3.3
+# Reserva no launchpad (fica lá mesmo depois que o arquivo do Ubuntu tira a versão).
 declare -A DEBS=(
     [libpipewire-0.3-dev_${VER}_amd64.deb]="https://launchpadlibrarian.net/868136190 1a0267989f02a8729cdb4df36d9acf3a5ac1a525200d428baffe8961ccb0e0ba"
     [libspa-0.2-dev_${VER}_amd64.deb]="https://launchpadlibrarian.net/868136197 93a60e7656fb35c97a78159fd0556842c62c2d8b9aff096009f9a20c64c1f272"
 )
+# Primeiro o arquivo do Ubuntu (o launchpad sai do ar às vezes). HTTP serve:
+# o SHA-256 fixado acima confere cada pacote, venha de onde vier.
+POOL=http://archive.ubuntu.com/ubuntu/pool/main/p/pipewire
 
 mkdir -p "$R/debs" "$R/root"
 for deb in "${!DEBS[@]}"; do
     read -r url sum <<<"${DEBS[$deb]}"
-    [ -f "$R/debs/$deb" ] || curl -fsSL -o "$R/debs/$deb" "$url/$deb"
+    get() { curl -fsSL --connect-timeout 30 --max-time 300 --retry 3 --retry-delay 10 --retry-all-errors -o "$R/debs/$deb" "$1"; }
+    [ -f "$R/debs/$deb" ] || get "$POOL/$deb" || get "$url/$deb"
     echo "$sum  $R/debs/$deb" | sha256sum -c --quiet
     dpkg-deb -x "$R/debs/$deb" "$R/root"
 done
