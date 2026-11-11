@@ -588,6 +588,10 @@ pub enum Cmd {
     OpenTerminal,
     Quality { jpeg: u8, fps: u8 },
     Monitor(u8),
+    /// Telas mandadas ao mesmo tempo, cada uma numa janela (além da escolhida).
+    Split(Vec<u8>),
+    /// Entrada vinda da janela de uma dessas telas.
+    InputOn(u8, Input),
     Refresh,
     Permissions(Permissions),
     Clipboard(bool),
@@ -717,18 +721,20 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut control = platform::open_control().ok().map(Injector::new);
     let mut clip = Clip::new();
     let monitors = screen.monitors();
+    let n_monitors = monitors.len();
     ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
     let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), password: (keys.mode == AuthMode::Password).then_some(keys.which), verified: verified.clone() });
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
-    let mut enc = Encoder::new();
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
     let mut monitor = 0u8;
+    let mut main = Stream::new();
+    // Telas a mais, cada uma numa janela de lá (recurso "multitela").
+    let mut extras: Vec<(u8, Stream)> = Vec::new();
+    // De qual tela são os quadros que estão indo (`None` = a principal).
+    let mut target: Option<u8> = None;
     let mut seq = 0u32;
     let mut acked = 0u32;
     let mut last_frame = Instant::now() - Duration::from_secs(1);
-    let mut last_change = Instant::now();
-    let mut refined = false;
-    let mut full = true;
     let mut last_clip = Instant::now();
     let mut files = Files::default();
     let mut frames_win = (Instant::now(), 0u32);
@@ -762,6 +768,15 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         ctl.apply(&i, monitor);
                     }
                 }
+                Msg::InputOn { monitor: m, input } => {
+                    if perms.control
+                        && (m as usize) < n_monitors
+                        && let Some(ctl) = control.as_mut()
+                    {
+                        ctl.apply(&input, m);
+                    }
+                }
+                Msg::Streams(list) => extras = pick_streams(std::mem::take(&mut extras), list, n_monitors),
                 Msg::Clipboard(t) => {
                     if perms.clipboard {
                         clip.set(&t);
@@ -773,13 +788,17 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                 Msg::Quality { jpeg, fps: f } => {
                     jpeg_q = jpeg.clamp(10, 95);
                     fps = f.clamp(1, 60);
-                    full = true;
+                    main.full = true;
+                    extras.iter_mut().for_each(|(_, s)| s.full = true);
                 }
                 Msg::SelectMonitor(i) => {
                     monitor = i;
-                    full = true;
+                    main.full = true;
                 }
-                Msg::Refresh => full = true,
+                Msg::Refresh => {
+                    main.full = true;
+                    extras.iter_mut().for_each(|(_, s)| s.full = true);
+                }
                 Msg::FileOffer { id, name, size, dir } => {
                     if perms.files {
                         // Pasta escolhida no gerenciador (se existir); senão, a de recebidos.
@@ -934,45 +953,24 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                 ch.send(&Msg::Clipboard(t))?;
             }
         }
-        // Quadro: no máximo 2 sem confirmação e respeitando o fps.
+        // Quadro: no máximo 2 sem confirmação por tela e respeitando o fps.
         let interval = Duration::from_millis(1000 / fps.max(1) as u64);
-        if seq.wrapping_sub(acked) < 2 && last_frame.elapsed() >= interval {
+        let window = 2 * (1 + extras.len() as u32);
+        if seq.wrapping_sub(acked) < window && last_frame.elapsed() >= interval {
             last_frame = Instant::now();
+            aim(&mut ch, &mut target, None)?;
             let f = screen.capture(monitor)?;
-            let (mut tiles, was_full) = enc.encode(&f.rgba, f.width, f.height, jpeg_q, full);
-            full = false;
-            if !tiles.is_empty() {
-                last_change = Instant::now();
-                refined = false;
-            } else if !refined && last_change.elapsed() > Duration::from_millis(700) {
-                // Tela parada: refinamento em alta qualidade, em lotes.
-                tiles = enc.refine(90, 48);
-                if tiles.is_empty() {
-                    refined = true;
-                }
-            }
-            let cursor = screen.cursor(monitor);
-            if !tiles.is_empty() || was_full {
-                seq = seq.wrapping_add(1);
-                ch.send(&Msg::FrameStart { seq, width: f.width, height: f.height, full: was_full })?;
-                let mut batch = Vec::new();
-                let mut size = 0;
-                for t in tiles {
-                    size += t.data.len();
-                    batch.push(t);
-                    if size > CHUNK {
-                        ch.send(&Msg::Tiles(std::mem::take(&mut batch)))?;
-                        size = 0;
-                    }
-                }
-                if !batch.is_empty() {
-                    ch.send(&Msg::Tiles(batch))?;
-                }
-                ch.send(&Msg::FrameEnd { seq, cursor })?;
+            if send_frame(&mut ch, &mut main, &f, screen.cursor(monitor), jpeg_q, &mut seq)? {
                 frames_win.1 += 1;
-            } else {
-                // Só o cursor.
-                ch.send(&Msg::FrameEnd { seq, cursor })?;
+            }
+            for (m, s) in extras.iter_mut() {
+                // A principal já foi; uma tela que sumiu não derruba a sessão.
+                if *m == monitor {
+                    continue;
+                }
+                let Ok(f) = screen.capture(*m) else { continue };
+                aim(&mut ch, &mut target, Some(*m))?;
+                send_frame(&mut ch, s, &f, screen.cursor(*m), jpeg_q, &mut seq)?;
             }
         } else {
             std::thread::sleep(Duration::from_millis(2));
@@ -989,6 +987,83 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     }
 }
 
+/// Uma tela sendo mandada: o codificador dela e o estado do refinamento.
+struct Stream {
+    enc: Encoder,
+    full: bool,
+    refined: bool,
+    last_change: Instant,
+}
+
+impl Stream {
+    fn new() -> Self {
+        Stream { enc: Encoder::new(), full: true, refined: false, last_change: Instant::now() }
+    }
+}
+
+/// Telas a mais pedidas pelo visualizador: só as que existem, sem repetir, no
+/// máximo 8. As que já estavam indo continuam de onde estavam.
+fn pick_streams(mut old: Vec<(u8, Stream)>, mut list: Vec<u8>, n_monitors: usize) -> Vec<(u8, Stream)> {
+    list.retain(|m| (*m as usize) < n_monitors);
+    list.sort_unstable();
+    list.dedup();
+    list.truncate(8);
+    list.into_iter()
+        .map(|m| match old.iter().position(|(o, _)| *o == m) {
+            Some(i) => old.swap_remove(i),
+            None => (m, Stream::new()),
+        })
+        .collect()
+}
+
+/// Avisa de qual tela são os próximos quadros, se mudou.
+fn aim(ch: &mut Chan, target: &mut Option<u8>, want: Option<u8>) -> Result<(), String> {
+    if *target != want {
+        ch.send(&Msg::FrameTarget(want))?;
+        *target = want;
+    }
+    Ok(())
+}
+
+/// Codifica e manda um quadro desta tela (ou só o cursor, se nada mudou).
+/// Devolve se foi um quadro com imagem.
+fn send_frame(ch: &mut Chan, s: &mut Stream, f: &platform::Frame, cursor: Option<(i32, i32)>, jpeg_q: u8, seq: &mut u32) -> Result<bool, String> {
+    let (mut tiles, was_full) = s.enc.encode(&f.rgba, f.width, f.height, jpeg_q, s.full);
+    s.full = false;
+    if !tiles.is_empty() {
+        s.last_change = Instant::now();
+        s.refined = false;
+    } else if !s.refined && s.last_change.elapsed() > Duration::from_millis(700) {
+        // Tela parada: refinamento em alta qualidade, em lotes.
+        tiles = s.enc.refine(90, 48);
+        if tiles.is_empty() {
+            s.refined = true;
+        }
+    }
+    if tiles.is_empty() && !was_full {
+        // Só o cursor.
+        ch.send(&Msg::FrameEnd { seq: *seq, cursor })?;
+        return Ok(false);
+    }
+    *seq = seq.wrapping_add(1);
+    ch.send(&Msg::FrameStart { seq: *seq, width: f.width, height: f.height, full: was_full })?;
+    let mut batch = Vec::new();
+    let mut size = 0;
+    for t in tiles {
+        size += t.data.len();
+        batch.push(t);
+        if size > CHUNK {
+            ch.send(&Msg::Tiles(std::mem::take(&mut batch)))?;
+            size = 0;
+        }
+    }
+    if !batch.is_empty() {
+        ch.send(&Msg::Tiles(batch))?;
+    }
+    ch.send(&Msg::FrameEnd { seq: *seq, cursor })?;
+    Ok(true)
+}
+
 // ── visualizador ────────────────────────────────────────────────────
 
 /// Imagem remota compartilhada com a interface.
@@ -997,6 +1072,29 @@ pub struct Remote {
     pub dec: Decoder,
     pub version: u64,
     pub cursor: Option<(i32, i32)>,
+    /// Telas que abrem cada uma na sua janela (recurso "multitela"), por número.
+    pub extra: std::collections::BTreeMap<u8, RemoteScreen>,
+}
+
+/// A imagem de uma tela a mais.
+#[derive(Default)]
+pub struct RemoteScreen {
+    pub dec: Decoder,
+    pub version: u64,
+    pub cursor: Option<(i32, i32)>,
+}
+
+impl Remote {
+    /// Imagem, versão e cursor da tela `target` (`None` = a principal).
+    fn screen(&mut self, target: Option<u8>) -> (&mut Decoder, &mut u64, &mut Option<(i32, i32)>) {
+        match target {
+            None => (&mut self.dec, &mut self.version, &mut self.cursor),
+            Some(m) => {
+                let s = self.extra.entry(m).or_default();
+                (&mut s.dec, &mut s.version, &mut s.cursor)
+            }
+        }
+    }
 }
 
 pub enum ViewerEvent {
@@ -1119,6 +1217,8 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
     let mut frames_win = (Instant::now(), 0u32);
     let mut last_rx = Instant::now();
     let mut last_ping = Instant::now();
+    // De qual tela são os quadros chegando (`None` = a principal).
+    let mut target: Option<u8> = None;
     loop {
         if h.stop.load(Ordering::Relaxed) {
             let _ = ch.send(&Msg::Bye("o visualizador encerrou a sessão".into()));
@@ -1130,25 +1230,28 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
             got = true;
             last_rx = Instant::now();
             match m {
+                Msg::FrameTarget(t) => target = t,
                 Msg::FrameStart { width, height, .. } => {
                     let mut r = remote.lock().unwrap_or_else(|e| e.into_inner());
-                    if !r.dec.resize(width, height) {
+                    if !r.screen(target).0.resize(width, height) {
                         return Err(format!("o outro lado mandou uma tela de tamanho inválido ({width} x {height})"));
                     }
                 }
                 Msg::Tiles(ts) => {
                     let mut r = remote.lock().unwrap_or_else(|e| e.into_inner());
+                    let (dec, version, _) = r.screen(target);
                     for t in &ts {
-                        r.dec.apply(t);
+                        dec.apply(t);
                     }
-                    r.version += 1;
+                    *version += 1;
                 }
                 Msg::FrameEnd { seq, cursor } => {
                     {
                         let mut r = remote.lock().unwrap_or_else(|e| e.into_inner());
-                        if r.cursor != cursor {
-                            r.cursor = cursor;
-                            r.version += 1;
+                        let (_, version, c) = r.screen(target);
+                        if *c != cursor {
+                            *c = cursor;
+                            *version += 1;
                         }
                     }
                     ch.send(&Msg::Ack { seq })?;
@@ -1248,6 +1351,20 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 },
                 Cmd::Quality { jpeg, fps } => ch.send(&Msg::Quality { jpeg, fps })?,
                 Cmd::Monitor(i) => ch.send(&Msg::SelectMonitor(i))?,
+                Cmd::Split(list) => {
+                    if ch.has("multitela") {
+                        // A imagem das telas que fecharam não serve mais.
+                        remote.lock().unwrap_or_else(|e| e.into_inner()).extra.retain(|m, _| list.contains(m));
+                        ch.send(&Msg::Streams(list))?;
+                    } else {
+                        let _ = ev.send(ViewerEvent::Notice("o Elo do outro computador é de uma versão que ainda não abre uma janela para cada tela".into()));
+                    }
+                }
+                Cmd::InputOn(m, i) => {
+                    if perms.control && ch.has("multitela") {
+                        ch.send(&Msg::InputOn { monitor: m, input: i })?;
+                    }
+                }
                 Cmd::Refresh => ch.send(&Msg::Refresh)?,
                 Cmd::Clipboard(on) => clip_sync = on,
                 Cmd::PasteText(t) => {

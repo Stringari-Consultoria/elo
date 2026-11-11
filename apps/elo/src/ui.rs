@@ -1,13 +1,15 @@
 //! Interface do Elo.
 
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, RichText, Sense, Stroke, Vec2};
-use elo_core::session::Cmd;
+use std::sync::{Arc, Mutex};
+
+use elo_core::session::{Cmd, Remote};
 use elo_proto::ctrl::pretty_id;
 use elo_proto::msg::{Button, Input, Key};
 use stringari_ui::icons::{self, Icon};
 use stringari_ui::theme::{self, Palette, pal};
 
-use crate::app::{ChatLine, EloApp, Status, ViewSession, quality};
+use crate::app::{ChatLine, EloApp, RemoteInput, SplitWin, Status, ViewSession, quality};
 use crate::mac::{self, Kind};
 
 pub(crate) fn card(p: &Palette) -> egui::Frame {
@@ -158,6 +160,7 @@ impl eframe::App for EloApp {
                 None => {}
             }
         }
+        self.split_windows(&ctx);
         self.dialogs(&ctx);
         self.onboarding_ui(&ctx);
         self.toasts_ui(&ctx);
@@ -882,150 +885,16 @@ impl EloApp {
             }
             return;
         }
-        // Entrada: só com o mouse sobre a tela remota (ou arrastando).
-        let hovered = resp.hovered() || resp.dragged();
-        // Cursor remoto: a captura não inclui o cursor. Desenha a seta onde ele
-        // está, menos quando é só o nosso mouse (parado em cima ou se movendo).
         let remote_cursor = v.remote.lock().unwrap_or_else(|e| e.into_inner()).cursor;
-        if let Some((cx, cy)) = remote_cursor {
-            let pos = rect.left_top() + Vec2::new(cx as f32 * scale, cy as f32 * scale);
-            let local = ctx.pointer_hover_pos().filter(|_| hovered);
-            let ours = local.is_some_and(|l| { l.distance(pos) < 6.0 || v.last_move.elapsed() < std::time::Duration::from_millis(600)});
-            if rect.contains(pos) && !ours {
-                paint_cursor(ui.painter(), pos);
-            }
-        }
-        let remote_mac = v.os == "macOS";
-        let focused = ctx.input(|i| i.focused);
-        // Campo do próprio Elo em foco (chat, caminho): o teclado fica nele até
-        // clicar na tela remota. O mouse continua indo para lá.
-        let clicked_here = hovered && ctx.input(|i| i.pointer.any_pressed());
-        let keyboard = clicked_here || ctx.memory(|m| m.focused()).is_none_or(|id| id == resp.id);
-        if hovered && focused {
-            if keyboard {
-                resp.request_focus();
-            }
-            let to_remote = |pos: egui::Pos2| { (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32)};
-            let cmd = &v.handle.cmd;
-            let send = |i: Input| {
-                let _ = cmd.send(Cmd::Input(i));
-            };
-            let events = ctx.input(|i| i.events.clone());
-            for e in events {
-                match e {
-                    egui::Event::PointerMoved(pos) => {
-                        if rect.contains(pos) {
-                            v.last_move = std::time::Instant::now();
-                            let (x, y) = to_remote(pos);
-                            send(Input::MouseMove { x, y });
-                        }
-                    }
-                    egui::Event::PointerButton { pos, button, pressed, modifiers } => {
-                        // Shift/Ctrl+clique: o modificador vai antes do clique.
-                        sync_mods(&mut v.held, remote_mods(modifiers, remote_mac), &send);
-                        if rect.contains(pos) || !pressed {
-                            let b = match button {
-                                egui::PointerButton::Primary => Some(Button::Left),
-                                egui::PointerButton::Secondary => Some(Button::Right),
-                                egui::PointerButton::Middle => Some(Button::Middle),
-                                _ => None,
-                            };
-                            // Só solta lá o que foi apertado lá.
-                            if let Some(b) = b.filter(|b| pressed || v.buttons_down.contains(b)) {
-                                let (x, y) = to_remote(pos);
-                                send(Input::MouseMove { x, y });
-                                send(Input::MouseButton { button: b, down: pressed });
-                                v.buttons_down.retain(|d| *d != b);
-                                if pressed {
-                                    v.buttons_down.push(b);
-                                }
-                            }
-                        }
-                    }
-                    egui::Event::MouseWheel { delta, unit, .. } => {
-                        let k = match unit {
-                            egui::MouseWheelUnit::Point => 1.0 / 40.0,
-                            egui::MouseWheelUnit::Line => 1.0,
-                            egui::MouseWheelUnit::Page => 10.0,
-                        };
-                        // Anfitrião que rola suave: em 1/120 de clique; senão, cliques inteiros.
-                        if v.fine_scroll {
-                            if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k * 120.0) {
-                                send(Input::ScrollFine { dx, dy });
-                            }
-                        } else if let Some((dx, dy)) = wheel_steps(&mut v.scroll_acc, delta * k) {
-                            send(Input::Scroll { dx, dy });
-                        }
-                    }
-                    egui::Event::Text(t) => {
-                        if keyboard && !v.mods.ctrl && !v.mods.alt && !v.mods.command {
-                            send(Input::Text(t));
-                        }
-                    }
-                    egui::Event::Key { key, pressed, modifiers, .. } if keyboard => {
-                        // Modificadores como estavam nesta tecla (vão antes dela).
-                        sync_mods(&mut v.held, remote_mods(modifiers, remote_mac), &send);
-                        v.mods = modifiers;
-                        let special = match key {
-                            egui::Key::Enter => Some(Key::Enter),
-                            egui::Key::Tab => Some(Key::Tab),
-                            egui::Key::Backspace => Some(Key::Backspace),
-                            egui::Key::Delete => Some(Key::Delete),
-                            egui::Key::Escape => Some(Key::Escape),
-                            egui::Key::ArrowUp => Some(Key::Up),
-                            egui::Key::ArrowDown => Some(Key::Down),
-                            egui::Key::ArrowLeft => Some(Key::Left),
-                            egui::Key::ArrowRight => Some(Key::Right),
-                            egui::Key::Home => Some(Key::Home),
-                            egui::Key::End => Some(Key::End),
-                            egui::Key::PageUp => Some(Key::PageUp),
-                            egui::Key::PageDown => Some(Key::PageDown),
-                            egui::Key::Insert => Some(Key::Insert),
-                            egui::Key::F1 => Some(Key::F(1)),
-                            egui::Key::F2 => Some(Key::F(2)),
-                            egui::Key::F3 => Some(Key::F(3)),
-                            egui::Key::F4 => Some(Key::F(4)),
-                            egui::Key::F5 => Some(Key::F(5)),
-                            egui::Key::F6 => Some(Key::F(6)),
-                            egui::Key::F7 => Some(Key::F(7)),
-                            egui::Key::F8 => Some(Key::F(8)),
-                            egui::Key::F9 => Some(Key::F(9)),
-                            egui::Key::F10 => Some(Key::F(10)),
-                            egui::Key::F11 => Some(Key::F(11)),
-                            egui::Key::F12 => Some(Key::F(12)),
-                            egui::Key::Space if modifiers.ctrl || modifiers.alt => Some(Key::Space),
-                            k if modifiers.ctrl || modifiers.alt || modifiers.command => k.symbol_or_name().chars().next().filter(|c| c.is_ascii_alphanumeric()).map(Key::Char),
-                            _ => None,
-                        };
-                        forward_key(&mut v.keys_down, key, pressed, special, &send);
-                    }
-                    // O egui consome Ctrl/Cmd+C/X/V: repassa como atalho (Cmd num Mac).
-                    egui::Event::Copy if keyboard => tap_shortcut(&mut v.held, remote_mac, 'c', &send),
-                    egui::Event::Cut if keyboard => tap_shortcut(&mut v.held, remote_mac, 'x', &send),
-                    egui::Event::Paste(t) if keyboard => {
-                        // Colar de verdade: o texto vai para a área de transferência de lá
-                        // (se a sincronia permitir) e o programa aberto cola sozinho. Digitar
-                        // letra por letra executava comandos em terminais a cada quebra de linha.
-                        let _ = cmd.send(Cmd::PasteText(t));
-                        tap_shortcut(&mut v.held, remote_mac, 'v', &send);
-                    }
-                    egui::Event::PasteImage(_) if keyboard => tap_shortcut(&mut v.held, remote_mac, 'v', &send),
-                    _ => {}
-                }
-            }
-            if keyboard {
-                // Estado real agora: soltar só o Shift (ou o Cmd) não gera evento de
-                // tecla, e sem isto ele ficava apertado lá (clique virava Shift+clique).
-                let now = ctx.input(|i| i.modifiers);
-                sync_mods(&mut v.held, remote_mods(now, remote_mac), &send);
-                v.mods = now;
-            } else {
-                release_remote_input(v, false);
-            }
-        } else {
-            // Saiu da tela ou da janela (Cmd+Tab) com algo apertado: solta tudo.
-            release_remote_input(v, true);
-        }
+        let cmd = v.handle.cmd.clone();
+        let send = move |i: Input| {
+            let _ = cmd.send(Cmd::Input(i));
+        };
+        let cmd = v.handle.cmd.clone();
+        let paste = move |t: String| {
+            let _ = cmd.send(Cmd::PasteText(t));
+        };
+        remote_input(&ctx, ui, &resp, rect, scale, remote_cursor, &mut v.input, (v.os == "macOS", v.fine_scroll), &send, &paste);
     }
 
     /// Salva o print da tela remota (inteira ou a área) em PNG na pasta de
@@ -2546,6 +2415,276 @@ fn signal(painter: &egui::Painter, at: egui::Pos2, level: usize, color: Color32)
     }
 }
 
+
+/// Liga ou desliga "uma janela para cada tela": a tela da aba fica na aba e
+/// cada uma das outras abre numa janela.
+fn set_split(v: &mut ViewSession, on: bool) {
+    for w in &mut v.split {
+        release_split_input(&v.handle.cmd, w);
+    }
+    v.split = if on { v.monitors.iter().map(|m| m.index).filter(|&m| m != v.monitor).map(SplitWin::new).collect() } else { Vec::new() };
+    let _ = v.handle.cmd.send(Cmd::Split(v.split.iter().map(|w| w.monitor).collect()));
+}
+
+/// Escolheu outra tela na barra. Se ela estava numa janela à parte, as duas
+/// trocam de lugar: a janela passa a mostrar a que estava na aba.
+fn pick_monitor(v: &mut ViewSession, m: u8) {
+    let old = v.monitor;
+    v.monitor = m;
+    let _ = v.handle.cmd.send(Cmd::Monitor(m));
+    if let Some(w) = v.split.iter_mut().find(|w| w.monitor == m) {
+        release_split_input(&v.handle.cmd, w);
+        w.monitor = old;
+        w.tex_version = u64::MAX;
+        let _ = v.handle.cmd.send(Cmd::Split(v.split.iter().map(|w| w.monitor).collect()));
+    }
+}
+
+fn release_split_input(cmd: &std::sync::mpsc::Sender<Cmd>, w: &mut SplitWin) {
+    let m = w.monitor;
+    release_input(&mut w.input, true, &|i: Input| {
+        let _ = cmd.send(Cmd::InputOn(m, i));
+    });
+}
+
+/// Tamanho inicial da janela de uma tela: a proporção dela, cabendo em 1200 × 760.
+fn split_window_size(w: u32, h: u32) -> Vec2 {
+    if w == 0 || h == 0 {
+        return Vec2::new(960.0, 600.0);
+    }
+    let k = (1200.0 / w as f32).min(760.0 / h as f32).min(1.0);
+    Vec2::new((w as f32 * k).max(480.0), (h as f32 * k).max(300.0))
+}
+
+impl EloApp {
+    /// Telas do outro computador abertas cada uma na sua janela (dá para pôr
+    /// cada uma numa área de trabalho, ou em tela cheia num monitor daqui).
+    /// Continuam abertas com a janela principal em outra aba ou escondida.
+    fn split_windows(&mut self, ctx: &egui::Context) {
+        for v in &mut self.views {
+            if v.split.is_empty() || !v.connected {
+                continue;
+            }
+            let who = match self.settings.favorite(&v.target_id) {
+                Some(f) => f.label(),
+                None if v.target_name.is_empty() => pretty_id(&v.target_id),
+                None => v.target_name.clone(),
+            };
+            let key = Arc::as_ptr(&v.remote) as usize;
+            let kind = (v.os == "macOS", v.fine_scroll);
+            let ViewSession { split, remote, handle, permissions, monitors, .. } = v;
+            let mut closed = Vec::new();
+            for w in split.iter_mut() {
+                let pos = monitors.iter().position(|m| m.index == w.monitor);
+                let (mw, mh) = pos.map(|i| (monitors[i].width, monitors[i].height)).unwrap_or((0, 0));
+                let title = t!("{} — Tela {}", who, pos.map_or(w.monitor as usize + 1, |i| i + 1));
+                let builder = egui::ViewportBuilder::default().with_title(title).with_inner_size(split_window_size(mw, mh)).with_min_inner_size([320.0, 200.0]);
+                let id = egui::ViewportId::from_hash_of(("elo-tela", key, w.slot));
+                let close = ctx.show_viewport_immediate(id, builder, |ui, _| {
+                    split_view(ui, w, remote, &handle.cmd, permissions.control, kind, key);
+                    ui.input(|i| i.viewport().close_requested())
+                });
+                if close {
+                    release_split_input(&handle.cmd, w);
+                    closed.push(w.slot);
+                }
+            }
+            if !closed.is_empty() {
+                split.retain(|w| !closed.contains(&w.slot));
+                let _ = handle.cmd.send(Cmd::Split(split.iter().map(|w| w.monitor).collect()));
+            }
+        }
+    }
+}
+
+/// Conteúdo da janela de uma tela: a imagem dela, ocupando a janela toda, e a
+/// entrada (mouse e teclado) indo para ela.
+fn split_view(ui: &mut egui::Ui, w: &mut SplitWin, remote: &Arc<Mutex<Remote>>, cmd: &std::sync::mpsc::Sender<Cmd>, control: bool, kind: (bool, bool), key: usize) {
+    let ctx = ui.ctx().clone();
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(24))).show(ui, |ui| {
+        let (sw, sh, version, cursor) = {
+            let r = remote.lock().unwrap_or_else(|e| e.into_inner());
+            r.extra.get(&w.monitor).map_or((0, 0, 0, None), |s| (s.dec.w, s.dec.h, s.version, s.cursor))
+        };
+        if sw == 0 || sh == 0 {
+            release_split_input(cmd, w);
+            ui.centered_and_justified(|ui| ui.spinner());
+            return;
+        }
+        if w.texture.is_none() || w.tex_version != version {
+            let r = remote.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(s) = r.extra.get(&w.monitor) else { return };
+            let img = egui::ColorImage::from_rgba_unmultiplied([s.dec.w as usize, s.dec.h as usize], &s.dec.rgba);
+            drop(r);
+            match &mut w.texture {
+                Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                None => w.texture = Some(ctx.load_texture(format!("tela-{key}-{}", w.slot), img, egui::TextureOptions::LINEAR)),
+            }
+            w.tex_version = version;
+        }
+        // Ocupa a janela (a pessoa escolhe o tamanho dela, ou põe em tela cheia).
+        let avail = ui.available_rect_before_wrap();
+        let scale = (avail.width() / sw as f32).min(avail.height() / sh as f32);
+        let rect = egui::Rect::from_center_size(avail.center(), Vec2::new(sw as f32 * scale, sh as f32 * scale));
+        let resp = ui.allocate_rect(avail, Sense::click_and_drag());
+        if let Some(t) = &w.texture {
+            egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), rect.size())).paint_at(ui, rect);
+        }
+        if !control {
+            ui.painter().text(rect.left_top() + Vec2::new(10.0, 10.0), Align2::LEFT_TOP, t!("Somente visualização (o outro lado desativou o controle)"), egui::FontId::proportional(13.0), Color32::from_rgb(255, 210, 120));
+        }
+        let m = w.monitor;
+        let send = |i: Input| {
+            let _ = cmd.send(Cmd::InputOn(m, i));
+        };
+        let paste = |t: String| {
+            let _ = cmd.send(Cmd::PasteText(t));
+        };
+        remote_input(&ctx, ui, &resp, rect, scale, cursor, &mut w.input, kind, &send, &paste);
+    });
+}
+
+/// Cursor de lá e entrada daqui para lá, sobre a imagem `rect` de uma tela
+/// (a da aba ou a de uma janela à parte). `remote`: (o outro lado é um Mac,
+/// ele rola suave).
+fn remote_input(ctx: &egui::Context, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, scale: f32, remote_cursor: Option<(i32, i32)>, inp: &mut RemoteInput, remote: (bool, bool), send: &dyn Fn(Input), paste: &dyn Fn(String)) {
+    let (remote_mac, fine_scroll) = remote;
+    // Entrada: só com o mouse sobre a tela remota (ou arrastando).
+    let hovered = resp.hovered() || resp.dragged();
+    // Cursor remoto: a captura não inclui o cursor. Desenha a seta onde ele
+    // está, menos quando é só o nosso mouse (parado em cima ou se movendo).
+    if let Some((cx, cy)) = remote_cursor {
+        let pos = rect.left_top() + Vec2::new(cx as f32 * scale, cy as f32 * scale);
+        let local = ctx.pointer_hover_pos().filter(|_| hovered);
+        let ours = local.is_some_and(|l| { l.distance(pos) < 6.0 || inp.last_move.elapsed() < std::time::Duration::from_millis(600)});
+        if rect.contains(pos) && !ours {
+            paint_cursor(ui.painter(), pos);
+        }
+    }
+    let focused = ctx.input(|i| i.focused);
+    // Campo do próprio Elo em foco (chat, caminho): o teclado fica nele até
+    // clicar na tela remota. O mouse continua indo para lá.
+    let clicked_here = hovered && ctx.input(|i| i.pointer.any_pressed());
+    let keyboard = clicked_here || ctx.memory(|m| m.focused()).is_none_or(|id| id == resp.id);
+    if hovered && focused {
+        if keyboard {
+            resp.request_focus();
+        }
+        let to_remote = |pos: egui::Pos2| { (((pos.x - rect.left()) / scale).round() as i32, ((pos.y - rect.top()) / scale).round() as i32)};
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            match e {
+                egui::Event::PointerMoved(pos) => {
+                    if rect.contains(pos) {
+                        inp.last_move = std::time::Instant::now();
+                        let (x, y) = to_remote(pos);
+                        send(Input::MouseMove { x, y });
+                    }
+                }
+                egui::Event::PointerButton { pos, button, pressed, modifiers } => {
+                    // Shift/Ctrl+clique: o modificador vai antes do clique.
+                    sync_mods(&mut inp.held, remote_mods(modifiers, remote_mac), send);
+                    if rect.contains(pos) || !pressed {
+                        let b = match button {
+                            egui::PointerButton::Primary => Some(Button::Left),
+                            egui::PointerButton::Secondary => Some(Button::Right),
+                            egui::PointerButton::Middle => Some(Button::Middle),
+                            _ => None,
+                        };
+                        // Só solta lá o que foi apertado lá.
+                        if let Some(b) = b.filter(|b| pressed || inp.buttons_down.contains(b)) {
+                            let (x, y) = to_remote(pos);
+                            send(Input::MouseMove { x, y });
+                            send(Input::MouseButton { button: b, down: pressed });
+                            inp.buttons_down.retain(|d| *d != b);
+                            if pressed {
+                                inp.buttons_down.push(b);
+                            }
+                        }
+                    }
+                }
+                egui::Event::MouseWheel { delta, unit, .. } => {
+                    let k = clicks_per_unit(unit, fine_scroll);
+                    // Anfitrião que rola suave: em 1/120 de clique; senão, cliques inteiros.
+                    if fine_scroll {
+                        if let Some((dx, dy)) = wheel_steps(&mut inp.scroll_acc, delta * k * 120.0) {
+                            send(Input::ScrollFine { dx, dy });
+                        }
+                    } else if let Some((dx, dy)) = wheel_steps(&mut inp.scroll_acc, delta * k) {
+                        send(Input::Scroll { dx, dy });
+                    }
+                }
+                egui::Event::Text(t) => {
+                    if keyboard && !inp.mods.ctrl && !inp.mods.alt && !inp.mods.command {
+                        send(Input::Text(t));
+                    }
+                }
+                egui::Event::Key { key, pressed, modifiers, .. } if keyboard => {
+                    // Modificadores como estavam nesta tecla (vão antes dela).
+                    sync_mods(&mut inp.held, remote_mods(modifiers, remote_mac), send);
+                    inp.mods = modifiers;
+                    let special = match key {
+                        egui::Key::Enter => Some(Key::Enter),
+                        egui::Key::Tab => Some(Key::Tab),
+                        egui::Key::Backspace => Some(Key::Backspace),
+                        egui::Key::Delete => Some(Key::Delete),
+                        egui::Key::Escape => Some(Key::Escape),
+                        egui::Key::ArrowUp => Some(Key::Up),
+                        egui::Key::ArrowDown => Some(Key::Down),
+                        egui::Key::ArrowLeft => Some(Key::Left),
+                        egui::Key::ArrowRight => Some(Key::Right),
+                        egui::Key::Home => Some(Key::Home),
+                        egui::Key::End => Some(Key::End),
+                        egui::Key::PageUp => Some(Key::PageUp),
+                        egui::Key::PageDown => Some(Key::PageDown),
+                        egui::Key::Insert => Some(Key::Insert),
+                        egui::Key::F1 => Some(Key::F(1)),
+                        egui::Key::F2 => Some(Key::F(2)),
+                        egui::Key::F3 => Some(Key::F(3)),
+                        egui::Key::F4 => Some(Key::F(4)),
+                        egui::Key::F5 => Some(Key::F(5)),
+                        egui::Key::F6 => Some(Key::F(6)),
+                        egui::Key::F7 => Some(Key::F(7)),
+                        egui::Key::F8 => Some(Key::F(8)),
+                        egui::Key::F9 => Some(Key::F(9)),
+                        egui::Key::F10 => Some(Key::F(10)),
+                        egui::Key::F11 => Some(Key::F(11)),
+                        egui::Key::F12 => Some(Key::F(12)),
+                        egui::Key::Space if modifiers.ctrl || modifiers.alt => Some(Key::Space),
+                        k if modifiers.ctrl || modifiers.alt || modifiers.command => k.symbol_or_name().chars().next().filter(|c| c.is_ascii_alphanumeric()).map(Key::Char),
+                        _ => None,
+                    };
+                    forward_key(&mut inp.keys_down, key, pressed, special, send);
+                }
+                // O egui consome Ctrl/Cmd+C/X/V: repassa como atalho (Cmd num Mac).
+                egui::Event::Copy if keyboard => tap_shortcut(&mut inp.held, remote_mac, 'c', send),
+                egui::Event::Cut if keyboard => tap_shortcut(&mut inp.held, remote_mac, 'x', send),
+                egui::Event::Paste(t) if keyboard => {
+                    // Colar de verdade: o texto vai para a área de transferência de lá
+                    // (se a sincronia permitir) e o programa aberto cola sozinho. Digitar
+                    // letra por letra executava comandos em terminais a cada quebra de linha.
+                    paste(t);
+                    tap_shortcut(&mut inp.held, remote_mac, 'v', send);
+                }
+                egui::Event::PasteImage(_) if keyboard => tap_shortcut(&mut inp.held, remote_mac, 'v', send),
+                _ => {}
+            }
+        }
+        if keyboard {
+            // Estado real agora: soltar só o Shift (ou o Cmd) não gera evento de
+            // tecla, e sem isto ele ficava apertado lá (clique virava Shift+clique).
+            let now = ctx.input(|i| i.modifiers);
+            sync_mods(&mut inp.held, remote_mods(now, remote_mac), send);
+            inp.mods = now;
+        } else {
+            release_input(inp, false, send);
+        }
+    } else {
+        // Saiu da tela ou da janela (Cmd+Tab) com algo apertado: solta tudo.
+        release_input(inp, true, send);
+    }
+}
+
 /// Barra da sessão: cápsula de vidro no alto (deitada) ou na lateral direita
 /// (em pé, só ícones), conforme as configurações. Fora da tela cheia fica numa
 /// faixa própria; na tela cheia flutua sobre a imagem e se recolhe quando o
@@ -2673,8 +2812,7 @@ fn session_bar(ui: &mut egui::Ui, v: &mut ViewSession, idx: usize, fav: bool, fu
                                 glass_segments(ui, egui::Id::unique(("telas", idx)), &labels, &tips, cur, None, 36.0)
                             };
                             if let Some(i) = pick {
-                                v.monitor = v.monitors[i].index;
-                                let _ = v.handle.cmd.send(Cmd::Monitor(v.monitor));
+                                pick_monitor(v, v.monitors[i].index);
                             }
                             glass_divider(ui, right);
                         }
@@ -2891,6 +3029,18 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
                     egui::Popup::close_id(ui.ctx(), id);
                 }
             });
+            if v.monitors.len() > 1 {
+                cc_module(ui, |ui| {
+                    let on = !v.split.is_empty();
+                    let label = if on { t!("Juntar as telas nesta janela") } else { t!("Uma janela para cada tela") };
+                    let row = glass_row(ui, Icon::Monitor, label, v.multi || on, GLASS_TEXT)
+                        .on_disabled_hover_text(t!("O Elo do outro computador é de uma versão que ainda não abre uma janela para cada tela. Atualize-o."));
+                    if row.on_hover_text(t!("Cada tela do outro computador numa janela: dá para pôr cada uma numa área de trabalho ou num monitor daqui")).clicked() {
+                        set_split(v, !on);
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                });
+            }
             cc_module(ui, |ui| {
                 let label = if right { t!("Levar a barra para o alto") } else { t!("Levar a barra para a direita") };
                 if glass_row(ui, Icon::Layers, label, true, GLASS_TEXT).on_hover_text(t!("Fica assim nas próximas sessões (também em Configurações)")).clicked() {
@@ -2936,19 +3086,23 @@ fn forward_key(down: &mut Vec<(egui::Key, Key)>, key: egui::Key, pressed: bool, 
     }
 }
 
-/// Solta lá as teclas e os modificadores apertados (e os botões, se `buttons`).
+/// Solta lá o que a janela da aba deixou apertado (e os botões, se `buttons`).
 fn release_remote_input(v: &mut ViewSession, buttons: bool) {
     let cmd = v.handle.cmd.clone();
-    let send = |i: Input| {
+    release_input(&mut v.input, buttons, &move |i: Input| {
         let _ = cmd.send(Cmd::Input(i));
-    };
-    for (_, key) in v.keys_down.drain(..) {
+    });
+}
+
+/// Solta lá as teclas e os modificadores apertados (e os botões, se `buttons`).
+fn release_input(inp: &mut RemoteInput, buttons: bool, send: &dyn Fn(Input)) {
+    for (_, key) in inp.keys_down.drain(..) {
         send(Input::Key { key, down: false });
     }
-    sync_mods(&mut v.held, [false; 4], &send);
-    v.mods = egui::Modifiers::NONE;
+    sync_mods(&mut inp.held, [false; 4], send);
+    inp.mods = egui::Modifiers::NONE;
     if buttons {
-        for button in v.buttons_down.drain(..) {
+        for button in inp.buttons_down.drain(..) {
             send(Input::MouseButton { button, down: false });
         }
     }
@@ -2962,6 +3116,23 @@ fn sync_mods(held: &mut [bool; 4], want: [bool; 4], send: &dyn Fn(Input)) {
             send(Input::Key { key: KEYS[i], down: want[i] });
             held[i] = want[i];
         }
+    }
+}
+
+/// Quantos cliques da roda vale uma unidade da rolagem daqui.
+///
+/// Touchpad (Mac, ou touchpad no Linux) chega em pontos. Para um anfitrião
+/// Linux que rola suave, 15 pontos = 1 clique: é a medida do próprio libinput
+/// (no Wayland, 1 clique = 15 px), então o conteúdo anda o mesmo tanto que o
+/// dedo, como no touchpad de lá. Com 40, a rolagem do Mac no Ubuntu ficava
+/// quase três vezes mais lenta. Anfitrião só de cliques inteiros (Windows, Mac,
+/// X11 sem uinput): um clique já anda umas três linhas, então continua 40.
+fn clicks_per_unit(unit: egui::MouseWheelUnit, fine_host: bool) -> f32 {
+    match unit {
+        egui::MouseWheelUnit::Point if fine_host => 1.0 / 15.0,
+        egui::MouseWheelUnit::Point => 1.0 / 40.0,
+        egui::MouseWheelUnit::Line => 1.0,
+        egui::MouseWheelUnit::Page => 10.0,
     }
 }
 
@@ -3081,5 +3252,22 @@ mod tests {
         // Roda de mouse comum (um clique inteiro) continua igual.
         let mut acc = Vec2::ZERO;
         assert_eq!(wheel_steps(&mut acc, Vec2::new(0.0, 3.0)), Some((0, 3)));
+    }
+
+    #[test]
+    fn touchpad_moves_like_the_host_touchpad() {
+        use egui::MouseWheelUnit::*;
+        // Anfitrião Linux suave: 30 pontos de touchpad = 2 cliques = 240/120,
+        // que o Wayland aplica como 30 px (1 px de conteúdo por ponto).
+        let mut acc = Vec2::ZERO;
+        let k = clicks_per_unit(Point, true);
+        let total: i32 = (0..30).filter_map(|_| wheel_steps(&mut acc, Vec2::new(0.0, 1.0) * k * 120.0)).map(|(_, y)| y).sum();
+        assert!((239..=240).contains(&total), "{total}");
+        // Só cliques inteiros: continua 40 pontos por clique.
+        let mut acc = Vec2::ZERO;
+        assert_eq!(wheel_steps(&mut acc, Vec2::new(0.0, 80.0) * clicks_per_unit(Point, false)), Some((0, 2)));
+        // Roda de mouse não muda.
+        assert_eq!(clicks_per_unit(Line, true), 1.0);
+        assert_eq!(clicks_per_unit(Line, false), 1.0);
     }
 }

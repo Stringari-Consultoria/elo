@@ -144,18 +144,9 @@ pub struct ViewSession {
     pub fit: bool,
     pub clipboard: bool,
     pub quality: usize,
-    pub mods: egui::Modifiers,
-    /// Modificadores apertados lá agora: Ctrl, Shift, Alt, Meta.
-    pub held: [bool; 4],
-    /// Teclas e botões apertados lá, para soltar exatamente o que foi apertado
-    /// (mesmo que os modificadores tenham mudado ou o mouse tenha saído da tela).
-    pub keys_down: Vec<(egui::Key, elo_proto::msg::Key)>,
-    pub buttons_down: Vec<elo_proto::msg::Button>,
+    /// Teclado, mouse e rolagem da janela principal da sessão.
+    pub input: RemoteInput,
     pub started: Instant,
-    /// Último movimento do mouse local sobre a tela remota.
-    pub last_move: Instant,
-    /// Rolagem ainda não enviada (frações de "clique" da roda, do touchpad).
-    pub scroll_acc: egui::Vec2,
     /// O outro lado sabe mandar som / estamos ouvindo / volume (0 a 1,5).
     pub audio_available: bool,
     pub audio_on: bool,
@@ -168,6 +159,48 @@ pub struct ViewSession {
     pub terminal: bool,
     /// Escolhendo a área do print (arrastando sobre a tela remota).
     pub shot: Option<ShotSel>,
+    /// O anfitrião manda várias telas ao mesmo tempo (recurso "multitela").
+    pub multi: bool,
+    /// Telas abertas cada uma na sua janela (além da que está na aba).
+    pub split: Vec<SplitWin>,
+}
+
+/// O que está apertado lá a partir de uma janela, para soltar exatamente o que
+/// foi apertado (mesmo que os modificadores tenham mudado ou o mouse tenha
+/// saído da tela). Cada janela tem o seu.
+pub struct RemoteInput {
+    pub mods: egui::Modifiers,
+    /// Modificadores apertados lá agora: Ctrl, Shift, Alt, Meta.
+    pub held: [bool; 4],
+    pub keys_down: Vec<(egui::Key, elo_proto::msg::Key)>,
+    pub buttons_down: Vec<elo_proto::msg::Button>,
+    /// Último movimento do mouse local sobre a tela remota.
+    pub last_move: Instant,
+    /// Rolagem ainda não enviada (frações de "clique" da roda, do touchpad).
+    pub scroll_acc: egui::Vec2,
+}
+
+impl Default for RemoteInput {
+    fn default() -> Self {
+        Self { mods: egui::Modifiers::NONE, held: [false; 4], keys_down: Vec::new(), buttons_down: Vec::new(), last_move: Instant::now(), scroll_acc: egui::Vec2::ZERO }
+    }
+}
+
+/// Uma tela do outro computador aberta numa janela à parte.
+pub struct SplitWin {
+    /// Identidade da janela (a tela em que ela abriu): continua a mesma quando
+    /// ela passa a mostrar outra tela, e a janela não fecha nem sai do lugar.
+    pub slot: u8,
+    pub monitor: u8,
+    pub texture: Option<egui::TextureHandle>,
+    pub tex_version: u64,
+    pub input: RemoteInput,
+}
+
+impl SplitWin {
+    pub fn new(monitor: u8) -> Self {
+        Self { slot: monitor, monitor, texture: None, tex_version: 0, input: RemoteInput::default() }
+    }
 }
 
 /// Seleção da área do print: onde o arrasto começou (na tela daqui).
@@ -924,13 +957,8 @@ impl EloApp {
                         fit: true,
                         clipboard: true,
                         quality: q,
-                        mods: egui::Modifiers::NONE,
-                        held: [false; 4],
-                        keys_down: Vec::new(),
-                        buttons_down: Vec::new(),
+                        input: RemoteInput::default(),
                         started: Instant::now(),
-                        last_move: Instant::now(),
-                        scroll_acc: egui::Vec2::ZERO,
                         audio_available: false,
                         audio_on: true,
                         volume: 1.0,
@@ -938,6 +966,8 @@ impl EloApp {
                         files: FilesPanel::default(),
                         terminal: false,
                         shot: None,
+                        multi: false,
+                        split: Vec::new(),
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();
@@ -1061,6 +1091,7 @@ impl EloApp {
                         v.fine_scroll = f.iter().any(|x| x == "rolagem-fina");
                         v.files.drives = f.iter().any(|x| x == "unidades");
                         v.terminal = f.iter().any(|x| x == "terminal");
+                        v.multi = f.iter().any(|x| x == "multitela");
                     }
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });

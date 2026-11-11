@@ -2,6 +2,12 @@
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
 pub static EN: &[(&str, &str)] = &[
+    ("Uma janela para cada tela", "One window per screen"),
+    ("Juntar as telas nesta janela", "Bring the screens back into this window"),
+    ("Cada tela do outro computador numa janela: dá para pôr cada uma numa área de trabalho ou num monitor daqui", "Each screen of the other computer in its own window: put each one on a desktop or on a monitor here"),
+    ("O Elo do outro computador é de uma versão que ainda não abre uma janela para cada tela. Atualize-o.", "The Elo on the other computer is a version that cannot open one window per screen yet. Update it."),
+    ("o Elo do outro computador é de uma versão que ainda não abre uma janela para cada tela", "the Elo on the other computer is a version that cannot open one window per screen yet"),
+    ("{} — Tela {}", "{} — Screen {}"),
     ("Barra durante o acesso", "Toolbar during access"),
     ("No alto", "At the top"),
     ("Na lateral direita", "On the right side"),

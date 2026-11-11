@@ -695,3 +695,66 @@ fn only_approved_techs_reach_company_computers() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// "Uma janela para cada tela": o anfitrião manda a tela escolhida e as
+/// outras ao mesmo tempo, e a entrada de cada janela vai para a tela dela.
+/// Precisa de duas telas no `DISPLAY` (ex.: `xrandr --setmonitor` num Xephyr).
+#[test]
+fn one_window_per_screen() {
+    if std::env::var("DISPLAY").is_err() {
+        eprintln!("sem DISPLAY: teste pulado");
+        return;
+    }
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("elo-e2e-multitela-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
+    let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
+    let host = client::start(cfg.clone(), [11u8; 32], "Anfitrião".into());
+    let viewer = client::start(cfg.clone(), [12u8; 32], "Visualizador".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
+    viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    let (htx, _hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-telas".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: host_id.clone(), tech_ca: None };
+    let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
+    let remote = Arc::new(Mutex::new(Remote::default()));
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(cfg, vs, vsec, "s3nha-telas".into(), viewer_id, "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx, host_id, None);
+    let Some(ViewerEvent::Connected { monitors, .. }) = wait(&vrx, 15, |e| matches!(e, ViewerEvent::Connected { .. })) else { panic!("não conectou") };
+    let Some(ViewerEvent::Features(f)) = wait(&vrx, 5, |e| matches!(e, ViewerEvent::Features(_))) else { panic!("sem recursos") };
+    assert!(f.iter().any(|x| x == "multitela"), "{f:?}");
+    if monitors.len() < 2 {
+        eprintln!("só uma tela no DISPLAY: o resto do teste foi pulado");
+        return;
+    }
+    let until = |what: &str, f: &dyn Fn(&Remote) -> bool| {
+        let end = Instant::now() + Duration::from_secs(15);
+        while !f(&remote.lock().unwrap()) {
+            assert!(Instant::now() < end, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    until("a tela principal não chegou", &|r| r.dec.w == monitors[0].width && r.dec.h == monitors[0].height);
+    // A segunda tela numa janela à parte: chega junto, com o tamanho dela.
+    vh.cmd.send(session::Cmd::Split(vec![1])).unwrap();
+    until("a segunda tela não chegou", &|r| r.extra.get(&1).is_some_and(|s| s.version > 0 && s.dec.w == monitors[1].width && s.dec.h == monitors[1].height));
+    // O mouse da janela da segunda tela anda nela (posição relativa a ela).
+    vh.cmd.send(session::Cmd::InputOn(1, elo_proto::msg::Input::MouseMove { x: 21, y: 13 })).unwrap();
+    until("o cursor não foi para a segunda tela", &|r| r.extra.get(&1).is_some_and(|s| s.cursor == Some((21, 13))));
+    // A principal continua recebendo a dela (o cursor saiu dela).
+    vh.cmd.send(session::Cmd::Input(elo_proto::msg::Input::MouseMove { x: 30, y: 40 })).unwrap();
+    until("o cursor não voltou para a principal", &|r| r.cursor == Some((30, 40)));
+    let v = remote.lock().unwrap().version;
+    vh.cmd.send(session::Cmd::Refresh).unwrap();
+    until("a principal parou", &|r| r.version > v);
+    // Fechou a janela: a segunda tela deixa de vir.
+    vh.cmd.send(session::Cmd::Split(Vec::new())).unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    remote.lock().unwrap().extra.clear();
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(remote.lock().unwrap().extra.is_empty(), "a segunda tela continuou vindo");
+    vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -136,12 +136,22 @@ pub enum Msg {
     /// Visualizador pede para abrir o terminal na tela do anfitrião (Prompt de
     /// Comando no Windows; exige permissão de controle; recurso "terminal").
     OpenTerminal,
+    /// Visualizador → anfitrião: telas a mandar ao mesmo tempo, além da escolhida
+    /// com `SelectMonitor`, cada uma numa janela de lá (recurso "multitela").
+    /// Lista vazia = só a escolhida, como antes.
+    Streams(Vec<u8>),
+    /// Anfitrião → visualizador: os quadros e cursores seguintes são da tela
+    /// `Some(n)` (uma janela à parte) ou da principal (`None`). Só é mandado
+    /// para quem pediu `Streams`.
+    FrameTarget(Option<u8>),
+    /// Entrada vinda da janela de outra tela (posição relativa a ela).
+    InputOn { monitor: u8, input: Input },
 }
 
 /// Recursos que esta versão entende, além do básico. O anfitrião manda a
 /// lista logo depois do `Welcome`, no mesmo quadro: versões antigas ignoram
 /// os bytes a mais, as novas leem com `features_after`.
-pub const FEATURES: &[&str] = &["audio", "unidades", "terminal"];
+pub const FEATURES: &[&str] = &["audio", "unidades", "terminal", "multitela"];
 
 /// Caminho especial do `ListDir`: lista as unidades e discos do anfitrião
 /// (recurso "unidades"). Cada item vem com o caminho completo no nome.
