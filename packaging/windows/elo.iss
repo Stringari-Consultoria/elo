@@ -52,13 +52,22 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
+; So pergunta o idioma se o Windows nao estiver em portugues nem em ingles.
+ShowLanguageDialog=auto
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; A traducao padrao ("Selecione o Modo de Instalacao do Instalador") confunde.
+brazilianportuguese.PrivilegesRequiredOverrideTitle=Instalar o {#AppNome}
+brazilianportuguese.PrivilegesRequiredOverrideInstruction=Para quem instalar?
+english.PrivilegesRequiredOverrideTitle=Install {#AppNome}
+english.PrivilegesRequiredOverrideInstruction=Install for whom?
+
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "{#BinDir}\{#Exe}.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -71,6 +80,15 @@ Source: "{#Raiz}\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignor
 [Icons]
 Name: "{autoprograms}\{#AppNome}"; Filename: "{app}\{#Exe}.exe"
 Name: "{autodesktop}\{#AppNome}"; Filename: "{app}\{#Exe}.exe"; Tasks: desktopicon
+
+[Registry]
+; "Iniciar com o computador" (gravado pelo app): some junto com o Elo.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#AppNome}"; ValueType: none; Flags: uninsdeletevalue dontcreatekey
+
+[UninstallRun]
+; Fecha o Elo aberto (na bandeja, por exemplo): com ele rodando, o elo.exe
+; ficava para tras.
+Filename: "{sys}\taskkill.exe"; Parameters: "/f /im {#Exe}.exe"; Flags: runhidden; RunOnceId: "FecharElo"
 
 [Run]
 Filename: "{app}\{#Exe}.exe"; Description: "{cm:LaunchProgram,{#AppNome}}"; Flags: nowait postinstall skipifsilent

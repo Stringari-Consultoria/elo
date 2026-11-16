@@ -475,6 +475,21 @@ fn mounts(table: &str) -> Vec<String> {
 }
 
 /// Lista uma pasta do anfitrião para o gerenciador de arquivos.
+/// Arquivo protegido do Windows (oculto + sistema): as junções antigas do
+/// perfil ("Cookies", "Ambiente de Rede", "Configurações Locais"...), o
+/// desktop.ini e afins. O Explorer não mostra; a maioria nem abre.
+#[cfg(windows)]
+fn protected_system_file(e: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const HIDDEN_SYSTEM: u32 = 0x2 | 0x4;
+    e.metadata().is_ok_and(|m| m.file_attributes() & HIDDEN_SYSTEM == HIDDEN_SYSTEM)
+}
+
+#[cfg(not(windows))]
+fn protected_system_file(_: &std::fs::DirEntry) -> bool {
+    false
+}
+
 fn list_dir(path: &str) -> Msg {
     const MAX: usize = 10_000;
     if path.trim() == elo_proto::msg::DRIVES {
@@ -492,6 +507,7 @@ fn list_dir(path: &str) -> Msg {
     };
     let mut entries: Vec<DirEntry> = rd
         .filter_map(|e| e.ok())
+        .filter(|e| !protected_system_file(e))
         .take(MAX)
         .map(|e| {
             // Segue links simbólicos (pasta que aponta para pasta).
@@ -746,6 +762,10 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut files = Files::default();
     let mut frames_win = (Instant::now(), 0u32);
     let mut last_rx = Instant::now();
+    // Desde quando a tela não vem. No Windows, o pedido de administrador
+    // (UAC), o Ctrl+Alt+Del e a tela de bloqueio ficam numa área de trabalho
+    // que nenhum programa comum captura: a sessão espera a tela voltar.
+    let mut blind: Option<Instant> = None;
     // Som: manda só se quem acessa pediu e se aqui está permitido.
     let mut audio_allowed = opt.audio;
     let mut audio_wanted = false;
@@ -966,9 +986,28 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         if seq.wrapping_sub(acked) < window && last_frame.elapsed() >= interval {
             last_frame = Instant::now();
             aim(&mut ch, &mut target, None)?;
-            let f = screen.capture(monitor)?;
-            if send_frame(&mut ch, &mut main, &f, screen.cursor(monitor), jpeg_q, &mut seq)? {
-                frames_win.1 += 1;
+            match screen.capture(monitor) {
+                Ok(f) => {
+                    if blind.take().is_some() {
+                        // Tudo de novo: o que estava lá pode ter mudado inteiro.
+                        main.full = true;
+                        ch.send(&Msg::Notice(BACK.into()))?;
+                    }
+                    if send_frame(&mut ch, &mut main, &f, screen.cursor(monitor), jpeg_q, &mut seq)? {
+                        frames_win.1 += 1;
+                    }
+                }
+                Err(e) => {
+                    if blind.is_none() {
+                        blind = Some(Instant::now());
+                        ch.send(&Msg::Notice(BLIND.into()))?;
+                    }
+                    if blind.is_some_and(|t| t.elapsed() > BLIND_MAX) {
+                        return Err(e);
+                    }
+                    // Tenta de novo daqui a pouco, sem ocupar o processador.
+                    last_frame = Instant::now() + Duration::from_millis(250);
+                }
             }
             for (m, s) in extras.iter_mut() {
                 // A principal já foi; uma tela que sumiu não derruba a sessão.
@@ -993,6 +1032,12 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         }
     }
 }
+
+/// Aviso quando a tela some (UAC, Ctrl+Alt+Del, bloqueio) e quando volta.
+const BLIND: &str = "a tela do outro computador está protegida (pedido de administrador ou tela de bloqueio): o Elo não consegue vê-la nem controlá-la. Peça para a pessoa responder lá; a imagem volta sozinha";
+const BACK: &str = "a tela do outro computador voltou";
+/// Sem tela por mais que isso, desiste (captura quebrada de vez).
+const BLIND_MAX: Duration = Duration::from_secs(600);
 
 /// Uma tela sendo mandada: o codificador dela e o estado do refinamento.
 struct Stream {

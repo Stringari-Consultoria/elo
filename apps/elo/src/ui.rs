@@ -52,6 +52,17 @@ impl eframe::App for EloApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
         }
+        // Tela pequena (notebook 1366×768, 1280×800): 1100×720 mais a barra de
+        // título e a barra de tarefas não cabem e o rodapé some atrás da barra.
+        // Abre maximizada, que respeita a área útil.
+        if !self.fitted
+            && let Some(m) = ctx.input(|i| i.viewport().monitor_size)
+        {
+            self.fitted = true;
+            if m.x < 1100.0 + 40.0 || m.y < 720.0 + 130.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+        }
         // Fechar a janela: vai para a bandeja (a não ser que tenha pedido para sair).
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.settings.close_to_tray && self.tray.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -3019,9 +3030,34 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
                 ui.spacing_mut().item_spacing.y = 2.0;
                 let ctrl = v.permissions.control;
                 let denied = t!("O outro lado não liberou o controle");
-                if glass_row(ui, Icon::Key, t!("Enviar Ctrl+Alt+Del"), ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
+                let tap = |keys: &[Key]| {
+                    for k in keys {
+                        let _ = v.handle.cmd.send(Cmd::Input(Input::Key { key: *k, down: true }));
+                    }
+                    for k in keys.iter().rev() {
+                        let _ = v.handle.cmd.send(Cmd::Input(Input::Key { key: *k, down: false }));
+                    }
+                };
+                if v.os == "Windows" {
+                    // O Ctrl+Alt+Del de verdade exige um serviço do sistema que o
+                    // Elo não tem: lá ele não faz nada. Quem pede costuma querer o
+                    // Gerenciador de Tarefas.
+                    if glass_row(ui, Icon::Key, t!("Abrir o Gerenciador de Tarefas"), ctrl, GLASS_TEXT).on_hover_text("Ctrl+Shift+Esc").on_disabled_hover_text(denied).clicked() {
+                        tap(&[Key::Control, Key::Shift, Key::Escape]);
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                } else if glass_row(ui, Icon::Key, t!("Enviar Ctrl+Alt+Del"), ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
                     let _ = v.handle.cmd.send(Cmd::SecureAttention);
                     egui::Popup::close_id(ui.ctx(), id);
+                }
+                // A tecla Windows/Super daqui não chega ao app, e o Cmd do Mac vira
+                // Ctrl para Windows e Linux: sem este item, não há como mandá-la.
+                if v.os != "macOS" {
+                    let label = if v.os == "Windows" { t!("Tecla Windows (menu Iniciar)") } else { t!("Tecla Super") };
+                    if glass_row(ui, Icon::Key, label, ctrl, GLASS_TEXT).on_disabled_hover_text(denied).clicked() {
+                        tap(&[Key::Meta]);
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
                 }
                 let (label, what) = match v.os.as_str() {
                     "Windows" => (t!("Abrir o Prompt de Comando"), t!("Abre o Prompt de Comando (cmd) na tela do outro computador")),

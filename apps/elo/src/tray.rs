@@ -36,7 +36,16 @@ pub fn create(ctx: &egui::Context) -> Option<Tray> {
     let copy = MenuItem::new(t!("Copiar ID"), true, None);
     let quit = MenuItem::new(t!("Sair do {}", crate::variant::app_name()), true, None);
     menu.append_items(&[&id_item, &PredefinedMenuItem::separator(), &open, &copy, &PredefinedMenuItem::separator(), &quit]).ok()?;
-    let icon = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(crate::variant::app_name()).with_icon(icon()?).build().ok()?;
+    // No Windows, clique esquerdo abre a janela (abaixo) e o menu fica no
+    // direito, como nos outros apps da bandeja; o padrão da biblioteca abria o
+    // menu nos dois. No Mac, clicar no ícone da barra de menus abre o menu mesmo.
+    let icon = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(!cfg!(target_os = "windows"))
+        .with_tooltip(crate::variant::app_name())
+        .with_icon(icon()?)
+        .build()
+        .ok()?;
 
     // Os eventos chegam em outra thread: repassa e acorda o app (que roda
     // `logic` mesmo com a janela escondida).

@@ -86,7 +86,8 @@ fn option(ui: &mut egui::Ui, p: &Palette, on: bool, title: &str, desc: &str) -> 
 
 fn steps(ui: &mut egui::Ui, p: &Palette, step: usize) {
     ui.horizontal(|ui| {
-        for i in 0..3 {
+        // Desenhado num layout da direita para a esquerda: o último passo vem primeiro.
+        for i in (0..3).rev() {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(if i == step { 22.0 } else { 8.0 }, 8.0), Sense::hover());
             ui.painter().rect_filled(rect, CornerRadius::same(4), if i <= step { p.accent } else { p.border });
         }

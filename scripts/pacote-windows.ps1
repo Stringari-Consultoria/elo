@@ -16,8 +16,43 @@ $versao = (Select-String -Path "$raiz\Cargo.toml" -Pattern '^version = "(.*)"' |
 $dist = Join-Path $raiz "dist"
 $rel = Join-Path $raiz "target\release"
 
-cargo build --release --locked --manifest-path "$raiz\Cargo.toml" -p elo -p elo-server
+# Da raiz: o Cargo lê o .cargo\config.toml a partir da pasta atual (runtime
+# do Visual C++ estático).
+Push-Location $raiz
+try { cargo build --release --locked -p elo -p elo-server } finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw "falha ao compilar" }
+# Num Windows recém-instalado não existe VCRUNTIME140.dll: se o executável
+# depender dela, o Elo nem abre. Os runners do CI têm a DLL, então os testes
+# não pegam isso; esta checagem pega.
+function Get-PeImports([string]$arq) {
+    $d = [IO.File]::ReadAllBytes($arq)
+    $pe = [BitConverter]::ToInt32($d, 0x3c)
+    $nsec = [BitConverter]::ToUInt16($d, $pe + 6)
+    $opt = $pe + 24
+    $optsz = [BitConverter]::ToUInt16($d, $pe + 20)
+    $impRva = [BitConverter]::ToUInt32($d, $opt + 120)   # PE32+: diretório 1 (imports)
+    $secs = 0..($nsec - 1) | ForEach-Object {
+        $s = $opt + $optsz + $_ * 40
+        [pscustomobject]@{ va = [BitConverter]::ToUInt32($d, $s + 12); tam = [Math]::Max([BitConverter]::ToUInt32($d, $s + 8), [BitConverter]::ToUInt32($d, $s + 16)); raw = [BitConverter]::ToUInt32($d, $s + 20) }
+    }
+    $off = { param($rva) foreach ($s in $secs) { if ($rva -ge $s.va -and $rva -lt $s.va + $s.tam) { return [int]($rva - $s.va + $s.raw) } } }
+    $o = & $off $impRva
+    $nomes = @()
+    while ($true) {
+        $nomeRva = [BitConverter]::ToUInt32($d, $o + 12)
+        if ($nomeRva -eq 0) { break }
+        $n = & $off $nomeRva
+        $fim = [Array]::IndexOf($d, [byte]0, $n)
+        $nomes += [Text.Encoding]::ASCII.GetString($d, $n, $fim - $n)
+        $o += 20
+    }
+    $nomes
+}
+foreach ($b in "elo.exe", "elo-server.exe") {
+    $ruins = Get-PeImports "$rel\$b" | Where-Object { $_ -match '(?i)^(vcruntime|msvcp)\d+' }
+    if ($ruins) { throw "$b depende do runtime do Visual C++ ($($ruins -join ', ')): falta +crt-static" }
+    Write-Host "$b sem dependência do runtime do Visual C++"
+}
 New-Item -ItemType Directory -Force $dist | Out-Null
 # Elo Cliente: o mesmo executavel, com outro nome.
 if ($cliente) { Copy-Item "$rel\elo.exe" "$rel\elo-cliente.exe" -Force }

@@ -129,6 +129,15 @@ fn exe_name() -> &'static str {
     if crate::variant::client_build() { "elo-cliente" } else { "elo" }
 }
 
+/// `dir` fica dentro de `base`? Compara os dois canonicalizados: no Windows o
+/// canonicalize devolve "\\?\C:\..." e o LOCALAPPDATA vem "C:\...", e para o
+/// `starts_with` são prefixos diferentes (a instalação só para o usuário era
+/// vista como "todos os usuários", e a atualização pedia administrador).
+fn inside(dir: &Path, base: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(dir).starts_with(canon(base))
+}
+
 pub fn detect() -> Install {
     if cfg!(debug_assertions) {
         return Install::Manual(t!("versão de desenvolvimento: atualize pelo código").into());
@@ -140,7 +149,7 @@ pub fn detect() -> Install {
         // O desinstalador do Inno Setup fica ao lado do elo.exe; sem ele, é o .zip portátil.
         if dir.join("unins000.exe").exists() {
             let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-            let all_users = !local.is_some_and(|l| dir.starts_with(l));
+            let all_users = !local.is_some_and(|l| inside(&dir, &l));
             return Install::WindowsSetup { all_users };
         }
         return Install::Manual(t!("versão portátil: baixe a nova no GitHub").into());
@@ -538,6 +547,21 @@ mod tests {
         // Conteúdo diferente do anunciado: recusado e apagado.
         assert!(download_to(&format!("{base}/errado.tar.gz"), &a, &dir, &prog).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A pasta do Elo, canonicalizada como no `detect()` ("\\?\C:\..." no
+    /// Windows), está dentro do LOCALAPPDATA comum ("C:\..."): instalação só
+    /// para o usuário, que atualiza sem pedir administrador.
+    #[test]
+    fn per_user_install_is_inside_local_appdata() {
+        let base = std::env::temp_dir().join(format!("elo-local-{}", std::process::id()));
+        let app = base.join("Programs").join("Elo");
+        std::fs::create_dir_all(&app).unwrap();
+        let canon = std::fs::canonicalize(&app).unwrap();
+        assert!(inside(&canon, &base));
+        assert!(inside(&app, &base));
+        assert!(!inside(&std::env::temp_dir(), &app));
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[cfg(target_os = "linux")]

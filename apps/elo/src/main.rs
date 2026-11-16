@@ -7,6 +7,7 @@ mod i18n_en;
 mod app;
 mod autostart;
 mod empresa;
+mod instance;
 mod mac;
 mod onboarding;
 mod settings;
@@ -24,5 +25,11 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions { renderer: eframe::Renderer::Wgpu, viewport, ..Default::default() };
     // Aberto pelo início automático: começa minimizado.
     let background = std::env::args().any(|a| a == autostart::ARG);
-    eframe::run_native(variant::app_name(), options, Box::new(move |cc| Ok(Box::new(app::EloApp::new(cc, background)))))
+    // Já tem um Elo aberto com esta configuração: ele mostra a janela e este sai.
+    let instance = match instance::claim(&settings::config_dir(), !background) {
+        instance::Claim::Running => return Ok(()),
+        instance::Claim::First(i) => Some(i),
+        instance::Claim::Unknown => None,
+    };
+    eframe::run_native(variant::app_name(), options, Box::new(move |cc| Ok(Box::new(app::EloApp::new(cc, background, instance)))))
 }

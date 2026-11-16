@@ -1,0 +1,9 @@
+# Windows: runtime do Visual C++ dentro do executável. Sem isso o Elo pede
+# VCRUNTIME140.dll e não abre num Windows recém-instalado (o "Visual C++
+# Redistributable" não vem com o sistema; os runners do CI já têm, por isso
+# os testes passavam).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

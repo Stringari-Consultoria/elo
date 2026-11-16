@@ -359,8 +359,12 @@ pub struct EloApp {
     pub background: bool,
     /// Ícone na bandeja (se o sistema tiver).
     pub tray: Option<crate::tray::Tray>,
+    /// Outro Elo foi aberto com esta configuração: mostrar esta janela.
+    pub show_requested: Arc<std::sync::atomic::AtomicBool>,
     /// "Sair do Elo": fechar a janela encerra de verdade.
     pub quitting: bool,
+    /// Já conferiu se a janela cabe no monitor.
+    pub fitted: bool,
     /// Computadores reiniciando: reconecta quando voltarem.
     pub reconnects: Vec<Reconnect>,
     /// Painel do servidor aberto, com a última leitura.
@@ -400,7 +404,11 @@ pub struct TechForm {
 }
 
 impl EloApp {
-    pub fn new(cc: &eframe::CreationContext, background: bool) -> Self {
+    pub fn new(cc: &eframe::CreationContext, background: bool, instance: Option<crate::instance::Instance>) -> Self {
+        let show_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(i) = instance {
+            i.serve(cc.egui_ctx.clone(), show_requested.clone());
+        }
         let mut settings = Settings::load();
         // Elo Cliente instalado pela TI com o convite num arquivo.
         if crate::variant::client_build()
@@ -456,7 +464,9 @@ impl EloApp {
             updater: crate::update::Updater::default(),
             background,
             tray: crate::tray::create(&cc.egui_ctx),
+            show_requested,
             quitting: false,
+            fitted: false,
             hidden: false,
             reconnects: Vec::new(),
             panel: None,
@@ -694,6 +704,9 @@ impl EloApp {
 
     /// Eventos do ícone da bandeja.
     pub fn tray_tick(&mut self, ctx: &egui::Context) {
+        if self.show_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.show_window(ctx);
+        }
         let id = self.my_id().map(str::to_string);
         let Some(t) = self.tray.as_mut() else { return };
         t.set_id(id.as_deref());
