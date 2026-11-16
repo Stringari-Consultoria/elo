@@ -717,7 +717,14 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         }
     }
     ch.fr.set_max(elo_proto::frame::MAX_FRAME);
-    let mut screen = platform::open_screen()?;
+    let mut screen = match platform::open_screen() {
+        Ok(s) => s,
+        Err(e) => {
+            // Quem acessa fica sabendo o motivo (antes ficava em "Conectando…").
+            let _ = ch.send(&Msg::Bye(e.clone()));
+            return Err(e);
+        }
+    };
     let mut control = platform::open_control().ok().map(Injector::new);
     let mut clip = Clip::new();
     let monitors = screen.monitors();
@@ -1106,6 +1113,9 @@ pub enum ViewerEvent {
     Features(Vec<String>),
     /// Esperando o aceite. `sas`: o código a conferir com quem vai aceitar.
     Waiting { sas: String },
+    /// A senha valeu, mas a tela de lá ainda não veio (ex.: Linux com Wayland
+    /// esperando alguém liberar o compartilhamento na tela dele).
+    Stalled,
     Chat(String),
     File(Transfer),
     Permissions(Permissions),
@@ -1167,6 +1177,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
     // Espera o aceite (até 90 s).
     ch.c.set_read_timeout(Some(Duration::from_millis(200)));
     let start = Instant::now();
+    let mut stalled = false;
     let welcome = loop {
         if h.stop.load(Ordering::Relaxed) {
             return Ok(());
@@ -1174,8 +1185,16 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
         if let Some(m) = ch.poll()? {
             break m;
         }
+        if !stalled && keys.mode == AuthMode::Password && start.elapsed() > Duration::from_secs(4) {
+            stalled = true;
+            let _ = ev.send(ViewerEvent::Stalled);
+        }
         if start.elapsed() > Duration::from_secs(95) {
-            return Err("o outro lado não respondeu ao pedido".into());
+            return Err(if keys.mode == AuthMode::Password {
+                "a senha foi aceita, mas a tela do outro computador não chegou. Se ele estiver no Linux com Wayland, alguém precisa liberar o compartilhamento na tela dele".into()
+            } else {
+                "o outro lado não respondeu ao pedido".into()
+            });
         }
     };
     let mut perms = match welcome {

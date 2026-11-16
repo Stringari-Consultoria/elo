@@ -628,6 +628,10 @@ impl EloApp {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(t!("Acesso não assistido")).font(theme::semibold(13.5)).color(p.text));
                     ui.label(RichText::new(if self.settings.unattended { t!("Ligado: a senha fixa entra sem ninguém aqui.") } else { t!("Entrar com uma senha fixa, sem ninguém aqui.") }).size(12.0).color(p.text2));
+                    if self.settings.unattended && elo_core::platform::screen_needs_consent() {
+                        ui.add_space(4.0);
+                        ui.add(egui::Label::new(RichText::new(t!("Nesta sessão Wayland o sistema pede na tela para liberar o compartilhamento: sem ninguém aqui, o acesso não entra. Aceite uma vez aqui (alguns sistemas guardam) ou entre na sessão Xorg.")).size(11.5).color(p.warning)).wrap());
+                    }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if theme::switch(ui, &mut un, "").changed() {
@@ -802,7 +806,7 @@ impl EloApp {
             let m = mac::DARK;
             let mut area = ui.available_rect_before_wrap();
             area.max.x -= reserve;
-            let h = if v.waiting && !v.sas.is_empty() { 360.0 } else { 250.0 };
+            let h = if v.waiting && !v.sas.is_empty() { 360.0 } else if v.stalled { 300.0 } else { 250.0 };
             let card = egui::Rect::from_center_size(area.center(), Vec2::new(340.0, h));
             ui.scope_builder(egui::UiBuilder::new().max_rect(card).layout(Layout::top_down(Align::Center)), |ui| {
                 glass_frame(22, Margin::same(26)).show(ui, |ui| {
@@ -816,12 +820,22 @@ impl EloApp {
                         ui.label(RichText::new(name).font(theme::semibold(16.0)).color(m.label));
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            let text = if v.waiting { t!("Esperando o outro lado aceitar") } else { t!("Conectando…") };
+                            let text = if v.waiting {
+                                t!("Esperando o outro lado aceitar")
+                            } else if v.stalled {
+                                t!("Esperando a tela do outro computador")
+                            } else {
+                                t!("Conectando…")
+                            };
                             let tw = ui.painter().layout_no_wrap(text.into(), egui::FontId::proportional(13.0), m.label2).size().x + 22.0;
                             ui.add_space(((ui.available_width() - tw) / 2.0).max(0.0));
                             ui.add(egui::Spinner::new().size(14.0).color(m.label2));
                             ui.label(RichText::new(text).size(13.0).color(m.label2));
                         });
+                        if v.stalled && !v.waiting {
+                            ui.add_space(8.0);
+                            ui.add(egui::Label::new(RichText::new(t!("A senha foi aceita. Se o outro computador estiver no Linux com Wayland, alguém pode precisar clicar em Compartilhar na tela dele.")).size(11.5).color(m.label2)).halign(Align::Center).wrap());
+                        }
                         if v.waiting && !v.sas.is_empty() {
                             ui.add_space(14.0);
                             egui::Frame::new().fill(Color32::from_white_alpha(14)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::symmetric(18, 8)).show(ui, |ui| {

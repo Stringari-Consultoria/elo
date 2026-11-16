@@ -8,6 +8,8 @@ pub mod net;
 pub mod platform;
 pub mod session;
 #[cfg(target_os = "linux")]
+mod mutter;
+#[cfg(target_os = "linux")]
 pub mod uinput;
 #[cfg(target_os = "linux")]
 pub mod wayland;

@@ -33,6 +33,8 @@ ashpd = { version = "0.14", default-features = false, features = ["tokio", "remo
 # A mesma versão do xcap (só pode haver uma cópia da biblioteca nativa).
 pipewire = "0.10"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+# GNOME: o nó do PipeWire de cada tela chega por sinal do D-Bus (Mutter).
+futures-util = { version = "0.3", default-features = false }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.9"

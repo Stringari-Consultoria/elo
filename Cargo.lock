@@ -1582,6 +1582,7 @@ dependencies = [
  "elo-proto",
  "enigo",
  "evdev",
+ "futures-util",
  "image",
  "mac_address",
  "opus1",

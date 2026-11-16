@@ -33,6 +33,19 @@ pub trait Control: Send {
     fn settle(&mut self) {}
 }
 
+/// Alguém pode precisar liberar o compartilhamento na tela deste computador
+/// (Linux com Wayland fora do GNOME): o acesso não assistido pode travar.
+pub fn screen_needs_consent() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::wayland::screen_needs_consent()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// Este computador, como anfitrião, sabe rolar suave (1/120 de clique)?
 pub fn fine_scroll() -> bool {
     #[cfg(target_os = "linux")]

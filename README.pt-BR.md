@@ -1,0 +1,603 @@
+<p align="center">
+  <img src="packaging/icons/elo-256.png" width="96" height="96" alt="Ícone do Elo, acesso remoto">
+</p>
+
+<h1 align="center">Elo Remote Desktop</h1>
+
+<p align="center">
+  <strong>Acesso remoto e suporte técnico de código aberto, com cifragem ponta a ponta e servidor próprio.</strong><br>
+  Uma alternativa gratuita ao TeamViewer e ao AnyDesk para Linux, Windows e macOS. Feito em Rust.<br>
+  Sem conta, sem nuvem obrigatória.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Stringari-Consultoria/elo/releases/latest"><img src="https://img.shields.io/github/v/release/Stringari-Consultoria/elo?label=baixar" alt="Última versão"></a>
+  <a href="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml"><img src="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#licença"><img src="https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-blue" alt="Licença: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/sistemas-Linux%20%7C%20Windows%20%7C%20macOS-555" alt="Linux, Windows e macOS">
+  <img src="https://img.shields.io/badge/rust-1.98%2B-orange" alt="Rust 1.98+">
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <b>Português (Brasil)</b>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/prints/02-inicio-escuro.png">
+    <img src="docs/prints/01-inicio.png" width="760" alt="Tela inicial do Elo: seu ID, a senha temporária e o campo para acessar outro computador">
+  </picture>
+</p>
+
+---
+
+O Elo deixa um computador ver e controlar a tela de outro, com chat, área de
+transferência, envio de arquivos e som. A proposta é a mesma de ferramentas
+como TeamViewer e AnyDesk, com duas diferenças. **O servidor é seu**: ele vem
+embutido no app, ou você hospeda o seu (Linux, Docker, Windows, macOS). E
+**ninguém no meio consegue ler a sessão**, nem o próprio servidor.
+
+Foi feito para **suporte técnico remoto**: equipes de TI, empresas de suporte
+e quem ajuda a família e os amigos. Empresas de suporte têm empresas
+clientes, contas de técnico, botão "Pedir ajuda" e acesso não assistido.
+
+> **Estado do projeto: alfa.** Testado em máquinas reais no Linux (X11) e no
+> macOS, o GNOME com Wayland numa sessão de teste isolada, e com testes de
+> ponta a ponta no CI. O Windows compila e passa nos testes do CI, mas ainda
+> não foi testado em máquina real. Leia as
+> [limitações](#limitações-conhecidas) antes de usar em produção.
+
+## Conteúdo
+
+- [Recursos](#recursos)
+- [Download e instalação](#download-e-instalação)
+- [Como usar](#como-usar)
+- [Servidor próprio](#servidor-próprio)
+- [Empresas de suporte e Elo Cliente](#empresas-de-suporte-e-elo-cliente)
+- [Segurança](#segurança)
+- [Perguntas frequentes](#perguntas-frequentes)
+- [Como funciona por dentro](#como-funciona-por-dentro)
+- [Desenvolvimento](#desenvolvimento)
+- [Limitações conhecidas](#limitações-conhecidas)
+- [Licença](#licença)
+
+## Recursos
+
+- **Controle remoto** de mouse e teclado, com **vários monitores**: troque de
+  tela pela barra, ou abra **uma janela para cada tela** (cada uma numa área
+  de trabalho ou num monitor daqui).
+- **Som do computador acessado**: o que toca lá sai aqui (Opus, 96 kbps), com volume e botão de desligar.
+- **Chat e área de transferência** nos dois sentidos.
+- **Gerenciador de arquivos**: navegue nas pastas do outro computador, baixe e
+  envie arquivos (ou arraste para a janela da sessão).
+- **Print da tela remota** (inteira ou de uma área), salvo e copiado.
+- **Abrir o terminal** do outro computador (o Prompt de Comando no Windows) pelo menu da sessão.
+- **Cifragem ponta a ponta**: SPAKE2 a partir da senha, depois ChaCha20-Poly1305.
+- **Código de verificação** de 8 dígitos nas duas telas, contra ataques no meio, e técnicos de empresa com identidade conferida pela chave dos técnicos.
+- **Pedido de acesso**: sem senha, o outro lado aceita na tela e escolhe as permissões.
+- **Acesso não assistido** com senha fixa, também no **Linux com Wayland (GNOME)**.
+- **Permissões revogáveis** durante a sessão (controle, área de transferência, arquivos).
+- **Servidor embutido**: o app já sobe o servidor ao abrir, sem configurar nada.
+- **Assistente na primeira abertura**: escolha entre ser o servidor ou conectar a um, com teste.
+- **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
+- **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
+- **Atualização automática**, com pacotes assinados e conferidos antes de instalar.
+- **Wake-on-LAN**: liga um computador desligado da lista de favoritos ou recentes.
+- **Para empresas de suporte**: Elo Cliente (só recebe conexões, com aceite, e tem "Pedir ajuda"), contas de técnico, painel de clientes por empresa e convites.
+- **Favoritos** com nome personalizado, **tela cheia**, barra no alto ou na
+  lateral direita e **iniciar com o computador**.
+- Interface em **português e inglês**.
+
+<p align="center">
+  <img src="docs/prints/08-tecnico-sessao.png" width="760" alt="Sessão de acesso remoto no Elo: um técnico controlando um computador Linux, com a barra flutuante da sessão">
+</p>
+
+## Download e instalação
+
+Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Consultoria/elo/releases/latest).
+
+| Sistema | Arquivo | Como instalar |
+|---|---|---|
+| Ubuntu, Debian e derivados | `elo_<versão>_amd64.deb` | `sudo apt install ./elo_<versão>_amd64.deb` |
+| Outras distros Linux | `elo-<versão>-linux-x86_64.tar.gz` | Extraia e rode `./instalar.sh` (instala em `~/.local`, sem root) |
+| macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
+| Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
+| Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
+| Elo Cliente (computadores atendidos por uma empresa) | `Elo-Cliente-…` / `elo-cliente…` | Veja [Empresas de suporte e Elo Cliente](#empresas-de-suporte-e-elo-cliente) |
+| Só o servidor (máquina dedicada, VPS, Docker) | `elo-server…` | Veja [Servidor avulso](#3-servidor-avulso) |
+
+Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
+e passar para o `.deb`, rode antes `./instalar.sh --remover`, porque a cópia em
+`~/.local` tem prioridade sobre a do sistema.
+
+**No Linux** funciona no X11 e no **Wayland**. No **GNOME** (Ubuntu, Zorin,
+Fedora...) o Elo fala direto com o Mutter, como o compartilhamento de tela do
+próprio GNOME: nada é perguntado na tela e o acesso não assistido funciona
+igual ao X11 (o GNOME mostra no alto da tela que ela está sendo compartilhada).
+Nos outros (KDE e outros com o portal do sistema), na primeira vez que alguém
+acessa o sistema pergunta na tela se pode compartilhar: ligue **"Permitir
+interação remota"** (sem isso dá para ver, mas não controlar) e deixe
+**"Lembrar desta seleção"** marcado, para as próximas vezes não perguntarem de
+novo.
+
+**No macOS**, os builds ainda não são assinados nem notarizados pela Apple, e
+na primeira abertura aparece "a Apple não pôde verificar". Para liberar: tente
+abrir o Elo uma vez, vá em **Ajustes do Sistema → Privacidade e Segurança**,
+role até o aviso sobre o Elo e clique em **Abrir Mesmo Assim**. Para ser
+acessado, o Elo também precisa das permissões de **Gravação de Tela** e
+**Acessibilidade**, na mesma tela de ajustes.
+
+**No Windows**, os builds ainda não são assinados. Se o SmartScreen avisar,
+clique em **Mais informações → Executar assim mesmo**. Na primeira abertura, o
+Windows pergunta se o Elo pode receber conexões da rede: permita, para que o
+servidor embutido funcione.
+
+Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
+
+## Como usar
+
+1. Quem precisa de ajuda abre o Elo e passa o **ID** (9 dígitos) e a **senha temporária**.
+2. Quem ajuda digita o ID e a senha e clica em **Conectar**.
+3. Sem a senha, aparece um **pedido de acesso** do outro lado, com o código de
+   verificação e as permissões. Confira se o código é igual nas duas telas.
+4. Durante a sessão, uma faixa avisa **"Este computador está sendo acessado
+   por …"**, com o botão **Encerrar**.
+
+**Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
+configurações e ligue a opção na tela inicial. A conexão então entra sem
+ninguém do outro lado.
+
+**Atualizações:** o Elo procura versão nova ao abrir e a cada 6 horas. Com
+"Atualizar automaticamente" ligado (padrão), baixa sozinho e instala quando não
+há sessão em andamento, reabrindo em seguida. No Linux instalado pelo `.deb`,
+pede a senha de administrador; o `.zip` portátil do Windows só avisa.
+
+**Arquivos:** na sessão, clique em **Arquivos** para ver as pastas do outro
+computador. Clique duplo abre a pasta ou baixa o arquivo; **Enviar para cá**
+manda arquivos deste computador para a pasta aberta. Também dá para arrastar
+arquivos para a janela. Os baixados vão para a pasta de recebidos
+(Configurações). Só funciona com a permissão "Transferir arquivos" ligada do
+outro lado.
+
+**Vários monitores:** escolha a tela na barra da sessão, ou use **Uma janela
+para cada tela** no menu **…** para ver todas ao mesmo tempo, cada uma na sua
+janela.
+
+**Favoritos:** na sessão, clique na estrela. Na tela inicial, os favoritos
+podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
+
+**Iniciar com o computador:** ligue em Configurações (ou no assistente). O Elo
+abre na bandeja ao entrar no sistema, e o computador continua acessível depois
+de reiniciar.
+
+**Ligar um computador (Wake-on-LAN):** passe o mouse num cartão de favorito ou
+recente e clique no botão de ligar. O servidor manda o "pacote mágico" na rede
+dele e pede o mesmo aos Elos online na rede do computador desligado (mesmo IP
+público). Requisitos: o computador precisa ter aberto a versão nova do Elo ao
+menos uma vez (para o servidor conhecer o endereço da placa de rede), o
+Wake-on-LAN ligado na BIOS/placa e, em geral, cabo de rede; e alguém (o
+servidor ou outro Elo) precisa estar ligado na mesma rede.
+
+**Reiniciar e reconectar:** na sessão, "Reiniciar" reinicia o outro
+computador (com a permissão de controle). O Elo tenta reconectar sozinho por
+até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa iniciar o
+Elo com o computador e ter o acesso não assistido ligado (a senha temporária
+muda ao reiniciar).
+
+**Bandeja:** fechar a janela deixa o Elo rodando perto do relógio, aceitando
+conexões. O menu do ícone mostra o seu ID e tem "Abrir", "Copiar ID" e "Sair do
+Elo". Quando chega um pedido de acesso ou começa uma sessão, a janela aparece
+sozinha. No Linux, usa StatusNotifierItem (KDE, e GNOME com a extensão
+AppIndicator, padrão no Ubuntu).
+
+## Servidor próprio
+
+O servidor guarda os IDs, entrega os pedidos de conexão e repassa os bytes das
+sessões. Ele nunca tem a chave da sessão. Existem três jeitos de usar:
+
+### 1. Embutido no app (padrão)
+
+Ao abrir, o Elo sobe o servidor na porta `21116`, com TLS e certificado
+autoassinado, e conecta nele. Ao fechar, o servidor para.
+
+Em **Configurações → Servidor** aparecem o endereço deste computador na rede e
+a impressão digital do certificado, com botões para copiar. Nos outros
+computadores, desligue **"Rodar o servidor neste computador"** e preencha esses
+dados. A porta `21116` precisa estar liberada no firewall.
+
+### 2. Pela internet com Cloudflare Tunnel
+
+O servidor aceita **WebSocket** na mesma porta. Por isso funciona atrás do
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
+sem abrir portas e sem instalar nada nos outros computadores.
+
+1. No túnel, crie um *Public Hostname*, por exemplo `elo.seudominio.com`, do
+   tipo **HTTP**, apontando para `localhost:21116`:
+
+   ```yaml
+   ingress:
+     - hostname: elo.seudominio.com
+       service: http://localhost:21116
+     - service: http_status:404
+   ```
+
+2. No Elo que roda o servidor, em **Configurações → Servidor**, preencha
+   **Endereço público** com `wss://elo.seudominio.com`. Se não precisar de
+   acesso direto pela rede local, desligue **"Aceitar conexões diretas da rede"**.
+3. Nos outros computadores, desligue o servidor local e use
+   `wss://elo.seudominio.com` como endereço, com a impressão digital vazia.
+
+Conexões sem TLS só são aceitas quando vêm do próprio computador, que é o caso
+do `cloudflared`, ou de um proxy informado com `--proxy-confiavel` (por
+exemplo, o `cloudflared` em outro contêiner). Só desses o servidor aceita o IP
+real do cliente (`CF-Connecting-IP`), usado nos limites de tentativas. Atenção:
+a sessão inteira, tela incluída, passa pelo Cloudflare (ainda cifrada ponta a
+ponta). Uso pesado de banda pode esbarrar nos termos do plano gratuito.
+
+### Painel do servidor
+
+Com o servidor rodando neste computador, **Configurações → Servidor → Painel do
+servidor** mostra quem está online (nome, sistema, IP), as sessões em andamento
+e o histórico (quem acessou quem, quando, duração e volume). O histórico é
+apagado depois do prazo configurado (90 dias por padrão; no servidor avulso,
+`--retencao-dias`).
+
+### 3. Servidor avulso
+
+Para hospedar o servidor numa máquina dedicada (VPS, servidor da empresa,
+Raspberry Pi), sem o app, use os pacotes `elo-server` da página de
+[Releases](https://github.com/Stringari-Consultoria/elo/releases/latest):
+
+| Onde | Arquivo | Como instalar |
+|---|---|---|
+| Debian, Ubuntu (x86_64 ou ARM) | `elo-server_<versão>_amd64.deb` / `_arm64.deb` | `sudo apt install ./elo-server_<versão>_amd64.deb` |
+| Outras distros Linux | `elo-server-<versão>-linux-x86_64.tar.gz` / `-aarch64` | Extraia e rode `sudo ./instalar.sh` |
+| Docker (amd64, arm64) | `ghcr.io/stringari-consultoria/elo-server` | Veja abaixo |
+| Windows / Windows Server | `elo-server-<versão>-windows-x64.zip` | Extraia; o `LEIA-ME.txt` mostra como iniciar com o Windows |
+| macOS | `elo-server-<versão>-macos.tar.gz` | Extraia; o `LEIA-ME.txt` traz o serviço do `launchd` |
+
+No Linux, o `.deb` e o `instalar.sh` deixam o servidor como **serviço do
+systemd** (`elo-server`): sobe com a máquina, roda com um usuário próprio e
+isolado e guarda os dados em `/var/lib/elo-server`. Ao terminar, mostram o
+endereço e a **impressão digital** para colar nos apps (em **Configurações →
+Servidor**, desligue "Rodar o servidor neste computador"). As opções ficam em
+`/etc/default/elo-server`. Libere a porta `21116/TCP` no firewall.
+
+```sh
+sudo systemctl status elo-server       # situação
+journalctl -u elo-server               # registros
+sudo elo-server --impressao --data /var/lib/elo-server   # impressão digital de novo
+```
+
+**Docker:**
+
+```sh
+docker run -d --name elo-server --restart unless-stopped \
+  -p 21116:21116 -v elo-dados:/dados ghcr.io/stringari-consultoria/elo-server
+docker exec elo-server elo-server --impressao --data /dados
+```
+
+Com o Cloudflare Tunnel no mesmo `docker compose`, nem é preciso publicar a
+porta: aponte o túnel para `https://elo-server:21116` (com **No TLS Verify**)
+e use `wss://seu-endereço` nos apps. O `--proxy-confiavel` diz ao servidor que
+o `cloudflared` (na rede interna do Docker) informa o IP real dos clientes.
+
+```yaml
+services:
+  elo-server:
+    image: ghcr.io/stringari-consultoria/elo-server
+    restart: unless-stopped
+    command: [--listen, "0.0.0.0:21116", --data, /dados, --self-signed, --retencao-dias, "90", --proxy-confiavel, "172.16.0.0/12"]
+    volumes: [elo-dados:/dados]
+  cloudflared:
+    image: cloudflare/cloudflared
+    command: tunnel run
+    environment: [TUNNEL_TOKEN=seu-token]
+    restart: unless-stopped
+volumes:
+  elo-dados:
+```
+
+**À mão**, com qualquer um dos executáveis:
+
+```sh
+# certificado público (Let's Encrypt etc.)
+elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --cert fullchain.pem --key privkey.pem
+
+# certificado autoassinado: cole nos apps a impressão digital que ele imprime
+elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --self-signed
+```
+
+O app de desktop já traz o servidor embutido (opção 1); o pacote do servidor
+é só para quem quer uma máquina dedicada.
+
+## Empresas de suporte e Elo Cliente
+
+Para quem presta suporte de TI a empresas: os computadores dos clientes ficam
+organizados por empresa, os clientes pedem ajuda por um botão e só os seus
+técnicos conseguem entrar, sempre com o aceite de quem está no computador.
+
+<p align="center">
+  <img src="docs/prints/07-tecnico-painel-de-clientes.png" width="760" alt="Painel de clientes do Elo para empresas de suporte: pedidos de ajuda, empresas e computadores online">
+</p>
+
+**Técnicos.** No Elo, em **Configurações → Conta de técnico**, entre com
+usuário e senha do servidor. Num servidor novo, a primeira conta vira
+administrador com o **código de primeiro acesso**: ele fica no arquivo
+`primeiro-acesso.txt` da pasta de dados (por exemplo,
+`sudo cat /var/lib/elo-server/primeiro-acesso.txt` ou
+`docker cp elo-server:/dados/primeiro-acesso.txt - | tar -xO`); com o servidor
+embutido no app, o próprio Elo já preenche. Administradores criam e removem técnicos na
+aba **Clientes → Técnicos**. O servidor guarda só o hash (Argon2) das senhas,
+e o app guarda só um token de entrada.
+
+**Chave dos técnicos.** Em **Clientes → Técnicos**, um administrador cria a
+chave dos técnicos. A parte secreta fica no app dele (dá para copiar para
+outro administrador); o servidor e os convites levam só a parte pública. Cada
+app de técnico tem a própria chave, cujo código aparece em **Configurações →
+Conta de técnico**. O administrador aprova cada chave conferindo esse código
+com o técnico, e o app dele assina um certificado que vale 90 dias e se renova
+sozinho enquanto o técnico estiver na lista. Os computadores das empresas só
+aceitam pedidos de técnicos aprovados, e o pedido mostra que a identidade foi
+conferida. Nem quem controla o servidor consegue se passar por técnico.
+Computadores com convite antigo, sem a chave, ficam com a que o servidor
+informar no primeiro contato.
+
+**Aba Clientes.** Pedidos de ajuda (com a mensagem do cliente e quem está
+atendendo), empresas, computadores (online, visto pela última vez, nome e
+observações) e o botão para conectar. Um pedido novo aparece na hora, com
+aviso, mesmo com o Elo na bandeja.
+
+**Convidar um computador.** Na empresa, **Convidar computador** gera um código
+de convite (endereço do servidor, impressão digital, chave da empresa e chave
+pública dos técnicos) e
+uma mensagem pronta com o link de download. O cliente instala o **Elo
+Cliente**, cola o código e pronto. Para instalar em muitas máquinas, salve o
+código em `convite.txt` em `C:\ProgramData\Elo\` (Windows), `/etc/elo/`
+(Linux) ou `/Library/Application Support/Elo/` (macOS): o Elo Cliente lê
+sozinho na primeira abertura. Só quem tem a chave dos técnicos no app gera
+convites. **Trocar o convite** invalida o código antigo
+para instalações novas, sem derrubar os computadores já ligados.
+
+**Elo Cliente.** É o mesmo programa, com outro nome e configuração própria (os
+dois convivem na mesma máquina). Mostra o ID e o botão **Pedir ajuda**; não
+conecta em outros computadores e não aceita senhas: todo acesso é aceito na
+tela, e quem aceita vê o nome do técnico. O servidor também garante isso:
+computadores de empresa só recebem conexões, e só de técnicos logados. O
+histórico de sessões registra qual técnico fez cada acesso.
+
+## Segurança
+
+- **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
+  partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
+  repassa bytes: não tem a chave, não lê a sessão e, nas conexões com senha, não
+  consegue se passar por nenhum dos lados sem saber a senha. O acordo inclui os
+  IDs das duas pontas: o servidor também não consegue desviar a conexão para
+  outro computador que tenha a mesma senha.
+- **Técnicos de empresa** provam quem são com a chave dos técnicos (veja
+  "Empresas de suporte e Elo Cliente"): o computador do cliente confere o
+  certificado e uma assinatura ligada a esta sessão.
+- **Outras conexões sem senha** (pedido com aceite na tela) dependem do
+  **código de verificação** de 8 dígitos que aparece nas duas telas. Quem acessa
+  se compromete com a própria mensagem antes de ver a do outro lado, então um
+  servidor comprometido tem uma chance em 100 milhões, por tentativa, de fazer
+  os códigos baterem. Tentativas abandonadas no meio contam, e passando do
+  limite os pedidos param por alguns minutos. Confira o código com a pessoa,
+  por telefone ou chat, antes de aceitar.
+- **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
+  novas conexões por um tempo. O servidor também limita tentativas por IP.
+- **TLS** entre o app e o servidor, com certificado público ou com impressão
+  digital fixada.
+- O arquivo de configuração, que guarda o segredo do dispositivo e a senha
+  fixa, é gravado com permissão `0600` no Linux e no macOS.
+
+Encontrou uma vulnerabilidade? **Não abra uma issue pública.** Veja
+[SECURITY.md](SECURITY.md).
+
+### Privacidade (LGPD)
+
+O servidor registra **apenas metadados**: ID, nome e sistema de cada
+computador, IP de origem, e início, fim e volume de cada sessão (em
+`sessoes.jsonl`). Telas, teclas, arquivos, chat e área de transferência nunca
+passam em claro pelo servidor. Se você oferece o Elo como serviço, esses
+metadados são dados pessoais: defina um prazo de retenção e informe na sua
+política de privacidade.
+
+## Perguntas frequentes
+
+**O Elo é uma alternativa gratuita ao TeamViewer e ao AnyDesk?**
+Sim. O Elo é gratuito e de código aberto (AGPL-3.0), inclusive para uso
+comercial, e cobre o essencial do suporte remoto: controle, arquivos, chat,
+acesso não assistido e vários monitores. A diferença é que o servidor é seu e
+as sessões são cifradas ponta a ponta.
+
+**Dá para ter o servidor próprio?**
+Sim, e é o padrão: o app já roda o próprio servidor. Para uma máquina
+dedicada, há pacotes `.deb`, imagem Docker e executáveis para Windows e macOS.
+Veja [Servidor próprio](#servidor-próprio).
+
+**Preciso abrir portas no roteador?**
+Não, se usar o Cloudflare Tunnel: o servidor fala WebSocket e funciona atrás
+dele. Sem o túnel, só a porta `21116/TCP` do servidor precisa estar acessível.
+
+**O servidor consegue ver a minha tela?**
+Não. O servidor só repassa bytes cifrados; a chave é combinada entre os dois
+computadores e nunca chega ao servidor.
+
+**Funciona no Linux com Wayland?**
+Sim. No GNOME (Ubuntu, Zorin, Fedora...) funciona sem nenhuma pergunta na
+tela, inclusive o acesso não assistido. No KDE e em outros ambientes, passa
+pelo portal do sistema, que pergunta na tela na primeira vez.
+
+**Funciona no Windows e no macOS?**
+Sim, com instaladores para os dois. O macOS foi testado em máquinas reais; o
+Windows compila e passa no CI, e ainda precisa de teste em máquina real.
+
+**Tem acesso não assistido?**
+Sim: defina uma senha fixa e ligue o acesso não assistido. Inicie o Elo com o
+computador para ele continuar acessível depois de reiniciar.
+
+## Como funciona por dentro
+
+| Pasta | O que é |
+|---|---|
+| [`apps/elo`](apps/elo) | App desktop (egui + wgpu) |
+| [`apps/elo-server`](apps/elo-server) | Servidor de IDs e retransmissão (tokio). É biblioteca, embutida no app, e também binário avulso |
+| [`crates/proto`](crates/proto) | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
+| [`crates/core`](crates/core) | Captura de tela, injeção de entrada, cliente e sessões |
+| [`crates/ui-kit`](crates/ui-kit) | Design system Stringari |
+| [`packaging`](packaging) e [`scripts`](scripts) | Ícones, `Info.plist`, script do Inno Setup e scripts dos instaladores |
+
+- **Conexão:** cada app mantém uma conexão de controle com o servidor (TCP +
+  TLS, ou WebSocket). Para abrir uma sessão, o servidor gera um convite e as
+  duas pontas entram no relay. A partir daí, o servidor só copia bytes.
+- **Vídeo:** a tela é dividida em blocos de 64 px, e só os blocos que mudaram
+  vão em JPEG. Quando a tela para, os blocos são refinados em qualidade alta.
+  Com até 2 quadros sem confirmação, a sessão se adapta a links lentos.
+- **Captura:** X11 (XTest) e, no Wayland, a API de acesso remoto do Mutter no
+  GNOME ou o portal do sistema nos outros, com os quadros pelo PipeWire; no
+  Windows e no macOS, as APIs de captura do sistema.
+- **Som:** o anfitrião captura o que está saindo nas caixas (PipeWire ou
+  PulseAudio no Linux, loopback do WASAPI no Windows, process tap do Core
+  Audio no macOS 14.2+), comprime em Opus (48 kHz, estéreo, 20 ms, codec em
+  Rust puro) e o visualizador toca com um pequeno buffer contra a variação
+  da rede. Versões novas anunciam o que sabem fazer logo depois da mensagem
+  de boas-vindas, e versões antigas simplesmente ignoram: os recursos só são
+  pedidos a quem anunciou.
+
+## Desenvolvimento
+
+Requisitos: **Rust 1.98+** ([rustup](https://rustup.rs)). No Linux (Debian/Ubuntu):
+
+```sh
+sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxcb1-dev libxdo-dev libasound2-dev libpipewire-0.3-dev libclang-dev
+```
+
+Os atalhos ficam no `Makefile` (`make` lista todos):
+
+| Comando | O que faz |
+|---|---|
+| `make run` | Abre o app (release) |
+| `make run-dev` | Abre em debug, com configuração separada em `.dev-config/` |
+| `make server` | Servidor avulso local, sem TLS, para testes |
+| `make ci` | Clippy e testes, igual ao CI |
+| `make build` | Executáveis em `dist/` |
+| `make install` | Instala em `~/.local/bin`, com atalho no menu (Linux) |
+| `make pacote-linux` | Gera `.deb` e `.tar.gz` em `dist/` |
+| `make pacote-macos` | Gera o `.dmg` em `dist/` (só no macOS) |
+| `make pacote-windows` | Gera o instalador `.exe` e o `.zip` em `dist/` (só no Windows, com [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
+
+Os testes de ponta a ponta sobem um servidor de verdade e fazem sessões
+completas pelo relay, também via WebSocket. As partes que capturam a tela e
+mexem o mouse usam o X11 de `DISPLAY` e são puladas sem ele, e também dentro
+de uma sessão Wayland de verdade (para nunca mexer na sua área de trabalho):
+rode com `XDG_SESSION_TYPE=x11` e uma tela de teste (Xvfb ou Xephyr). O teste
+do GNOME/Wayland roda com `ELO_E2E_GNOME=1` dentro de um
+`gnome-shell --headless`.
+
+`ELO_CONFIG_DIR` muda a pasta de configuração. Serve para rodar duas instâncias
+na mesma máquina: na segunda, desligue o servidor local e aponte para
+`127.0.0.1:21116` com a impressão digital da primeira.
+
+**Assinatura no macOS:** o workflow de release assina com Developer ID e
+notariza quando estes *secrets* estão configurados no repositório (exige o
+[Apple Developer Program](https://developer.apple.com/programs/)):
+
+| Secret | Conteúdo |
+|---|---|
+| `APPLE_CERT_P12` | Certificado *Developer ID Application* exportado em `.p12`, em base64 |
+| `APPLE_CERT_PASSWORD` | Senha do `.p12` |
+| `APPLE_SIGN_IDENTITY` | Nome do certificado, ex.: `Developer ID Application: Nome (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID` | Conta Apple e Team ID, para a notarização |
+| `APPLE_APP_PASSWORD` | Senha de app gerada em [account.apple.com](https://account.apple.com) |
+
+Sem eles, o app sai com assinatura ad hoc (e o aviso acima).
+
+**Assinatura no Windows:** o workflow assina os instaladores e os executáveis
+dos `.zip` pela [SignPath](https://signpath.org) quando estes *secrets*
+existem. A SignPath Foundation assina projetos de código aberto de graça
+(peça em signpath.org; o projeto precisa estar no GitHub com licença aberta):
+
+| Secret | O que é |
+|---|---|
+| `SIGNPATH_API_TOKEN` | Token de API de um usuário de CI da SignPath |
+| `SIGNPATH_ORGANIZATION_ID` | ID da organização na SignPath |
+
+Na SignPath, crie o projeto `elo` com a política `release-signing`, ligue ao
+repositório do GitHub e use a configuração de artefato de
+[`packaging/windows/signpath-artefato.xml`](packaging/windows/signpath-artefato.xml).
+Sem os secrets, os pacotes saem sem assinatura (e o SmartScreen avisa).
+
+**Atualização automática:** cada release publica `latest.json` (versão e
+SHA-256 de cada pacote) e `latest.json.sig`, a assinatura Ed25519 do manifesto
+feita no CI com o secret `ELO_UPDATE_KEY`. O app só instala se a assinatura
+conferir com a chave pública embutida (`apps/elo/src/update.rs`) e se o pacote
+baixado bater com o SHA-256. Guarde um backup da chave privada: sem ela, as
+versões instaladas não aceitam novas atualizações. A tag precisa ser igual à
+versão do `Cargo.toml` (o CI confere).
+
+**Releases:** ao enviar uma tag `v*`, o workflow
+[`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`
+(no Ubuntu 22.04, para funcionar em distros mais antigas), o `.dmg` universal e
+o instalador e o `.zip` do Windows, e publica a release.
+
+## Limitações conhecidas
+
+- **Só retransmissão.** Todo o tráfego passa pelo servidor; não há conexão
+  direta P2P (hole punching). Funciona atrás de qualquer NAT, mas a banda do
+  servidor cresce com o uso e a latência depende da distância até ele.
+- **Windows ainda não foi testado em máquina real.** O CI compila e roda os
+  testes nos três sistemas; o Linux e o macOS já foram testados em máquinas
+  reais. Telas UAC do Windows precisam de teste.
+- **Wayland:** no GNOME 46, testado num GNOME isolado (sem tela física, com
+  dois monitores) pelo caminho do Mutter, sem perguntar na tela. KDE e outros
+  ambientes com o portal devem funcionar, mas ainda não foram testados; neles,
+  se a permissão guardada deixar de valer (por exemplo, depois de revogada nos
+  Ajustes), o sistema pergunta de novo na tela do computador acessado. Quem
+  acessa vê o aviso, e não fica mais em "Conectando…".
+- **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
+  Windows exige um serviço do sistema que o Elo ainda não tem.
+- **Som no Mac acessado** exige o macOS 14.2 ou mais novo e a permissão
+  "Gravação de áudio do sistema". No Linux, precisa do `pw-record` (PipeWire)
+  ou do `parec` (PulseAudio), que já vêm nas distribuições comuns.
+- **Ainda não há:** gravação de sessão, impressão remota, nem
+  builds assinados pela Apple ou pela Microsoft.
+- Com layouts de teclado diferentes nos dois lados, o texto chega certo, mas
+  atalhos com teclas fora do ASCII podem não chegar.
+- O codec é JPEG por blocos (simples e robusto). Com vídeo em movimento na
+  tela, gasta mais banda que H.264 ou VP9.
+
+Quer ajudar com algum desses itens? Veja abaixo.
+
+## Contribuindo
+
+Contribuições são bem-vindas: correções, testes no Windows, testes no KDE com
+Wayland, melhorias no codec. Leia o [CONTRIBUTING.md](CONTRIBUTING.md) antes de
+abrir um pull request. Se o Elo for útil para você, uma ⭐ no GitHub ajuda
+outras pessoas a encontrá-lo.
+
+## Licença
+
+O Elo é software livre, licenciado sob a [GNU AGPL 3.0](LICENSE) com termos
+adicionais (seção 7) descritos no [NOTICE](NOTICE). Em resumo:
+
+- você pode usar, estudar, modificar e redistribuir o Elo, inclusive para fins
+  comerciais;
+- quem distribui uma versão modificada, ou a oferece pela rede (por exemplo, um
+  servidor do Elo alterado), precisa publicar o código dela sob a mesma licença;
+- versões baseadas no Elo devem manter o crédito "by Stringari" ao lado do nome
+  e, na tela Sobre, o aviso de que vêm do Elo, com o link deste repositório;
+- o nome e o símbolo da Stringari são marcas: só podem aparecer nesse crédito.
+
+As versões até a 0.1.6 foram publicadas sob MIT ou Apache 2.0 e continuam sob
+essas licenças.
+
+As fontes em `assets/fonts` (Geist e JetBrains Mono) são distribuídas sob a SIL
+Open Font License 1.1. Veja [NOTICE](NOTICE).
+
+TeamViewer e AnyDesk são marcas de seus respectivos donos. O Elo não é afiliado
+a eles nem endossado por eles.
+
+---
+
+<p align="center">Feito por <a href="https://github.com/Stringari-Consultoria">Stringari Consultoria</a>.</p>

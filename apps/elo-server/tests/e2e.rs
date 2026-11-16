@@ -24,6 +24,21 @@ fn terminal_simulado() -> Result<(), String> {
     Ok(())
 }
 
+/// Testes com tela: só no X11 de teste (`DISPLAY`) ou dentro de um GNOME de
+/// teste. Numa sessão Wayland de verdade, o anfitrião usaria a tela real
+/// (captura e mouse), então o teste é pulado.
+fn test_screen() -> bool {
+    if std::env::var("DISPLAY").is_err() {
+        eprintln!("sem DISPLAY: parte com tela pulada");
+        return false;
+    }
+    if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.eq_ignore_ascii_case("wayland")) && std::env::var("ELO_E2E_GNOME").is_err() {
+        eprintln!("sessão Wayland real: parte com tela pulada (rode com XDG_SESSION_TYPE=x11 e um DISPLAY de teste)");
+        return false;
+    }
+    true
+}
+
 struct Server(Child);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -79,8 +94,7 @@ fn flood_of_control_messages_loses_the_connection() {
 
 #[test]
 fn session_through_relay() {
-    if std::env::var("DISPLAY").is_err() {
-        eprintln!("sem DISPLAY: teste pulado");
+    if !test_screen() {
         return;
     }
     // Os dois lados no mesmo computador: sem som (faria eco).
@@ -299,8 +313,7 @@ fn websocket_like_cloudflare_tunnel() {
     // O botão "Testar" das configurações: pelo WebSocket, o mesmo servidor devolve o mesmo ID.
     assert_eq!(client::probe(&ws, &[7u8; 32], "Visualizador").unwrap(), viewer_id);
     assert!(client::probe(&ServerCfg { address: "ws://127.0.0.1:9".into(), tls: false, pin: String::new() }, &[7u8; 32], "x").is_err());
-    if std::env::var("DISPLAY").is_err() {
-        eprintln!("sem DISPLAY: sessão pulada");
+    if !test_screen() {
         return;
     }
     viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
@@ -548,8 +561,7 @@ fn companies_techs_and_help_requests() {
 /// continua entrando, e errar e desistir no meio também conta.
 #[test]
 fn wrong_passwords_lock_only_who_tried() {
-    if std::env::var("DISPLAY").is_err() {
-        eprintln!("sem DISPLAY: teste pulado");
+    if !test_screen() {
         return;
     }
     session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -599,8 +611,7 @@ fn wrong_passwords_lock_only_who_tried() {
 fn only_approved_techs_reach_company_computers() {
     use elo_proto::cert;
     use elo_proto::ctrl::Manage;
-    if std::env::var("DISPLAY").is_err() {
-        eprintln!("sem DISPLAY: teste pulado");
+    if !test_screen() {
         return;
     }
     session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -701,8 +712,7 @@ fn only_approved_techs_reach_company_computers() {
 /// Precisa de duas telas no `DISPLAY` (ex.: `xrandr --setmonitor` num Xephyr).
 #[test]
 fn one_window_per_screen() {
-    if std::env::var("DISPLAY").is_err() {
-        eprintln!("sem DISPLAY: teste pulado");
+    if !test_screen() {
         return;
     }
     session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -755,6 +765,63 @@ fn one_window_per_screen() {
     remote.lock().unwrap().extra.clear();
     std::thread::sleep(Duration::from_millis(800));
     assert!(remote.lock().unwrap().extra.is_empty(), "a segunda tela continuou vindo");
+    vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// GNOME no Wayland: o anfitrião captura e controla pelo Mutter, sem a janela
+/// do sistema pedindo para compartilhar (antes o acesso ficava em
+/// "Conectando…" esperando alguém clicar lá). Só roda dentro de um GNOME
+/// (`ELO_E2E_GNOME=1`, ex.: `gnome-shell --headless` com dois monitores).
+#[test]
+fn gnome_wayland_without_asking() {
+    if std::env::var("ELO_E2E_GNOME").is_err() {
+        eprintln!("fora de um GNOME de teste: pulado");
+        return;
+    }
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("elo-e2e-gnome-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
+    let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
+    let host = client::start(cfg.clone(), [21u8; 32], "Anfitrião".into());
+    let viewer = client::start(cfg.clone(), [22u8; 32], "Visualizador".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
+    viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    let (htx, _hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-gnome".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: host_id.clone(), tech_ca: None };
+    let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
+    let remote = Arc::new(Mutex::new(Remote::default()));
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(cfg, vs, vsec, "s3nha-gnome".into(), viewer_id, "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx, host_id, None);
+    // Sem ninguém clicando nada: conecta sozinho.
+    let secs = std::env::var("ELO_E2E_ESPERA").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+    let monitors = match wait(&vrx, secs, |e| matches!(e, ViewerEvent::Connected { .. } | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Connected { monitors, .. }) => monitors,
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("não conectou (o sistema pediu para compartilhar?)"),
+    };
+    assert_eq!(monitors.len(), 2, "{monitors:?}");
+    let until = |what: &str, f: &dyn Fn(&Remote) -> bool| {
+        let end = Instant::now() + Duration::from_secs(15);
+        while !f(&remote.lock().unwrap()) {
+            assert!(Instant::now() < end, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    until("a primeira tela não chegou", &|r| r.version > 0 && r.dec.w == monitors[0].width && r.dec.h == monitors[0].height);
+    vh.cmd.send(session::Cmd::Split(vec![1])).unwrap();
+    until("a segunda tela não chegou", &|r| r.extra.get(&1).is_some_and(|s| s.version > 0 && s.dec.w == monitors[1].width && s.dec.h == monitors[1].height));
+    // O mouse anda na segunda tela: o cursor (desenhado na imagem) aparece onde foi.
+    let area = |r: &Remote| -> Vec<u8> {
+        let s = &r.extra[&1];
+        (300..340).flat_map(|y| (500..540).flat_map(move |x| { let i = (y * s.dec.w as usize + x) * 4; [i, i + 1, i + 2] })).map(|i| s.dec.rgba[i]).collect()
+    };
+    let before = area(&remote.lock().unwrap());
+    vh.cmd.send(session::Cmd::InputOn(1, elo_proto::msg::Input::MouseMove { x: 510, y: 310 })).unwrap();
+    until("o cursor não apareceu na segunda tela", &|r| area(r) != before);
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,220 +1,276 @@
 <p align="center">
-  <img src="packaging/icons/elo-256.png" width="96" height="96" alt="Ícone do Elo">
+  <img src="packaging/icons/elo-256.png" width="96" height="96" alt="Elo remote desktop icon">
 </p>
 
-<h1 align="center">Elo</h1>
+<h1 align="center">Elo Remote Desktop</h1>
 
 <p align="center">
-  Acesso remoto e suporte técnico, com cifragem ponta a ponta e servidor próprio.<br>
-  Feito em Rust. Sem conta, sem nuvem obrigatória.
+  <strong>Open-source remote desktop and remote support, end-to-end encrypted, with your own server.</strong><br>
+  A free, self-hosted alternative to TeamViewer and AnyDesk for Linux, Windows and macOS. Written in Rust.<br>
+  No account, no mandatory cloud.
 </p>
 
 <p align="center">
+  <a href="https://github.com/Stringari-Consultoria/elo/releases/latest"><img src="https://img.shields.io/github/v/release/Stringari-Consultoria/elo?label=download" alt="Latest release"></a>
   <a href="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml"><img src="https://github.com/Stringari-Consultoria/elo/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="#licença"><img src="https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-blue" alt="Licença: AGPL-3.0"></a>
-  <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
+  <a href="#license"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-555" alt="Linux, Windows and macOS">
+  <img src="https://img.shields.io/badge/rust-1.98%2B-orange" alt="Rust 1.98+">
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.pt-BR.md">Português (Brasil)</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/prints/en/02-home-dark.png">
+    <img src="docs/prints/en/01-home.png" width="760" alt="Elo remote desktop home screen: your ID, temporary password and the form to access another computer">
+  </picture>
 </p>
 
 ---
 
-O Elo deixa um computador ver e controlar a tela de outro, com chat, área de
-transferência e envio de arquivos. A proposta é a mesma de ferramentas como
-TeamViewer e AnyDesk, com duas diferenças. **O servidor é seu**: ele vem
-embutido no app, ou você hospeda o seu. E **ninguém no meio consegue ler a
-sessão**, nem o próprio servidor.
+Elo lets one computer see and control another computer's screen, with chat,
+clipboard sync, file transfer and remote audio. It does the same job as
+TeamViewer and AnyDesk, with two differences. **The server is yours**: it is
+built into the app, or you host your own (Linux, Docker, Windows, macOS). And
+**nobody in the middle can read the session**, not even the server.
 
-> **Estado do projeto: alfa.** Testado em máquinas reais no Linux (X11) e no
-> macOS, com testes de ponta a ponta no CI. O Windows compila e passa nos testes
-> do CI, mas ainda não foi testado em máquina real. Leia as
-> [limitações](#limitações-conhecidas) antes de usar em produção.
+It is made for **remote support**: IT teams, managed service providers (MSPs)
+and anyone who helps family and friends. Support companies get client
+organizations, technician accounts, a "Ask for help" button and unattended
+access.
 
-## Recursos
+> **Project status: alpha.** Tested on real machines on Linux (X11) and macOS,
+> GNOME Wayland in an isolated test session, and end-to-end tests in CI.
+> Windows builds and passes the CI tests but has not been tested on a real
+> machine yet. Read the
+> [known limitations](#known-limitations) before using it in production.
 
-- **Controle remoto** de mouse e teclado, com vários monitores.
-- **Som do computador acessado**: o que toca lá sai aqui (Opus, 96 kbps), com volume e botão de desligar.
-- **Chat e área de transferência** nos dois sentidos.
-- **Gerenciador de arquivos**: navegue nas pastas do outro computador, baixe e
-  envie arquivos (ou arraste para a janela da sessão).
-- **Cifragem ponta a ponta**: SPAKE2 a partir da senha, depois ChaCha20-Poly1305.
-- **Código de verificação** de 8 dígitos nas duas telas, contra ataques no meio, e técnicos de empresa com identidade conferida pela chave dos técnicos.
-- **Pedido de acesso**: sem senha, o outro lado aceita na tela e escolhe as permissões.
-- **Acesso não assistido** com senha fixa.
-- **Permissões revogáveis** durante a sessão (controle, área de transferência, arquivos).
-- **Servidor embutido**: o app já sobe o servidor ao abrir, sem configurar nada.
-- **Assistente na primeira abertura**: escolha entre ser o servidor ou conectar a um, com teste.
-- **Favoritos** com nome personalizado, **tela cheia** e **iniciar com o computador**.
-- **Atualização automática**, com pacotes assinados e conferidos antes de instalar.
-- **Wake-on-LAN**: liga um computador desligado da lista de favoritos ou recentes.
-- **Para empresas de suporte**: Elo Cliente (só recebe conexões, com aceite, e tem "Pedir ajuda"), contas de técnico, painel de clientes por empresa e convites.
-- **Funciona atrás do Cloudflare Tunnel** (WebSocket), sem abrir portas no roteador.
-- **Leve com links lentos**: só as partes da tela que mudaram são enviadas, com controle de fluxo.
+## Contents
 
-## Instalação
+- [Features](#features)
+- [Download and install](#download-and-install)
+- [How to use](#how-to-use)
+- [Self-hosted server](#self-hosted-server)
+- [Support companies and Elo Cliente](#support-companies-and-elo-cliente)
+- [Security](#security)
+- [FAQ](#faq)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [Known limitations](#known-limitations)
+- [License](#license)
 
-Baixe o instalador na página de [**Releases**](https://github.com/Stringari-Consultoria/elo/releases).
+## Features
 
-| Sistema | Arquivo | Como instalar |
+- **Remote control** of mouse and keyboard, with **multiple monitors**: switch
+  between screens, or open **one window per screen** (put each one on its own
+  desktop or monitor).
+- **Remote audio**: what plays there comes out here (Opus, 96 kbps), with volume control.
+- **Chat and clipboard** in both directions.
+- **File manager**: browse the other computer's folders, download and upload
+  files (or drag them onto the session window).
+- **Screenshots** of the remote screen (full screen or a selected area), saved and copied.
+- **Open the remote terminal** (Command Prompt on Windows) from the session menu.
+- **End-to-end encryption**: SPAKE2 key exchange from the password, then ChaCha20-Poly1305.
+- **8-digit verification code** on both screens against man-in-the-middle
+  attacks, and support technicians whose identity is checked with the
+  technicians' key.
+- **Access request**: without a password, the other side accepts on screen and chooses the permissions.
+- **Unattended access** with a fixed password, also on **Linux Wayland (GNOME)**.
+- **Revocable permissions** during the session (control, clipboard, files).
+- **Built-in server**: the app starts its own server when it opens, nothing to configure.
+- **Works behind Cloudflare Tunnel** (WebSocket), without opening router ports.
+- **Light on slow links**: only the parts of the screen that changed are sent, with flow control.
+- **Automatic updates**, with signed packages checked before installing.
+- **Wake-on-LAN**: turn on a computer from your favorites or recent list.
+- **For support companies**: Elo Cliente (only receives connections, with
+  consent, and has "Ask for help"), technician accounts, a clients dashboard
+  per company, and invites.
+- **Favorites** with custom names, **full screen**, toolbar on top or on the
+  right, and **start with the computer**.
+- **English and Portuguese** interface.
+
+<p align="center">
+  <img src="docs/prints/08-tecnico-sessao.png" width="760" alt="Remote session in Elo: a technician controlling a Linux computer, with the floating session toolbar">
+</p>
+
+## Download and install
+
+Download the installer from the [**Releases**](https://github.com/Stringari-Consultoria/elo/releases/latest) page.
+
+| System | File | How to install |
 |---|---|---|
-| Ubuntu, Debian e derivados | `elo_<versão>_amd64.deb` | `sudo apt install ./elo_<versão>_amd64.deb` |
-| Outras distros Linux | `elo-<versão>-linux-x86_64.tar.gz` | Extraia e rode `./instalar.sh` (instala em `~/.local`, sem root) |
-| macOS 11+ (Intel e Apple Silicon) | `Elo-<versão>-macos.dmg` | Abra e arraste o **Elo** para **Aplicativos** |
-| Windows 10 e 11 (64 bits) | `Elo-<versão>-windows-x64-setup.exe` | Rode o instalador (não precisa de administrador) |
-| Windows, sem instalar | `Elo-<versão>-windows-x64.zip` | Extraia e abra o `elo.exe` |
-| Elo Cliente (computadores atendidos por uma empresa) | `Elo-Cliente-…` / `elo-cliente…` | Veja [Empresas e Elo Cliente](#empresas-e-elo-cliente) |
-| Só o servidor (máquina dedicada, VPS, Docker) | `elo-server…` | Veja [Servidor avulso](#3-servidor-avulso) |
+| Ubuntu, Debian and derivatives | `elo_<version>_amd64.deb` | `sudo apt install ./elo_<version>_amd64.deb` |
+| Other Linux distros | `elo-<version>-linux-x86_64.tar.gz` | Extract and run `./instalar.sh` (installs into `~/.local`, no root) |
+| macOS 11+ (Intel and Apple Silicon) | `Elo-<version>-macos.dmg` | Open it and drag **Elo** to **Applications** |
+| Windows 10 and 11 (64-bit) | `Elo-<version>-windows-x64-setup.exe` | Run the installer (no administrator needed) |
+| Windows, portable | `Elo-<version>-windows-x64.zip` | Extract and open `elo.exe` |
+| Elo Cliente (computers supported by a company) | `Elo-Cliente-…` / `elo-cliente…` | See [Support companies and Elo Cliente](#support-companies-and-elo-cliente) |
+| Server only (dedicated machine, VPS, Docker) | `elo-server…` | See [Standalone server](#3-standalone-server) |
 
-Use um jeito de instalar só: se já instalou pelo `.tar.gz` (ou `make install`)
-e passar para o `.deb`, rode antes `./instalar.sh --remover`, porque a cópia em
-`~/.local` tem prioridade sobre a do sistema.
+Use a single install method: if you installed from the `.tar.gz` (or `make
+install`) and move to the `.deb`, first run `./instalar.sh --remover`, because
+the copy in `~/.local` takes priority over the system one.
 
-**No Linux** funciona no X11 e no **Wayland** (GNOME, KDE e outros com o
-portal do sistema). No Wayland, na primeira vez que alguém acessa, o sistema
-pergunta na tela se pode compartilhar: ligue **"Permitir interação remota"**
-(sem isso dá para ver, mas não controlar) e deixe **"Lembrar desta seleção"**
-marcado, para as próximas vezes não perguntarem de novo.
+**On Linux** it works on X11 and on **Wayland**. On **GNOME** (Ubuntu, Zorin,
+Fedora...) Elo talks directly to Mutter, like GNOME's own screen sharing:
+nothing is asked on screen and unattended access works just like on X11 (GNOME
+shows at the top of the screen that it is being shared). On other desktops (KDE
+and others using the system portal), the first time someone connects the system
+asks on screen whether it can share: turn on **"Allow remote interaction"**
+(without it you can see but not control) and keep **"Remember this selection"**
+checked, so it doesn't ask again.
 
-**No macOS**, os builds ainda não são assinados nem notarizados pela Apple, e
-na primeira abertura aparece "a Apple não pôde verificar". Para liberar: tente
-abrir o Elo uma vez, vá em **Ajustes do Sistema → Privacidade e Segurança**,
-role até o aviso sobre o Elo e clique em **Abrir Mesmo Assim**. Para ser
-acessado, o Elo também precisa das permissões de **Gravação de Tela** e
-**Acessibilidade**, na mesma tela de ajustes.
+**On macOS**, builds are not signed or notarized by Apple yet, so the first
+launch shows "Apple could not verify". To allow it: try to open Elo once, go to
+**System Settings → Privacy & Security**, scroll to the message about Elo and
+click **Open Anyway**. To be accessed, Elo also needs the **Screen Recording**
+and **Accessibility** permissions, on the same settings screen.
 
-**No Windows**, os builds ainda não são assinados. Se o SmartScreen avisar,
-clique em **Mais informações → Executar assim mesmo**. Na primeira abertura, o
-Windows pergunta se o Elo pode receber conexões da rede: permita, para que o
-servidor embutido funcione.
+**On Windows**, builds are not signed yet. If SmartScreen warns you, click
+**More info → Run anyway**. On first launch, Windows asks whether Elo may
+receive network connections: allow it, so the built-in server works.
 
-Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
+To build from source, see [Development](#development).
 
-## Como usar
+## How to use
 
-1. Quem precisa de ajuda abre o Elo e passa o **ID** (9 dígitos) e a **senha temporária**.
-2. Quem ajuda digita o ID e a senha e clica em **Conectar**.
-3. Sem a senha, aparece um **pedido de acesso** do outro lado, com o código de
-   verificação e as permissões. Confira se o código é igual nas duas telas.
-4. Durante a sessão, uma faixa avisa **"Este computador está sendo acessado
-   por …"**, com o botão **Encerrar**.
+1. The person who needs help opens Elo and shares their **ID** (9 digits) and **temporary password**.
+2. The person helping types the ID and password and clicks **Connect**.
+3. Without the password, an **access request** appears on the other side, with
+   the verification code and the permissions. Check that the code is the same
+   on both screens.
+4. During the session, a banner says **"This computer is being accessed by
+   …"**, with an **End** button.
 
-**Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
-configurações e ligue a opção na tela inicial. A conexão então entra sem
-ninguém do outro lado.
+**Unattended access:** set a fixed password (8 or more characters) in
+Settings and turn the option on in the home screen. Connections then get in
+with nobody on the other side.
 
-**Atualizações:** o Elo procura versão nova ao abrir e a cada 6 horas. Com
-"Atualizar automaticamente" ligado (padrão), baixa sozinho e instala quando não
-há sessão em andamento, reabrindo em seguida. No Linux instalado pelo `.deb`,
-pede a senha de administrador; o `.zip` portátil do Windows só avisa.
+**Updates:** Elo checks for a new version when it opens and every 6 hours.
+With "Update automatically" on (the default), it downloads by itself and
+installs when no session is running, then reopens. On Linux installed from the
+`.deb`, it asks for the administrator password; the portable Windows `.zip`
+only notifies.
 
-**Arquivos:** na sessão, clique em **Arquivos** para ver as pastas do outro
-computador. Clique duplo abre a pasta ou baixa o arquivo; **Enviar para cá**
-manda arquivos deste computador para a pasta aberta. Também dá para arrastar
-arquivos para a janela. Os baixados vão para a pasta de recebidos
-(Configurações). Só funciona com a permissão "Transferir arquivos" ligada do
-outro lado.
+**Files:** in the session, click **Files** to see the other computer's folders.
+Double-click opens a folder or downloads a file; the upload button sends files
+from this computer to the open folder. You can also drag files onto the window.
+Downloads go to the received-files folder (Settings). It only works with the
+"Transfer files" permission turned on at the other side.
 
-**Favoritos:** na sessão, clique na estrela. Na tela inicial, os favoritos
-podem ser renomeados; um clique preenche o ID, e o clique duplo já conecta.
+**Multiple monitors:** pick a screen in the session toolbar, or choose **One
+window per screen** in the **…** menu to see every screen at once, each in its
+own window.
 
-**Iniciar com o computador:** ligue em Configurações (ou no assistente). O Elo
-abre na bandeja ao entrar no sistema, e o computador continua acessível depois
-de reiniciar.
+**Favorites:** in the session, click the star. On the home screen, favorites
+can be renamed; one click fills in the ID, and a double click connects.
 
-**Ligar um computador (Wake-on-LAN):** passe o mouse num cartão de favorito ou
-recente e clique no botão de ligar. O servidor manda o "pacote mágico" na rede
-dele e pede o mesmo aos Elos online na rede do computador desligado (mesmo IP
-público). Requisitos: o computador precisa ter aberto a versão nova do Elo ao
-menos uma vez (para o servidor conhecer o endereço da placa de rede), o
-Wake-on-LAN ligado na BIOS/placa e, em geral, cabo de rede; e alguém (o
-servidor ou outro Elo) precisa estar ligado na mesma rede.
+**Start with the computer:** turn it on in Settings (or in the setup wizard).
+Elo opens in the tray when you log in, and the computer stays reachable after
+a restart.
 
-**Reiniciar e reconectar:** na sessão, "Reiniciar" reinicia o outro
-computador (com a permissão de controle). O Elo tenta reconectar sozinho por
-até 6 minutos. Para voltar sem ninguém lá, o outro computador precisa iniciar o
-Elo com o computador e ter o acesso não assistido ligado (a senha temporária
-muda ao reiniciar).
+**Turn on a computer (Wake-on-LAN):** hover over a favorite or recent card and
+click the power button. The server sends the "magic packet" on its network and
+asks the online Elo apps on the sleeping computer's network (same public IP) to
+do the same. Requirements: the computer must have opened a recent Elo at least
+once (so the server knows its network card address), Wake-on-LAN enabled in
+the BIOS/board and usually a network cable; and someone (the server or another
+Elo) must be on the same network.
 
-**Bandeja:** fechar a janela deixa o Elo rodando perto do relógio, aceitando
-conexões. O menu do ícone mostra o seu ID e tem "Abrir", "Copiar ID" e "Sair do
-Elo". Quando chega um pedido de acesso ou começa uma sessão, a janela aparece
-sozinha. No Linux, usa StatusNotifierItem (KDE, e GNOME com a extensão
-AppIndicator, padrão no Ubuntu).
+**Restart and reconnect:** in the session, "Restart" restarts the other
+computer (with the control permission). Elo tries to reconnect by itself for
+up to 6 minutes. To come back with nobody there, the other computer must start
+Elo with the system and have unattended access on (the temporary password
+changes on restart).
 
-## Servidor
+**Tray:** closing the window keeps Elo running next to the clock, accepting
+connections. The icon menu shows your ID and has "Open", "Copy ID" and "Quit
+Elo". When an access request arrives or a session starts, the window shows up
+by itself. On Linux it uses StatusNotifierItem (KDE, and GNOME with the
+AppIndicator extension, the default on Ubuntu).
 
-O servidor guarda os IDs, entrega os pedidos de conexão e repassa os bytes das
-sessões. Ele nunca tem a chave da sessão. Existem três jeitos de usar:
+## Self-hosted server
 
-### 1. Embutido no app (padrão)
+The server stores the IDs, delivers connection requests and relays the
+session bytes. It never has the session key. There are three ways to run it:
 
-Ao abrir, o Elo sobe o servidor na porta `21116`, com TLS e certificado
-autoassinado, e conecta nele. Ao fechar, o servidor para.
+### 1. Built into the app (default)
 
-Em **Configurações → Servidor** aparecem o endereço deste computador na rede e
-a impressão digital do certificado, com botões para copiar. Nos outros
-computadores, desligue **"Rodar o servidor neste computador"** e preencha esses
-dados. A porta `21116` precisa estar liberada no firewall.
+When it opens, Elo starts the server on port `21116`, with TLS and a
+self-signed certificate, and connects to it. When it closes, the server stops.
 
-### 2. Pela internet com Cloudflare Tunnel
+**Settings → Server** shows this computer's network address and the
+certificate fingerprint, with copy buttons. On the other computers, turn off
+**"Run the server on this computer"** and fill in that data. Port `21116` must
+be open in the firewall.
 
-O servidor aceita **WebSocket** na mesma porta. Por isso funciona atrás do
+### 2. Over the internet with Cloudflare Tunnel
+
+The server accepts **WebSocket** on the same port, so it works behind
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
-sem abrir portas e sem instalar nada nos outros computadores.
+without opening ports and without installing anything on the other computers.
 
-1. No túnel, crie um *Public Hostname*, por exemplo `elo.seudominio.com`, do
-   tipo **HTTP**, apontando para `localhost:21116`:
+1. In the tunnel, create a *Public Hostname*, for example `elo.yourdomain.com`,
+   of type **HTTP**, pointing to `localhost:21116`:
 
    ```yaml
    ingress:
-     - hostname: elo.seudominio.com
+     - hostname: elo.yourdomain.com
        service: http://localhost:21116
      - service: http_status:404
    ```
 
-2. No Elo que roda o servidor, em **Configurações → Servidor**, preencha
-   **Endereço público** com `wss://elo.seudominio.com`. Se não precisar de
-   acesso direto pela rede local, desligue **"Aceitar conexões diretas da rede"**.
-3. Nos outros computadores, desligue o servidor local e use
-   `wss://elo.seudominio.com` como endereço, com a impressão digital vazia.
+2. In the Elo running the server, under **Settings → Server**, set **Public
+   address** to `wss://elo.yourdomain.com`. If you don't need direct access
+   from the local network, turn off **"Accept direct connections from the
+   network"**.
+3. On the other computers, turn off the local server and use
+   `wss://elo.yourdomain.com` as the address, with an empty fingerprint.
 
-Conexões sem TLS só são aceitas quando vêm do próprio computador, que é o caso
-do `cloudflared`, ou de um proxy informado com `--proxy-confiavel` (por
-exemplo, o `cloudflared` em outro contêiner). Só desses o servidor aceita o IP
-real do cliente (`CF-Connecting-IP`), usado nos limites de tentativas. Atenção: a sessão inteira, tela incluída, passa pelo
-Cloudflare. Uso pesado de banda pode esbarrar nos termos do plano gratuito.
+Connections without TLS are only accepted from the computer itself, which is
+the case for `cloudflared`, or from a proxy given with `--proxy-confiavel`
+(for example, `cloudflared` in another container). Only from those does the
+server accept the client's real IP (`CF-Connecting-IP`), used for the attempt
+limits. Note: the whole session, screen included, goes through Cloudflare
+(still end-to-end encrypted). Heavy bandwidth use may run into the free plan's
+terms.
 
-### Painel do servidor
+### Server dashboard
 
-Com o servidor rodando neste computador, **Configurações → Servidor → Painel do
-servidor** mostra quem está online (nome, sistema, IP), as sessões em andamento
-e o histórico (quem acessou quem, quando, duração e volume). O histórico é
-apagado depois do prazo configurado (90 dias por padrão; no servidor avulso,
-`--retencao-dias`).
+With the server running on this computer, **Settings → Server → Server
+dashboard** shows who is online (name, system, IP), the running sessions and
+the history (who accessed whom, when, duration and volume). The history is
+deleted after the configured period (90 days by default; on the standalone
+server, `--retencao-dias`).
 
-### 3. Servidor avulso
+### 3. Standalone server
 
-Para hospedar o servidor numa máquina dedicada (VPS, servidor da empresa,
-Raspberry Pi), sem o app, use os pacotes `elo-server` da página de
-[Releases](https://github.com/Stringari-Consultoria/elo/releases):
+To host the server on a dedicated machine (VPS, company server, Raspberry Pi)
+without the app, use the `elo-server` packages from the
+[Releases](https://github.com/Stringari-Consultoria/elo/releases/latest) page:
 
-| Onde | Arquivo | Como instalar |
+| Where | File | How to install |
 |---|---|---|
-| Debian, Ubuntu (x86_64 ou ARM) | `elo-server_<versão>_amd64.deb` / `_arm64.deb` | `sudo apt install ./elo-server_<versão>_amd64.deb` |
-| Outras distros Linux | `elo-server-<versão>-linux-x86_64.tar.gz` / `-aarch64` | Extraia e rode `sudo ./instalar.sh` |
-| Docker (amd64, arm64) | `ghcr.io/stringari-consultoria/elo-server` | Veja abaixo |
-| Windows / Windows Server | `elo-server-<versão>-windows-x64.zip` | Extraia; o `LEIA-ME.txt` mostra como iniciar com o Windows |
-| macOS | `elo-server-<versão>-macos.tar.gz` | Extraia; o `LEIA-ME.txt` traz o serviço do `launchd` |
+| Debian, Ubuntu (x86_64 or ARM) | `elo-server_<version>_amd64.deb` / `_arm64.deb` | `sudo apt install ./elo-server_<version>_amd64.deb` |
+| Other Linux distros | `elo-server-<version>-linux-x86_64.tar.gz` / `-aarch64` | Extract and run `sudo ./instalar.sh` |
+| Docker (amd64, arm64) | `ghcr.io/stringari-consultoria/elo-server` | See below |
+| Windows / Windows Server | `elo-server-<version>-windows-x64.zip` | Extract; `LEIA-ME.txt` shows how to start it with Windows |
+| macOS | `elo-server-<version>-macos.tar.gz` | Extract; `LEIA-ME.txt` has the `launchd` service |
 
-No Linux, o `.deb` e o `instalar.sh` deixam o servidor como **serviço do
-systemd** (`elo-server`): sobe com a máquina, roda com um usuário próprio e
-isolado e guarda os dados em `/var/lib/elo-server`. Ao terminar, mostram o
-endereço e a **impressão digital** para colar nos apps (em **Configurações →
-Servidor**, desligue "Rodar o servidor neste computador"). As opções ficam em
-`/etc/default/elo-server`. Libere a porta `21116/TCP` no firewall.
+On Linux, the `.deb` and `instalar.sh` set the server up as a **systemd
+service** (`elo-server`): it starts with the machine, runs as its own isolated
+user and keeps its data in `/var/lib/elo-server`. When done, they show the
+address and the **fingerprint** to paste into the apps (under **Settings →
+Server**, turn off "Run the server on this computer"). Options live in
+`/etc/default/elo-server`. Open port `21116/TCP` in the firewall.
 
 ```sh
-sudo systemctl status elo-server       # situação
-journalctl -u elo-server               # registros
-sudo elo-server --impressao --data /var/lib/elo-server   # impressão digital de novo
+sudo systemctl status elo-server       # status
+journalctl -u elo-server               # logs
+sudo elo-server --impressao --data /var/lib/elo-server   # print the fingerprint again
 ```
 
 **Docker:**
@@ -225,10 +281,11 @@ docker run -d --name elo-server --restart unless-stopped \
 docker exec elo-server elo-server --impressao --data /dados
 ```
 
-Com o Cloudflare Tunnel no mesmo `docker compose`, nem é preciso publicar a
-porta: aponte o túnel para `https://elo-server:21116` (com **No TLS Verify**)
-e use `wss://seu-endereço` nos apps. O `--proxy-confiavel` diz ao servidor que
-o `cloudflared` (na rede interna do Docker) informa o IP real dos clientes.
+With Cloudflare Tunnel in the same `docker compose`, you don't even need to
+publish the port: point the tunnel to `https://elo-server:21116` (with **No
+TLS Verify**) and use `wss://your-address` in the apps. `--proxy-confiavel`
+tells the server that `cloudflared` (on Docker's internal network) reports the
+clients' real IP.
 
 ```yaml
 services:
@@ -240,265 +297,315 @@ services:
   cloudflared:
     image: cloudflare/cloudflared
     command: tunnel run
-    environment: [TUNNEL_TOKEN=seu-token]
+    environment: [TUNNEL_TOKEN=your-token]
     restart: unless-stopped
 volumes:
   elo-dados:
 ```
 
-**À mão**, com qualquer um dos executáveis:
+**By hand**, with any of the executables:
 
 ```sh
-# certificado público (Let's Encrypt etc.)
+# public certificate (Let's Encrypt etc.)
 elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --cert fullchain.pem --key privkey.pem
 
-# certificado autoassinado: cole nos apps a impressão digital que ele imprime
+# self-signed certificate: paste the fingerprint it prints into the apps
 elo-server --listen 0.0.0.0:21116 --data /var/lib/elo --self-signed
 ```
 
-O app de desktop já traz o servidor embutido (opção 1); o pacote do servidor
-é só para quem quer uma máquina dedicada.
+The desktop app already includes the server (option 1); the server package is
+only for those who want a dedicated machine.
 
-## Empresas e Elo Cliente
+## Support companies and Elo Cliente
 
-Para quem presta suporte a empresas: os computadores dos clientes ficam
-organizados por empresa, os clientes pedem ajuda por um botão e só os seus
-técnicos conseguem entrar, sempre com o aceite de quem está no computador.
+For IT support providers and MSPs: client computers are organized by company,
+clients ask for help with one button, and only your technicians can get in,
+always with the consent of the person at the computer.
 
-**Técnicos.** No Elo, em **Configurações → Conta de técnico**, entre com
-usuário e senha do servidor. Num servidor novo, a primeira conta vira
-administrador com o **código de primeiro acesso**: ele fica no arquivo
-`primeiro-acesso.txt` da pasta de dados (por exemplo,
-`sudo cat /var/lib/elo-server/primeiro-acesso.txt` ou
-`docker cp elo-server:/dados/primeiro-acesso.txt - | tar -xO`); com o servidor
-embutido no app, o próprio Elo já preenche. Administradores criam e removem técnicos na
-aba **Clientes → Técnicos**. O servidor guarda só o hash (Argon2) das senhas,
-e o app guarda só um token de entrada.
+<p align="center">
+  <img src="docs/prints/07-tecnico-painel-de-clientes.png" width="760" alt="Elo clients dashboard for support companies: help requests, companies and computers online">
+</p>
 
-**Chave dos técnicos.** Em **Clientes → Técnicos**, um administrador cria a
-chave dos técnicos. A parte secreta fica no app dele (dá para copiar para
-outro administrador); o servidor e os convites levam só a parte pública. Cada
-app de técnico tem a própria chave, cujo código aparece em **Configurações →
-Conta de técnico**. O administrador aprova cada chave conferindo esse código
-com o técnico, e o app dele assina um certificado que vale 90 dias e se renova
-sozinho enquanto o técnico estiver na lista. Os computadores das empresas só
-aceitam pedidos de técnicos aprovados, e o pedido mostra que a identidade foi
-conferida. Nem quem controla o servidor consegue se passar por técnico.
-Computadores com convite antigo, sem a chave, ficam com a que o servidor
-informar no primeiro contato.
+**Technicians.** In Elo, under **Settings → Technician account**, sign in with
+the server's username and password. On a new server, the first account becomes
+administrator with the **first-access code**: it is in the
+`primeiro-acesso.txt` file in the data folder (for example,
+`sudo cat /var/lib/elo-server/primeiro-acesso.txt` or
+`docker cp elo-server:/dados/primeiro-acesso.txt - | tar -xO`); with the server
+built into the app, Elo fills it in for you. Administrators add and remove
+technicians in **Clients → Technicians**. The server stores only the password
+hash (Argon2), and the app stores only a sign-in token.
 
-**Aba Clientes.** Pedidos de ajuda (com a mensagem do cliente e quem está
-atendendo), empresas, computadores (online, visto pela última vez, nome e
-observações) e o botão para conectar. Um pedido novo aparece na hora, com
-aviso, mesmo com o Elo na bandeja.
+**Technicians' key.** In **Clients → Technicians**, an administrator creates the
+technicians' key. The secret part stays in their app (it can be copied to
+another administrator); the server and the invites carry only the public part.
+Each technician's app has its own key, whose code appears under **Settings →
+Technician account**. The administrator approves each key by checking that code
+with the technician, and their app signs a certificate valid for 90 days that
+renews itself while the technician is on the list. Company computers only
+accept requests from approved technicians, and the request shows that the
+identity was verified. Not even whoever controls the server can impersonate a
+technician. Computers with an old invite, without the key, keep the one the
+server reports on first contact.
 
-**Convidar um computador.** Na empresa, **Convidar computador** gera um código
-de convite (endereço do servidor, impressão digital, chave da empresa e chave
-pública dos técnicos) e
-uma mensagem pronta com o link de download. O cliente instala o **Elo
-Cliente**, cola o código e pronto. Para instalar em muitas máquinas, salve o
-código em `convite.txt` em `C:\ProgramData\Elo\` (Windows), `/etc/elo/`
-(Linux) ou `/Library/Application Support/Elo/` (macOS): o Elo Cliente lê
-sozinho na primeira abertura. Só quem tem a chave dos técnicos no app gera
-convites. **Trocar o convite** invalida o código antigo
-para instalações novas, sem derrubar os computadores já ligados.
+**Clients tab.** Help requests (with the client's message and who is handling
+it), companies, computers (online, last seen, name and notes) and the connect
+button. A new request shows up immediately, with a notification, even with
+Elo in the tray.
 
-**Elo Cliente.** É o mesmo programa, com outro nome e configuração própria (os
-dois convivem na mesma máquina). Mostra o ID e o botão **Pedir ajuda**; não
-conecta em outros computadores e não aceita senhas: todo acesso é aceito na
-tela, e quem aceita vê o nome do técnico. O servidor também garante isso:
-computadores de empresa só recebem conexões, e só de técnicos logados. O
-histórico de sessões registra qual técnico fez cada acesso.
+**Invite a computer.** In the company, **Invite computer** creates an invite
+code (server address, fingerprint, company key and the technicians' public
+key) and a ready message with the download link. The client installs **Elo
+Cliente**, pastes the code and that's it. To install on many machines, save the
+code as `convite.txt` in `C:\ProgramData\Elo\` (Windows), `/etc/elo/` (Linux)
+or `/Library/Application Support/Elo/` (macOS): Elo Cliente reads it by itself
+on first launch. Only those with the technicians' key in their app can create
+invites. Changing the invite code invalidates the old one for new installs,
+without disconnecting computers already linked.
 
-## Segurança
+**Elo Cliente.** It is the same program, with another name and its own settings
+(both can live on the same machine). It shows the ID and the **Ask for help**
+button; it doesn't connect to other computers and doesn't accept passwords:
+every access is accepted on screen, and whoever accepts sees the technician's
+name. The server enforces this too: company computers only receive
+connections, and only from signed-in technicians. The session history records
+which technician made each access.
 
-- **Ponta a ponta.** As duas pontas fazem um acordo de chave SPAKE2 (Ed25519) a
-  partir da senha e trocam tudo cifrado com ChaCha20-Poly1305. O servidor só
-  repassa bytes: não tem a chave, não lê a sessão e, nas conexões com senha, não
-  consegue se passar por nenhum dos lados sem saber a senha. O acordo inclui os
-  IDs das duas pontas: o servidor também não consegue desviar a conexão para
-  outro computador que tenha a mesma senha.
-- **Técnicos de empresa** provam quem são com a chave dos técnicos (veja
-  "Empresas e Elo Cliente"): o computador do cliente confere o certificado e
-  uma assinatura ligada a esta sessão.
-- **Outras conexões sem senha** (pedido com aceite na tela) dependem do
-  **código de verificação** de 8 dígitos que aparece nas duas telas. Quem acessa
-  se compromete com a própria mensagem antes de ver a do outro lado, então um
-  servidor comprometido tem uma chance em 100 milhões, por tentativa, de fazer
-  os códigos baterem. Tentativas abandonadas no meio contam, e passando do
-  limite os pedidos param por alguns minutos. Confira o código com a pessoa,
-  por telefone ou chat, antes de aceitar.
-- **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
-  novas conexões por um tempo. O servidor também limita tentativas por IP.
-- **TLS** entre o app e o servidor, com certificado público ou com impressão
-  digital fixada.
-- O arquivo de configuração, que guarda o segredo do dispositivo e a senha
-  fixa, é gravado com permissão `0600` no Linux e no macOS.
+## Security
 
-Encontrou uma vulnerabilidade? **Não abra uma issue pública.** Veja
+- **End to end.** Both ends run a SPAKE2 (Ed25519) key agreement from the
+  password and exchange everything encrypted with ChaCha20-Poly1305. The server
+  only relays bytes: it has no key, can't read the session and, on password
+  connections, can't impersonate either side without knowing the password. The
+  agreement includes both ends' IDs: the server also can't divert the
+  connection to another computer that has the same password.
+- **Company technicians** prove who they are with the technicians' key (see
+  "Support companies and Elo Cliente"): the client's computer checks the
+  certificate and a signature bound to this session.
+- **Other password-less connections** (request accepted on screen) rely on the
+  8-digit **verification code** shown on both screens. The one connecting
+  commits to their own message before seeing the other side's, so a
+  compromised server has a one in 100 million chance per attempt of making the
+  codes match. Attempts abandoned midway count, and past the limit requests
+  stop for a few minutes. Check the code with the person, by phone or chat,
+  before accepting.
+- **Wrong password:** after 5 attempts in 5 minutes, the computer refuses new
+  connections for a while. The server also limits attempts per IP.
+- **TLS** between the app and the server, with a public certificate or a
+  pinned fingerprint.
+- The configuration file, which holds the device secret and the fixed
+  password, is written with `0600` permissions on Linux and macOS.
+
+Found a vulnerability? **Don't open a public issue.** See
 [SECURITY.md](SECURITY.md).
 
-### Privacidade (LGPD)
+### Privacy (GDPR / LGPD)
 
-O servidor registra **apenas metadados**: ID, nome e sistema de cada
-computador, IP de origem, e início, fim e volume de cada sessão (em
-`sessoes.jsonl`). Telas, teclas, arquivos, chat e área de transferência nunca
-passam em claro pelo servidor. Se você oferece o Elo como serviço, esses
-metadados são dados pessoais: defina um prazo de retenção e informe na sua
-política de privacidade.
+The server records **only metadata**: each computer's ID, name and system,
+source IP, and the start, end and volume of each session (in
+`sessoes.jsonl`). Screens, keystrokes, files, chat and clipboard never pass
+through the server in clear text. If you offer Elo as a service, that metadata
+is personal data: set a retention period and mention it in your privacy
+policy.
 
-## Como funciona por dentro
+## FAQ
 
-| Pasta | O que é |
+**Is Elo a free alternative to TeamViewer and AnyDesk?**
+Yes. Elo is free and open source (AGPL-3.0), including for commercial use, and
+covers the core of remote support: remote control, file transfer, chat,
+unattended access and multiple monitors. The difference is that you run the
+server, and sessions are end-to-end encrypted.
+
+**Can I self-host the server?**
+Yes, and it is the default: the app already runs its own server. For a
+dedicated machine there are `.deb` packages, a Docker image and builds for
+Windows and macOS. See [Self-hosted server](#self-hosted-server).
+
+**Do I need to open ports on the router?**
+No, if you use Cloudflare Tunnel: the server speaks WebSocket and works behind
+it. Without the tunnel, only the server's port `21116/TCP` needs to be reachable.
+
+**Can the server see my screen?**
+No. The server only relays encrypted bytes; the key is agreed between the two
+computers and never reaches the server.
+
+**Does it work on Linux with Wayland?**
+Yes. On GNOME (Ubuntu, Zorin, Fedora...) it works without any on-screen
+prompt, including unattended access. On KDE and other desktops it goes through
+the system portal, which asks on screen the first time.
+
+**Does it work on Windows and macOS?**
+Yes, with installers for both. macOS is tested on real machines; Windows
+builds and passes CI, and still needs real-machine testing.
+
+**Is there unattended access?**
+Yes: set a fixed password and turn on unattended access. Start Elo with the
+computer so it is reachable after a restart.
+
+## How it works
+
+| Folder | What it is |
 |---|---|
-| [`apps/elo`](apps/elo) | App desktop (egui + wgpu) |
-| [`apps/elo-server`](apps/elo-server) | Servidor de IDs e retransmissão (tokio). É biblioteca, embutida no app, e também binário avulso |
-| [`crates/proto`](crates/proto) | Protocolo: mensagens, handshake SPAKE2, cifragem, codec de vídeo |
-| [`crates/core`](crates/core) | Captura de tela, injeção de entrada, cliente e sessões |
-| [`crates/ui-kit`](crates/ui-kit) | Design system Stringari |
-| [`packaging`](packaging) e [`scripts`](scripts) | Ícones, `Info.plist`, script do Inno Setup e scripts dos instaladores |
+| [`apps/elo`](apps/elo) | Desktop app (egui + wgpu) |
+| [`apps/elo-server`](apps/elo-server) | ID and relay server (tokio). It is a library, built into the app, and also a standalone binary |
+| [`crates/proto`](crates/proto) | Protocol: messages, SPAKE2 handshake, encryption, video codec |
+| [`crates/core`](crates/core) | Screen capture, input injection, client and sessions |
+| [`crates/ui-kit`](crates/ui-kit) | Stringari design system |
+| [`packaging`](packaging) and [`scripts`](scripts) | Icons, `Info.plist`, Inno Setup script and installer scripts |
 
-- **Conexão:** cada app mantém uma conexão de controle com o servidor (TCP +
-  TLS, ou WebSocket). Para abrir uma sessão, o servidor gera um convite e as
-  duas pontas entram no relay. A partir daí, o servidor só copia bytes.
-- **Vídeo:** a tela é dividida em blocos de 64 px, e só os blocos que mudaram
-  vão em JPEG. Quando a tela para, os blocos são refinados em qualidade alta.
-  Com até 2 quadros sem confirmação, a sessão se adapta a links lentos.
-- **Som:** o anfitrião captura o que está saindo nas caixas (PipeWire ou
-  PulseAudio no Linux, loopback do WASAPI no Windows, process tap do Core
-  Audio no macOS 14.2+), comprime em Opus (48 kHz, estéreo, 20 ms, codec em
-  Rust puro) e o visualizador toca com um pequeno buffer contra a variação
-  da rede. Versões novas anunciam o que sabem fazer logo depois da mensagem
-  de boas-vindas, e versões antigas simplesmente ignoram: o som só é pedido
-  a quem anunciou.
+- **Connection:** each app keeps a control connection to the server (TCP +
+  TLS, or WebSocket). To open a session, the server creates an invite and both
+  ends join the relay. From then on, the server only copies bytes.
+- **Video:** the screen is split into 64 px tiles, and only the tiles that
+  changed are sent as JPEG. When the screen is still, tiles are refined at high
+  quality. With at most 2 unacknowledged frames, the session adapts to slow
+  links.
+- **Capture:** X11 (XTest) and, on Wayland, Mutter's remote desktop API on
+  GNOME or the system portal elsewhere, with frames from PipeWire; on Windows
+  and macOS, the system capture APIs.
+- **Audio:** the host captures what is playing on its speakers (PipeWire or
+  PulseAudio on Linux, WASAPI loopback on Windows, Core Audio process tap on
+  macOS 14.2+), compresses it with Opus (48 kHz, stereo, 20 ms, pure-Rust
+  codec) and the viewer plays it with a small buffer against network jitter.
+  New versions announce what they can do right after the welcome message, and
+  older versions simply ignore it: features are only requested from those
+  that announced them.
 
-## Desenvolvimento
+## Development
 
-Requisitos: **Rust 1.88+** ([rustup](https://rustup.rs)). No Linux (Debian/Ubuntu):
+Requirements: **Rust 1.98+** ([rustup](https://rustup.rs)). On Linux (Debian/Ubuntu):
 
 ```sh
 sudo apt install build-essential pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev libxcb1-dev libxdo-dev libasound2-dev libpipewire-0.3-dev libclang-dev
 ```
 
-Os atalhos ficam no `Makefile` (`make` lista todos):
+Shortcuts live in the `Makefile` (`make` lists them all):
 
-| Comando | O que faz |
+| Command | What it does |
 |---|---|
-| `make run` | Abre o app (release) |
-| `make run-dev` | Abre em debug, com configuração separada em `.dev-config/` |
-| `make server` | Servidor avulso local, sem TLS, para testes |
-| `make ci` | Clippy e testes, igual ao CI |
-| `make build` | Executáveis em `dist/` |
-| `make install` | Instala em `~/.local/bin`, com atalho no menu (Linux) |
-| `make pacote-linux` | Gera `.deb` e `.tar.gz` em `dist/` |
-| `make pacote-macos` | Gera o `.dmg` em `dist/` (só no macOS) |
-| `make pacote-windows` | Gera o instalador `.exe` e o `.zip` em `dist/` (só no Windows, com [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
+| `make run` | Opens the app (release) |
+| `make run-dev` | Opens in debug, with separate settings in `.dev-config/` |
+| `make server` | Local standalone server, without TLS, for testing |
+| `make ci` | Clippy and tests, same as CI |
+| `make build` | Executables in `dist/` |
+| `make install` | Installs into `~/.local/bin`, with a menu shortcut (Linux) |
+| `make pacote-linux` | Builds `.deb` and `.tar.gz` in `dist/` |
+| `make pacote-macos` | Builds the `.dmg` in `dist/` (macOS only) |
+| `make pacote-windows` | Builds the `.exe` installer and `.zip` in `dist/` (Windows only, with [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
 
-Os testes de ponta a ponta sobem um servidor de verdade e fazem sessões
-completas pelo relay, também via WebSocket. As partes que capturam a tela usam
-o X11 de `DISPLAY` e são puladas sem ele.
+The end-to-end tests start a real server and run full sessions through the
+relay, also over WebSocket. The parts that capture the screen and move the
+mouse use the X11 display in `DISPLAY` and are skipped without it, and also
+inside a real Wayland session (so they never touch your desktop): run them with
+`XDG_SESSION_TYPE=x11` and a test display (Xvfb or Xephyr). The GNOME/Wayland
+test runs with `ELO_E2E_GNOME=1` inside a `gnome-shell --headless` session.
 
-`ELO_CONFIG_DIR` muda a pasta de configuração. Serve para rodar duas instâncias
-na mesma máquina: na segunda, desligue o servidor local e aponte para
-`127.0.0.1:21116` com a impressão digital da primeira.
+`ELO_CONFIG_DIR` changes the settings folder. Use it to run two instances on
+the same machine: on the second one, turn off the local server and point it to
+`127.0.0.1:21116` with the first one's fingerprint.
 
-**Assinatura no macOS:** o workflow de release assina com Developer ID e
-notariza quando estes *secrets* estão configurados no repositório (exige o
+**macOS signing:** the release workflow signs with Developer ID and notarizes
+when these *secrets* are set in the repository (requires the
 [Apple Developer Program](https://developer.apple.com/programs/)):
 
-| Secret | Conteúdo |
+| Secret | Content |
 |---|---|
-| `APPLE_CERT_P12` | Certificado *Developer ID Application* exportado em `.p12`, em base64 |
-| `APPLE_CERT_PASSWORD` | Senha do `.p12` |
-| `APPLE_SIGN_IDENTITY` | Nome do certificado, ex.: `Developer ID Application: Nome (TEAMID)` |
-| `APPLE_ID`, `APPLE_TEAM_ID` | Conta Apple e Team ID, para a notarização |
-| `APPLE_APP_PASSWORD` | Senha de app gerada em [account.apple.com](https://account.apple.com) |
+| `APPLE_CERT_P12` | *Developer ID Application* certificate exported as `.p12`, in base64 |
+| `APPLE_CERT_PASSWORD` | Password of the `.p12` |
+| `APPLE_SIGN_IDENTITY` | Certificate name, e.g. `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID`, `APPLE_TEAM_ID` | Apple account and Team ID, for notarization |
+| `APPLE_APP_PASSWORD` | App-specific password created at [account.apple.com](https://account.apple.com) |
 
-Sem eles, o app sai com assinatura ad hoc (e o aviso acima).
+Without them, the app ships with an ad hoc signature (and the warning above).
 
-**Assinatura no Windows:** o workflow assina os instaladores e os executáveis
-dos `.zip` pela [SignPath](https://signpath.org) quando estes *secrets*
-existem. A SignPath Foundation assina projetos de código aberto de graça
-(peça em signpath.org; o projeto precisa estar no GitHub com licença aberta):
+**Windows signing:** the workflow signs the installers and the executables in
+the `.zip` files through [SignPath](https://signpath.org) when these *secrets*
+exist. The SignPath Foundation signs open-source projects for free (apply at
+signpath.org; the project must be on GitHub with an open license):
 
-| Secret | O que é |
+| Secret | What it is |
 |---|---|
-| `SIGNPATH_API_TOKEN` | Token de API de um usuário de CI da SignPath |
-| `SIGNPATH_ORGANIZATION_ID` | ID da organização na SignPath |
+| `SIGNPATH_API_TOKEN` | API token of a SignPath CI user |
+| `SIGNPATH_ORGANIZATION_ID` | SignPath organization ID |
 
-Na SignPath, crie o projeto `elo` com a política `release-signing`, ligue ao
-repositório do GitHub e use a configuração de artefato de
+In SignPath, create the `elo` project with the `release-signing` policy, link
+it to the GitHub repository and use the artifact configuration from
 [`packaging/windows/signpath-artefato.xml`](packaging/windows/signpath-artefato.xml).
-Sem os secrets, os pacotes saem sem assinatura (e o SmartScreen avisa).
+Without the secrets, packages ship unsigned (and SmartScreen warns).
 
-**Atualização automática:** cada release publica `latest.json` (versão e
-SHA-256 de cada pacote) e `latest.json.sig`, a assinatura Ed25519 do manifesto
-feita no CI com o secret `ELO_UPDATE_KEY`. O app só instala se a assinatura
-conferir com a chave pública embutida (`apps/elo/src/update.rs`) e se o pacote
-baixado bater com o SHA-256. Guarde um backup da chave privada: sem ela, as
-versões instaladas não aceitam novas atualizações. A tag precisa ser igual à
-versão do `Cargo.toml` (o CI confere).
+**Automatic updates:** each release publishes `latest.json` (version and
+SHA-256 of each package) and `latest.json.sig`, the Ed25519 signature of the
+manifest made in CI with the `ELO_UPDATE_KEY` secret. The app only installs if
+the signature matches the embedded public key (`apps/elo/src/update.rs`) and
+the downloaded package matches the SHA-256. Keep a backup of the private key:
+without it, installed versions won't accept new updates. The tag must match
+the version in `Cargo.toml` (CI checks it).
 
-**Releases:** ao enviar uma tag `v*`, o workflow
-[`release.yml`](.github/workflows/release.yml) gera o `.deb` e o `.tar.gz`
-(no Ubuntu 22.04, para funcionar em distros mais antigas), o `.dmg` universal e
-o instalador e o `.zip` do Windows, e publica a release.
+**Releases:** pushing a `v*` tag runs the
+[`release.yml`](.github/workflows/release.yml) workflow, which builds the
+`.deb` and `.tar.gz` (on Ubuntu 22.04, to work on older distros), the
+universal `.dmg` and the Windows installer and `.zip`, and publishes the
+release.
 
-## Limitações conhecidas
+## Known limitations
 
-- **Só retransmissão.** Todo o tráfego passa pelo servidor; não há conexão
-  direta P2P (hole punching). Funciona atrás de qualquer NAT, mas a banda do
-  servidor cresce com o uso e a latência depende da distância até ele.
-- **Windows ainda não foi testado em máquina real.** O CI compila e roda os
-  testes nos três sistemas; o Linux e o macOS já foram testados em máquinas
-  reais. Telas UAC do Windows precisam de teste.
-- **Wayland:** testado no GNOME 46 (numa sessão aninhada); KDE e outros
-  ambientes com o portal devem funcionar, mas ainda não foram testados. Se a
-  permissão guardada deixar de valer (por exemplo, depois de revogada nos
-  Ajustes), o sistema pergunta de novo na tela do computador acessado: para
-  acesso sem ninguém lá, prefira uma sessão X11 nesse computador.
-- **Sem tela de login.** Não há acesso antes do login, e o Ctrl+Alt+Del do
-  Windows exige um serviço do sistema que o Elo ainda não tem.
-- **Som no Mac acessado** exige o macOS 14.2 ou mais novo e a permissão
-  "Gravação de áudio do sistema". No Linux, precisa do `pw-record` (PipeWire)
-  ou do `parec` (PulseAudio), que já vêm nas distribuições comuns.
-- **Ainda não há:** gravação de sessão, impressão remota, nem
-  builds assinados pela Apple ou pela Microsoft.
-- Com layouts de teclado diferentes nos dois lados, o texto chega certo, mas
-  atalhos com teclas fora do ASCII podem não chegar.
-- O codec é JPEG por blocos (simples e robusto). Com vídeo em movimento na
-  tela, gasta mais banda que H.264 ou VP9.
+- **Relay only.** All traffic goes through the server; there is no direct P2P
+  connection (hole punching). It works behind any NAT, but the server's
+  bandwidth grows with use and latency depends on the distance to it.
+- **Windows has not been tested on a real machine yet.** CI builds and runs
+  the tests on all three systems; Linux and macOS have been tested on real
+  machines. Windows UAC screens need testing.
+- **Wayland:** on GNOME 46, tested in an isolated GNOME session (headless, two
+  monitors) through the Mutter path, with no on-screen prompt. KDE and other
+  desktops with the portal should work but have not been tested yet; there, if
+  the stored permission stops working (for example, after being revoked in
+  Settings), the system asks again on the accessed computer's screen. The
+  person connecting sees a message explaining it.
+- **No login screen access.** There is no access before login, and Windows'
+  Ctrl+Alt+Del requires a system service that Elo doesn't have yet.
+- **Audio from a Mac** requires macOS 14.2 or newer and the "System audio
+  recording" permission. On Linux it needs `pw-record` (PipeWire) or `parec`
+  (PulseAudio), which ship with common distributions.
+- **Not yet available:** session recording, remote printing, and builds signed
+  by Apple or Microsoft.
+- With different keyboard layouts on each side, text arrives correctly, but
+  shortcuts with non-ASCII keys may not.
+- The codec is tiled JPEG (simple and robust). With moving video on screen, it
+  uses more bandwidth than H.264 or VP9.
 
-Quer ajudar com algum desses itens? Veja abaixo.
+Want to help with any of these? See below.
 
-## Contribuindo
+## Contributing
 
-Contribuições são bem-vindas: correções, testes no Windows, suporte a
-Wayland, melhorias no codec. Leia o [CONTRIBUTING.md](CONTRIBUTING.md) antes de
-abrir um pull request.
+Contributions are welcome: fixes, Windows testing, KDE Wayland testing, codec
+improvements. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull
+request. If Elo is useful to you, a ⭐ on GitHub helps other people find it.
 
-## Licença
+## License
 
-O Elo é software livre, licenciado sob a [GNU AGPL 3.0](LICENSE) com termos
-adicionais (seção 7) descritos no [NOTICE](NOTICE). Em resumo:
+Elo is free software, licensed under the [GNU AGPL 3.0](LICENSE) with
+additional terms (section 7) described in [NOTICE](NOTICE). In short:
 
-- você pode usar, estudar, modificar e redistribuir o Elo, inclusive para fins
-  comerciais;
-- quem distribui uma versão modificada, ou a oferece pela rede (por exemplo, um
-  servidor do Elo alterado), precisa publicar o código dela sob a mesma licença;
-- versões baseadas no Elo devem manter o crédito "by Stringari" ao lado do nome
-  e, na tela Sobre, o aviso de que vêm do Elo, com o link deste repositório;
-- o nome e o símbolo da Stringari são marcas: só podem aparecer nesse crédito.
+- you may use, study, modify and redistribute Elo, including for commercial
+  purposes;
+- whoever distributes a modified version, or offers it over a network (for
+  example, a modified Elo server), must publish its source under the same
+  license;
+- versions based on Elo must keep the "by Stringari" credit next to the name
+  and, in the About screen, the notice that they come from Elo, with a link to
+  this repository;
+- the Stringari name and symbol are trademarks: they may only appear in that
+  credit.
 
-As versões até a 0.1.6 foram publicadas sob MIT ou Apache 2.0 e continuam sob
-essas licenças.
+Versions up to 0.1.6 were published under MIT or Apache 2.0 and remain under
+those licenses.
 
-As fontes em `assets/fonts` (Geist e JetBrains Mono) são distribuídas sob a SIL
-Open Font License 1.1. Veja [NOTICE](NOTICE).
+The fonts in `assets/fonts` (Geist and JetBrains Mono) are distributed under
+the SIL Open Font License 1.1. See [NOTICE](NOTICE).
 
-TeamViewer e AnyDesk são marcas de seus respectivos donos. O Elo não é afiliado
-a eles nem endossado por eles.
+TeamViewer and AnyDesk are trademarks of their respective owners. Elo is not
+affiliated with or endorsed by them.
 
 ---
 
-<p align="center">Feito por <a href="https://github.com/Stringari-Consultoria">Stringari Consultoria</a>.</p>
+<p align="center">Made by <a href="https://github.com/Stringari-Consultoria">Stringari Consultoria</a>.</p>

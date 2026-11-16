@@ -130,6 +130,8 @@ pub struct ViewSession {
     pub events: Receiver<ViewerEvent>,
     pub connected: bool,
     pub waiting: bool,
+    /// A senha valeu, mas a tela de lá está demorando (ex.: Wayland esperando liberar).
+    pub stalled: bool,
     pub sas: String,
     pub monitors: Vec<Monitor>,
     pub monitor: u8,
@@ -943,6 +945,7 @@ impl EloApp {
                         events: rx,
                         connected: false,
                         waiting: false,
+                        stalled: false,
                         sas: String::new(),
                         monitors: Vec::new(),
                         monitor: 0,
@@ -1082,6 +1085,7 @@ impl EloApp {
                             learned.push((v.target_id.clone(), v.password.clone()));
                         }
                     }
+                    ViewerEvent::Stalled => v.stalled = true,
                     ViewerEvent::Waiting { sas } => {
                         v.waiting = true;
                         v.sas = sas;

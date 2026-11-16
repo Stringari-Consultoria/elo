@@ -1,9 +1,11 @@
 //! Wayland (GNOME, KDE e outros): captura e controle pelo portal do sistema
 //! (xdg-desktop-portal: RemoteDesktop + ScreenCast) e os quadros pelo PipeWire.
 //!
-//! Na primeira vez, o sistema pergunta na tela do computador acessado se
-//! pode compartilhar; o Elo guarda a permissão (restore token) e, nas
-//! próximas, o portal não pergunta de novo (até alguém revogar).
+//! No GNOME, o Elo fala direto com o Mutter (ver `mutter`) e nada é
+//! perguntado na tela. Nos outros (KDE...), vai pelo portal: na primeira vez
+//! o sistema pergunta na tela do computador acessado se pode compartilhar; o
+//! Elo guarda a permissão (restore token) e, nas próximas, o portal não
+//! pergunta de novo (até alguém revogar).
 
 use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -22,15 +24,27 @@ pub fn is_wayland() -> bool {
     std::env::var("ELO_PORTAL").is_ok_and(|v| v == "1") || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v.eq_ignore_ascii_case("wayland"))
 }
 
-/// Um monitor compartilhado pelo portal.
-struct StreamMeta {
-    node: u32,
-    width: u32,
-    height: u32,
+/// Um monitor compartilhado (pelo portal ou pelo Mutter).
+pub(crate) struct StreamMeta {
+    pub(crate) node: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+/// No GNOME o compartilhamento não precisa de ninguém na tela (vai pelo Mutter).
+pub fn gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|x| x.eq_ignore_ascii_case("gnome")))
+}
+
+/// Alguém pode precisar aceitar o compartilhamento na tela deste computador
+/// (Wayland fora do GNOME, até a primeira permissão ficar guardada).
+pub fn screen_needs_consent() -> bool {
+    is_wayland() && !gnome()
 }
 
 enum Cmd {
-    Motion(u32, f64, f64),
+    /// Tela (índice), x, y.
+    Motion(usize, f64, f64),
     Button(i32, bool),
     Axis(f64, f64),
     Discrete(Axis, i32),
@@ -138,13 +152,58 @@ async fn open_with(token: Option<&str>) -> Result<Option<(RemoteDesktop, Session
     Ok(Some((rd, session, streams, fd)))
 }
 
-async fn apply(rd: &RemoteDesktop, s: &Session<RemoteDesktop>, c: Cmd) {
-    let r = match c {
-        Cmd::Motion(node, x, y) => rd.notify_pointer_motion_absolute(s, node, x, y, Default::default()).await,
-        Cmd::Button(b, down) => rd.notify_pointer_button(s, b, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await,
-        Cmd::Axis(dx, dy) => rd.notify_pointer_axis(s, dx, dy, Default::default()).await,
-        Cmd::Discrete(axis, steps) => rd.notify_pointer_axis_discrete(s, axis, steps, Default::default()).await,
-        Cmd::Keysym(k, down) => rd.notify_keyboard_keysym(s, k, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await,
+/// Quem controla e captura: o portal ou o Mutter (GNOME).
+enum Backend {
+    Portal(RemoteDesktop, Session<RemoteDesktop>),
+    Mutter(crate::mutter::Mutter),
+}
+
+impl Backend {
+    async fn close(&self) {
+        match self {
+            Backend::Portal(_, s) => {
+                let _ = s.close().await;
+            }
+            Backend::Mutter(m) => m.close().await,
+        }
+    }
+}
+
+/// GNOME: direto pelo Mutter, sem perguntar na tela. Se não der (ou fora do
+/// GNOME), pelo portal.
+async fn open_any() -> Result<(Backend, Vec<StreamMeta>, Option<OwnedFd>), String> {
+    if gnome()
+        && let Ok(conn) = ashpd::zbus::Connection::session().await
+        && crate::mutter::present(&conn).await
+    {
+        match crate::mutter::open(&conn).await {
+            Ok((m, streams)) => return Ok((Backend::Mutter(m), streams, None)),
+            Err(e) => eprintln!("[gnome] {e}; tentando pelo portal"),
+        }
+    }
+    let (rd, session, streams, fd) = open().await?;
+    Ok((Backend::Portal(rd, session), streams, Some(fd)))
+}
+
+async fn apply(b: &Backend, nodes: &[u32], c: Cmd) {
+    let r: Result<(), String> = match b {
+        Backend::Portal(rd, s) => {
+            let e = |r: Result<(), ashpd::Error>| r.map_err(|e| e.to_string());
+            match c {
+                Cmd::Motion(i, x, y) => e(rd.notify_pointer_motion_absolute(s, nodes.get(i).or(nodes.first()).copied().unwrap_or(0), x, y, Default::default()).await),
+                Cmd::Button(b, down) => e(rd.notify_pointer_button(s, b, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await),
+                Cmd::Axis(dx, dy) => e(rd.notify_pointer_axis(s, dx, dy, Default::default()).await),
+                Cmd::Discrete(axis, steps) => e(rd.notify_pointer_axis_discrete(s, axis, steps, Default::default()).await),
+                Cmd::Keysym(k, down) => e(rd.notify_keyboard_keysym(s, k, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await),
+            }
+        }
+        Backend::Mutter(m) => match c {
+            Cmd::Motion(i, x, y) => m.motion(i, x, y).await,
+            Cmd::Button(b, down) => m.button(b, down).await,
+            Cmd::Axis(dx, dy) => m.axis(dx, dy).await,
+            Cmd::Discrete(axis, steps) => m.discrete(if matches!(axis, Axis::Horizontal) { 1 } else { 0 }, steps).await,
+            Cmd::Keysym(k, down) => m.keysym(k as u32, down).await,
+        },
     };
     // Raro (ex.: o usuário revogou o controle); um aviso por tipo de erro basta.
     if let Err(e) = r {
@@ -160,7 +219,7 @@ async fn apply(rd: &RemoteDesktop, s: &Session<RemoteDesktop>, c: Cmd) {
 }
 
 fn start() -> Result<Arc<Portal>, String> {
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(Vec<StreamMeta>, OwnedFd), String>>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(Vec<StreamMeta>, Option<OwnedFd>), String>>();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Cmd)>();
     let epoch = Arc::new(AtomicU64::new(0));
     let pending = Arc::new(AtomicUsize::new(0));
@@ -176,17 +235,18 @@ fn start() -> Result<Arc<Portal>, String> {
                 }
             };
             rt.block_on(async move {
-                match open().await {
-                    Ok((rd, session, streams, fd)) => {
+                match open_any().await {
+                    Ok((backend, streams, fd)) => {
+                        let nodes: Vec<u32> = streams.iter().map(|s| s.node).collect();
                         let _ = ready_tx.send(Ok((streams, fd)));
                         // Entradas até a sessão acabar (o `Portal` é descartado).
                         while let Some((e, c)) = cmd_rx.recv().await {
                             run_pending.fetch_sub(1, Ordering::Relaxed);
                             if e == run_epoch.load(Ordering::Relaxed) {
-                                apply(&rd, &session, c).await;
+                                apply(&backend, &nodes, c).await;
                             }
                         }
-                        let _ = session.close().await;
+                        backend.close().await;
                         eprintln!("[portal] sessão fechada");
                     }
                     Err(e) => {
@@ -196,8 +256,9 @@ fn start() -> Result<Arc<Portal>, String> {
             });
         })
         .map_err(|e| e.to_string())?;
-    // A primeira vez espera alguém aceitar na tela.
-    let (streams, fd) = ready_rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "ninguém respondeu ao pedido de compartilhar a tela neste computador".to_string())??;
+    // Portal: espera alguém aceitar na tela (menos que os 95 s de quem acessa,
+    // para o aviso chegar lá). O Mutter responde na hora.
+    let (streams, fd) = ready_rx.recv_timeout(Duration::from_secs(75)).map_err(|_| NOBODY_ANSWERED.to_string())??;
     let frames: Vec<Arc<Mutex<Option<Frame>>>> = streams.iter().map(|_| Arc::new(Mutex::new(None))).collect();
     let stop = Arc::new(AtomicBool::new(false));
     let wanted = Arc::new(AtomicBool::new(true));
@@ -217,7 +278,7 @@ fn start() -> Result<Arc<Portal>, String> {
 }
 
 /// Recebe os quadros de cada monitor e guarda o último, em RGBA.
-fn pipewire_loop(fd: OwnedFd, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame>>>>, wanted: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
+fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame>>>>, wanted: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
     use pipewire as pw;
     use pw::spa;
     use spa::param::video::{VideoFormat, VideoInfoRaw};
@@ -226,7 +287,12 @@ fn pipewire_loop(fd: OwnedFd, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| e.to_string())?;
     let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| e.to_string())?;
-    let core = context.connect_fd_rc(fd, None).map_err(|e| e.to_string())?;
+    // Portal: o PipeWire liberado por ele; Mutter: o PipeWire da sessão.
+    let core = match fd {
+        Some(fd) => context.connect_fd_rc(fd, None),
+        None => context.connect_rc(None),
+    }
+    .map_err(|e| e.to_string())?;
     let ml = mainloop.clone();
     let _quit = quit.attach(mainloop.loop_(), move |_| ml.quit());
 
@@ -321,15 +387,39 @@ fn pipewire_loop(fd: OwnedFd, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame
     Ok(())
 }
 
+/// Já há um pedido de compartilhar a tela esperando alguém responder.
+static STARTING: AtomicBool = AtomicBool::new(false);
+
+/// O pedido que está esperando resposta na tela (só o portal pergunta).
+pub const ALREADY_ASKING: &str = "este computador já está esperando alguém liberar o compartilhamento da tela (uma janela do sistema na tela dele): peça para clicarem em Compartilhar lá";
+
 fn portal() -> Result<Arc<Portal>, String> {
-    let mut cur = CURRENT.lock().map_err(|e| e.to_string())?;
-    let p = match cur.upgrade() {
-        Some(p) => p,
-        None => {
-            let p = start()?;
-            *cur = Arc::downgrade(&p);
-            p
+    // Não segura a trava enquanto espera a resposta na tela: antes, um pedido
+    // sem resposta prendia em silêncio todas as tentativas seguintes.
+    // Outro acesso abrindo ao mesmo tempo: espera ele (no GNOME é na hora) e
+    // usa a mesma sessão. O prazo é o mesmo da resposta na tela.
+    let since = Instant::now();
+    let p = loop {
+        if let Some(p) = CURRENT.lock().map_err(|e| e.to_string())?.upgrade() {
+            break p;
         }
+        if !STARTING.swap(true, Ordering::SeqCst) {
+            let r = start();
+            let p = match r {
+                Ok(p) => p,
+                Err(e) => {
+                    STARTING.store(false, Ordering::SeqCst);
+                    return Err(e);
+                }
+            };
+            *CURRENT.lock().map_err(|e| e.to_string())? = Arc::downgrade(&p);
+            STARTING.store(false, Ordering::SeqCst);
+            break p;
+        }
+        if since.elapsed() > Duration::from_secs(80) {
+            return Err(ALREADY_ASKING.into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     };
     p.wanted.store(true, Ordering::Relaxed);
     // Segura enquanto houver acesso (o prazo conta a partir do fim).
@@ -404,6 +494,9 @@ impl Screen for WaylandScreen {
     }
 }
 
+/// Ninguém respondeu à janela do sistema que pede para compartilhar a tela.
+pub const NOBODY_ANSWERED: &str = "o outro computador (Linux com Wayland) pediu na tela dele para liberar o compartilhamento e ninguém respondeu. Alguém precisa clicar em Compartilhar lá; para acessar sem ninguém por perto, entre lá na sessão Xorg";
+
 /// Acima disto na fila, texto novo é ignorado.
 const MAX_QUEUED: usize = 8192;
 
@@ -428,9 +521,9 @@ impl Control for WaylandControl {
     }
 
     fn apply(&mut self, input: &Input, monitor: u8) {
-        let node = self.portal.streams.get(monitor as usize).or(self.portal.streams.first()).map(|s| s.node).unwrap_or(0);
+        let screen = (monitor as usize).min(self.portal.streams.len().saturating_sub(1));
         match input {
-            Input::MouseMove { x, y } => self.send(Cmd::Motion(node, *x as f64, *y as f64)),
+            Input::MouseMove { x, y } => self.send(Cmd::Motion(screen, *x as f64, *y as f64)),
             Input::MouseButton { button, down } => {
                 // Códigos do Linux (linux/input-event-codes.h): BTN_LEFT, BTN_RIGHT, BTN_MIDDLE.
                 let b = match button {

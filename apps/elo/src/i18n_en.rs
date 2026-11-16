@@ -2,6 +2,12 @@
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
 pub static EN: &[(&str, &str)] = &[
+    ("Esperando a tela do outro computador", "Waiting for the other computer's screen"),
+    ("A senha foi aceita. Se o outro computador estiver no Linux com Wayland, alguém pode precisar clicar em Compartilhar na tela dele.", "The password was accepted. If the other computer runs Linux with Wayland, someone may need to click Share on its screen."),
+    ("Nesta sessão Wayland o sistema pede na tela para liberar o compartilhamento: sem ninguém aqui, o acesso não entra. Aceite uma vez aqui (alguns sistemas guardam) ou entre na sessão Xorg.", "In this Wayland session the system asks on screen to allow sharing: with nobody here, access won't get in. Accept once here (some systems remember it) or log in to the Xorg session."),
+    ("a senha foi aceita, mas a tela do outro computador não chegou. Se ele estiver no Linux com Wayland, alguém precisa liberar o compartilhamento na tela dele", "the password was accepted, but the other computer's screen did not arrive. If it runs Linux with Wayland, someone needs to allow sharing on its screen"),
+    ("o outro computador (Linux com Wayland) pediu na tela dele para liberar o compartilhamento e ninguém respondeu. Alguém precisa clicar em Compartilhar lá; para acessar sem ninguém por perto, entre lá na sessão Xorg", "the other computer (Linux with Wayland) asked on its screen to allow sharing and nobody answered. Someone needs to click Share there; to access with nobody around, log in there to the Xorg session"),
+    ("este computador já está esperando alguém liberar o compartilhamento da tela (uma janela do sistema na tela dele): peça para clicarem em Compartilhar lá", "this computer is already waiting for someone to allow screen sharing (a system window on its screen): ask them to click Share there"),
     ("Uma janela para cada tela", "One window per screen"),
     ("Juntar as telas nesta janela", "Bring the screens back into this window"),
     ("Cada tela do outro computador numa janela: dá para pôr cada uma numa área de trabalho ou num monitor daqui", "Each screen of the other computer in its own window: put each one on a desktop or on a monitor here"),
