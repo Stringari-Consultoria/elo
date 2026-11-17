@@ -395,6 +395,12 @@ which technician made each access.
   codes match. Attempts abandoned midway count, and past the limit requests
   stop for a few minutes. Check the code with the person, by phone or chat,
   before accepting.
+- **Fixed password stored as a hash.** The computer keeps only
+  Argon2id(password, salt) of the unattended access password, and the
+  agreement runs on that hash (the salt goes to whoever connects, who computes
+  the same thing). Reading the settings file doesn't reveal the password you
+  may use elsewhere. Elo up to 0.2.6 can still connect with the temporary
+  password; with the fixed one, update it.
 - **Wrong password:** after 5 attempts in 5 minutes, the computer refuses new
   connections for a while. The server also limits attempts per IP.
 - **TLS** between the app and the server, with a public certificate or a

@@ -646,7 +646,7 @@ impl EloApp {
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if theme::switch(ui, &mut un, "").changed() {
-                        if un && self.settings.permanent_password.len() < 8 {
+                        if un && self.settings.permanent().is_none() {
                             self.show_settings = true;
                             self.toast(t!("Defina uma senha fixa (8+ caracteres) nas configurações"));
                         } else {
@@ -1233,7 +1233,7 @@ impl EloApp {
             if !client {
                 ui.add_space(6.0);
                 theme::field_label(ui, t!("Senha fixa (acesso não assistido)"));
-                ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent_password.is_empty() { t!("mínimo de 8 caracteres") } else { t!("•••••••• (digite para trocar)") }).desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::singleline(&mut self.new_permanent).password(true).hint_text(if self.settings.permanent().is_none() { t!("mínimo de 8 caracteres") } else { t!("•••••••• (digite para trocar)") }).desired_width(f32::INFINITY));
                 if !self.new_permanent.is_empty() && self.new_permanent.len() < 8 {
                     ui.label(RichText::new(t!("Use pelo menos 8 caracteres.")).size(11.5).color(p.danger));
                 }
@@ -1458,7 +1458,7 @@ impl EloApp {
                     save = true;
                     renamed = crate::settings::Settings::load().device_name != self.settings.device_name;
                     if self.new_permanent.len() >= 8 {
-                        self.settings.permanent_password = std::mem::take(&mut self.new_permanent);
+                        self.settings.set_permanent(&std::mem::take(&mut self.new_permanent));
                         self.settings.unattended = true;
                     }
                     self.settings.save();

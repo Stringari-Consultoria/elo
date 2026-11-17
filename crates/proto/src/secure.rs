@@ -51,6 +51,80 @@ enum Hs {
     /// Sem senha, depois da confirmação: certificado do técnico e assinatura
     /// do vínculo da sessão (vazios para quem não é técnico).
     Proof { cert: Vec<u8>, sig: Vec<u8> },
+    /// Como `PakeB`, para a senha que o anfitrião guarda só como hash: quem
+    /// acessa entra com `Argon2id(senha, salt)` no lugar da senha. No fim do
+    /// enum (o postcard numera as variantes): as outras mensagens não mudam,
+    /// e um Elo novo continua falando com um antigo.
+    PakeBSalt { attempt: u8, salt: Vec<u8>, msg: Vec<u8> },
+}
+
+/// Sal da senha guardada: tamanhos aceitos.
+const SALT_LEN: std::ops::RangeInclusive<usize> = 16..=64;
+
+/// `Argon2id(senha, salt)` com parâmetros fixos (fazem parte do protocolo:
+/// os dois lados precisam chegar ao mesmo valor). 19 MiB, 2 passadas.
+pub fn password_key(password: &str, salt: &[u8]) -> Vec<u8> {
+    let params = argon2::Params::new(19 * 1024, 2, 1, Some(32)).expect("parâmetros do Argon2");
+    let mut out = vec![0u8; 32];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).hash_password_into(password.as_bytes(), salt, &mut out).expect("Argon2");
+    out
+}
+
+/// Senha aceita pelo anfitrião: a própria (senha temporária, sem sal) ou o
+/// hash dela (senha fixa: no disco fica só [`HostSecret::to_stored`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct HostSecret {
+    salt: Vec<u8>,
+    key: Vec<u8>,
+}
+
+impl std::fmt::Debug for HostSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.salt.is_empty() { "HostSecret(senha)" } else { "HostSecret(hash)" })
+    }
+}
+
+impl HostSecret {
+    pub fn plain(password: &str) -> Self {
+        Self { salt: Vec::new(), key: password.as_bytes().to_vec() }
+    }
+
+    /// Hash da senha, com sal novo.
+    pub fn hashed(password: &str) -> Self {
+        let salt: [u8; 16] = rand::random();
+        Self { key: password_key(password, &salt), salt: salt.to_vec() }
+    }
+
+    /// Para guardar no disco: `argon2id:<sal>:<hash>` (hex). Não revela a senha.
+    pub fn to_stored(&self) -> String {
+        format!("argon2id:{}:{}", crate::cert::to_hex(&self.salt), crate::cert::to_hex(&self.key))
+    }
+
+    pub fn from_stored(s: &str) -> Option<Self> {
+        let mut it = s.split(':');
+        if it.next() != Some("argon2id") {
+            return None;
+        }
+        let salt = crate::cert::from_hex(it.next()?)?;
+        let key = crate::cert::from_hex(it.next()?)?;
+        (it.next().is_none() && SALT_LEN.contains(&salt.len()) && key.len() == 32).then_some(Self { salt, key })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.key.is_empty()
+    }
+}
+
+impl From<&str> for HostSecret {
+    fn from(p: &str) -> Self {
+        Self::plain(p)
+    }
+}
+
+impl From<String> for HostSecret {
+    fn from(p: String) -> Self {
+        Self::plain(&p)
+    }
 }
 
 /// Quem está nas duas pontas, como cada lado sabe.
@@ -127,21 +201,25 @@ const MAX_ROUNDS: u8 = 2;
 /// `credential`: técnico de empresa (prova quem é ao pedir acesso).
 pub fn viewer_handshake(s: &mut (impl Read + Write), password: &str, peers: Peers, credential: Option<&Credential>) -> Result<Keys> {
     let mode = if password.is_empty() { AuthMode::Request } else { AuthMode::Password };
-    let pw = Password::new(password.as_bytes());
     let (id_a, id_b) = peers.ids();
     // Sem senha: a mensagem é escolhida antes de ver a do anfitrião, e o
     // compromisso (hash) vai já no início.
-    let mut first = (mode == AuthMode::Request).then(|| Spake2::<Ed25519Group>::start_a(&pw, &Identity::new(&id_a), &Identity::new(&id_b)));
+    let mut first = (mode == AuthMode::Request).then(|| Spake2::<Ed25519Group>::start_a(&Password::new(b""), &Identity::new(&id_a), &Identity::new(&id_b)));
     let commit = first.as_ref().map(|(_, ma)| Sha256::digest(ma).to_vec()).unwrap_or_default();
     send_hs(s, &Hs::Start { mode, version: crate::PROTOCOL_VERSION, commit })?;
     // O anfitrião tenta no máximo duas senhas. Mais rodadas seriam alguém
     // (relay ou falso anfitrião) usando esta conexão para adivinhar a nossa.
     for round in 0..MAX_ROUNDS {
-        let Hs::PakeB { attempt, msg: mb } = recv_hs(s)? else { return Err(Error::Auth) };
+        // Senha guardada como hash no anfitrião: entra o mesmo hash.
+        let (attempt, mb, key) = match recv_hs(s)? {
+            Hs::PakeB { attempt, msg } => (attempt, msg, password.as_bytes().to_vec()),
+            Hs::PakeBSalt { attempt, salt, msg } if mode == AuthMode::Password && SALT_LEN.contains(&salt.len()) => (attempt, msg, password_key(password, &salt)),
+            _ => return Err(Error::Auth),
+        };
         if attempt != round || (mode == AuthMode::Request && round > 0) {
             return Err(Error::Auth);
         }
-        let (st, ma) = first.take().unwrap_or_else(|| Spake2::<Ed25519Group>::start_a(&pw, &Identity::new(&id_a), &Identity::new(&id_b)));
+        let (st, ma) = first.take().unwrap_or_else(|| Spake2::<Ed25519Group>::start_a(&Password::new(&key), &Identity::new(&id_a), &Identity::new(&id_b)));
         send_hs(s, &Hs::PakeA { attempt, msg: ma })?;
         let k = st.finish(&mb).map_err(|_| Error::Auth)?;
         send_hs(s, &Hs::ConfirmA { attempt, mac: mac(&k, b"confirm-a") })?;
@@ -170,14 +248,14 @@ pub fn viewer_handshake(s: &mut (impl Read + Write), password: &str, peers: Peer
 /// Lado de quem é acessado. `passwords`: senhas aceitas, na ordem de tentativa.
 /// Com o modo "pedir acesso", usa a senha vazia (o app exige o aceite), a
 /// menos que `allow_request` seja falso (tentativas demais abandonadas).
-pub fn host_handshake(s: &mut (impl Read + Write), passwords: &[String], peers: Peers, allow_request: bool) -> Result<Keys> {
+pub fn host_handshake(s: &mut (impl Read + Write), passwords: &[HostSecret], peers: Peers, allow_request: bool) -> Result<Keys> {
     let Hs::Start { mode, version, commit } = recv_hs(s)? else { return Err(Error::Auth) };
     if version != crate::PROTOCOL_VERSION {
         let _ = send_hs(s, &Hs::Fail);
         return Err(Error::Other(format!("versão do protocolo diferente ({version})")));
     }
-    let list: Vec<String> = match mode {
-        AuthMode::Request if allow_request && commit.len() == 32 => vec![String::new()],
+    let list: Vec<HostSecret> = match mode {
+        AuthMode::Request if allow_request && commit.len() == 32 => vec![HostSecret::plain("")],
         AuthMode::Request => Vec::new(),
         AuthMode::Password => passwords.iter().filter(|p| !p.is_empty()).cloned().collect(),
     };
@@ -195,10 +273,11 @@ pub fn host_handshake(s: &mut (impl Read + Write), passwords: &[String], peers: 
     let after = |wrong: bool| move |e: Error| if request { Error::Abandoned } else if wrong { Error::Auth } else { e };
     for (attempt, p) in list.iter().enumerate() {
         let attempt = attempt as u8;
-        let (st, mb) = Spake2::<Ed25519Group>::start_b(&Password::new(p.as_bytes()), &Identity::new(&id_a), &Identity::new(&id_b));
+        let (st, mb) = Spake2::<Ed25519Group>::start_b(&Password::new(&p.key), &Identity::new(&id_a), &Identity::new(&id_b));
+        let m = if p.salt.is_empty() { Hs::PakeB { attempt, msg: mb } } else { Hs::PakeBSalt { attempt, salt: p.salt.clone(), msg: mb } };
         // Quem errou e desligou pode cair já neste envio (no Windows a conexão
         // fechada falha aqui, não na leitura): continua contando como errada.
-        send_hs(s, &Hs::PakeB { attempt, msg: mb }).map_err(|e| if wrong { Error::Auth } else { e })?;
+        send_hs(s, &m).map_err(|e| if wrong { Error::Auth } else { e })?;
         let Hs::PakeA { msg: ma, .. } = recv_hs(s).map_err(after(wrong))? else { return Err(Error::Auth) };
         if request && Sha256::digest(&ma).as_slice() != commit.as_slice() {
             let _ = send_hs(s, &Hs::Fail);
@@ -290,14 +369,14 @@ mod tests {
 
     const PEERS: Peers<'static> = Peers { session: 0xabc, viewer: "111222333", host: "444555666" };
 
-    fn pair_with(host_pw: Vec<String>, viewer_pw: &str, host_peers: Peers<'static>, cred: Option<Credential>) -> (Result<Keys>, Result<Keys>) {
+    fn pair_with(host_pw: Vec<HostSecret>, viewer_pw: &str, host_peers: Peers<'static>, cred: Option<Credential>) -> (Result<Keys>, Result<Keys>) {
         let (mut a, mut b) = socket_pair();
         let h = std::thread::spawn(move || host_handshake(&mut b, &host_pw, host_peers, true));
         let v = viewer_handshake(&mut a, viewer_pw, PEERS, cred.as_ref());
         (v, h.join().unwrap())
     }
 
-    fn pair(host_pw: Vec<String>, viewer_pw: &str) -> (Result<Keys>, Result<Keys>) {
+    fn pair(host_pw: Vec<HostSecret>, viewer_pw: &str) -> (Result<Keys>, Result<Keys>) {
         pair_with(host_pw, viewer_pw, PEERS, None)
     }
 
@@ -321,6 +400,44 @@ mod tests {
         assert_eq!(v.binding, h.binding);
         assert!(v.sas.len() == 9 && v.sas.chars().filter(|c| c.is_ascii_digit()).count() == 8, "{}", v.sas);
         assert!(h.proof.is_none());
+    }
+
+    #[test]
+    fn hashed_password_opens_and_the_stored_form_hides_it() {
+        let fixa = HostSecret::hashed("fixa-longa");
+        let stored = fixa.to_stored();
+        assert!(stored.starts_with("argon2id:") && !stored.contains("fixa-longa"));
+        let back = HostSecret::from_stored(&stored).unwrap();
+        assert_eq!(back, fixa);
+        // Temporária sem hash e fixa com hash, juntas.
+        let (v, h) = pair(vec!["temp123".into(), back.clone()], "fixa-longa");
+        assert_eq!(h.unwrap().which, 1);
+        assert!(v.is_ok());
+        let (v, h) = pair(vec!["temp123".into(), back.clone()], "temp123");
+        assert_eq!(h.unwrap().which, 0);
+        assert!(v.is_ok());
+        let (v, h) = pair(vec![back.clone()], "fixa-errada");
+        assert!(v.is_err() && h.is_err());
+        // O próprio texto guardado não serve de senha.
+        let (v, h) = pair(vec![back], &stored);
+        assert!(v.is_err() && h.is_err());
+        // Mesma senha, outro sal: outro hash.
+        assert_ne!(HostSecret::hashed("fixa-longa"), fixa);
+        assert!(HostSecret::from_stored("fixa-longa").is_none());
+        assert!(HostSecret::from_stored("argon2id:00:00").is_none());
+    }
+
+    #[test]
+    fn salted_message_is_refused_without_password() {
+        // Pedido sem senha: o anfitrião não pode trocar para senha com sal.
+        let (mut a, mut b) = socket_pair();
+        let host = std::thread::spawn(move || {
+            let Hs::Start { .. } = recv_hs(&mut b).unwrap() else { panic!() };
+            let (_, msg) = Spake2::<Ed25519Group>::start_b(&Password::new(b""), &Identity::new(b"x"), &Identity::new(b"y"));
+            send_hs(&mut b, &Hs::PakeBSalt { attempt: 0, salt: vec![7; 16], msg }).unwrap();
+        });
+        assert!(viewer_handshake(&mut a, "", PEERS, None).is_err());
+        host.join().unwrap();
     }
 
     #[test]

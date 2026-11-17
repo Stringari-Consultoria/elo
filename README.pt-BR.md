@@ -390,6 +390,12 @@ histórico de sessões registra qual técnico fez cada acesso.
   os códigos baterem. Tentativas abandonadas no meio contam, e passando do
   limite os pedidos param por alguns minutos. Confira o código com a pessoa,
   por telefone ou chat, antes de aceitar.
+- **Senha fixa guardada como hash.** O computador guarda só o
+  Argon2id(senha, sal) da senha de acesso não assistido, e o acordo é feito
+  com esse hash (o sal vai para quem acessa, que calcula o mesmo). Ler o
+  arquivo de configurações não revela a senha que você talvez use em outros
+  lugares. O Elo até a 0.2.6 continua entrando com a senha temporária; com a
+  fixa, atualize.
 - **Senha errada:** depois de 5 tentativas em 5 minutos, o computador recusa
   novas conexões por um tempo. O servidor também limita tentativas por IP.
 - **TLS** entre o app e o servidor, com certificado público ou com impressão

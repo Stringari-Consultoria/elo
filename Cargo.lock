@@ -1604,6 +1604,7 @@ dependencies = [
 name = "elo-proto"
 version = "0.2.6"
 dependencies = [
+ "argon2",
  "chacha20poly1305",
  "ed25519-dalek",
  "hkdf",

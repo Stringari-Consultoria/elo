@@ -527,8 +527,9 @@ fn list_dir(path: &str) -> Msg {
 
 #[derive(Debug, Clone)]
 pub struct HostOptions {
-    /// Senhas aceitas, na ordem (temporária, acesso não assistido).
-    pub passwords: Vec<String>,
+    /// Senhas aceitas, na ordem (temporária, acesso não assistido; esta
+    /// guardada só como hash).
+    pub passwords: Vec<elo_proto::secure::HostSecret>,
     pub name: String,
     pub downloads: PathBuf,
     pub default_permissions: Permissions,

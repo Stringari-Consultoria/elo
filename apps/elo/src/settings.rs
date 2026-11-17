@@ -91,7 +91,12 @@ pub struct Settings {
     pub dark: bool,
     /// Acesso não assistido (senha fixa).
     pub unattended: bool,
+    /// Senha fixa em texto, das versões até a 0.2.6: ao carregar, vira
+    /// [`Settings::permanent_hash`] e some do arquivo.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub permanent_password: String,
+    /// Hash da senha fixa (`HostSecret::to_stored`): a senha não fica no disco.
+    pub permanent_hash: String,
     pub default_permissions: Permissions,
     pub downloads: PathBuf,
     pub recent: Vec<Recent>,
@@ -176,6 +181,7 @@ impl Default for Settings {
             dark: false,
             unattended: false,
             permanent_password: String::new(),
+            permanent_hash: String::new(),
             default_permissions: Permissions::default(),
             downloads,
             recent: Vec::new(),
@@ -260,11 +266,30 @@ impl Settings {
         if s.server.address.trim() == "elo.stringari.com.br:21116" {
             s.server.address.clear();
         }
+        s.hash_old_password();
         if elo_proto::cert::key_from_hex(&s.tech_secret).is_none() {
             s.tech_secret = elo_proto::cert::to_hex(&elo_proto::cert::new_secret());
         }
         s.save();
         s
+    }
+
+    /// Senha fixa em texto (versões antigas): troca pelo hash.
+    fn hash_old_password(&mut self) {
+        if !self.permanent_password.is_empty() {
+            let p = std::mem::take(&mut self.permanent_password);
+            self.set_permanent(&p);
+        }
+    }
+
+    /// Troca a senha fixa (guarda só o hash).
+    pub fn set_permanent(&mut self, password: &str) {
+        self.permanent_hash = elo_proto::secure::HostSecret::hashed(password).to_stored();
+    }
+
+    /// A senha fixa, como o aperto de mão usa (`None`: não definida).
+    pub fn permanent(&self) -> Option<elo_proto::secure::HostSecret> {
+        elo_proto::secure::HostSecret::from_stored(&self.permanent_hash)
     }
 
     pub fn save(&self) {
@@ -370,5 +395,19 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn old_plain_password_becomes_a_hash() {
+        // elo.json de uma versão antiga, com a senha fixa em texto.
+        let mut s: Settings = serde_json::from_str(r#"{"unattended":true,"permanent_password":"fixa-antiga"}"#).unwrap();
+        s.hash_old_password();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("fixa-antiga") && !json.contains("permanent_password\""), "{json}");
+        assert!(s.permanent().is_some() && s.unattended);
+        // Lido de novo, continua igual (não refaz o hash).
+        let mut again: Settings = serde_json::from_str(&json).unwrap();
+        again.hash_old_password();
+        assert_eq!(again.permanent_hash, s.permanent_hash);
     }
 }

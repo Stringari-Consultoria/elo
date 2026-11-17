@@ -321,7 +321,7 @@ fn websocket_like_cloudflare_tunnel() {
     let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
     assert_eq!((hs, &from_id), (vs, &viewer_id));
     let (htx, hrx) = channel();
-    let opt = HostOptions { passwords: vec!["s3nha-ws".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: true, id: host_id.clone(), tech_ca: None };
+    let opt = HostOptions { passwords: vec![elo_proto::secure::HostSecret::hashed("s3nha-ws")], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: true, id: host_id.clone(), tech_ca: None };
     let _hh = session::host(direct, hs, hsec, from_id, "Visualizador".into(), opt, htx);
     let remote = Arc::new(Mutex::new(Remote::default()));
     let (vtx, vrx) = channel();

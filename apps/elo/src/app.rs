@@ -617,9 +617,11 @@ impl EloApp {
 
     pub fn host_options(&self) -> HostOptions {
         // Elo Cliente: nenhuma senha vale; todo acesso é aceito na tela.
-        let mut passwords = if self.client_mode() { Vec::new() } else { vec![self.temp_password.clone()] };
-        if !self.client_mode() && self.settings.unattended && !self.settings.permanent_password.is_empty() {
-            passwords.push(self.settings.permanent_password.clone());
+        let mut passwords = if self.client_mode() { Vec::new() } else { vec![self.temp_password.as_str().into()] };
+        if !self.client_mode() && self.settings.unattended
+            && let Some(p) = self.settings.permanent()
+        {
+            passwords.push(p);
         }
         // Elo Cliente com a chave dos técnicos: só técnico aprovado pede acesso.
         let tech_ca = if self.client_mode() { self.settings.company.as_ref().and_then(|c| c.ca_key()) } else { None };
