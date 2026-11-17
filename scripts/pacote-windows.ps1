@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Gera os instaladores do Windows em dist\:
 #   Elo-<versao>-windows-x64-setup.exe  (instalador, com atalho e desinstalador)
 #   Elo-<versao>-windows-x64.zip        (portatil: so extrair e abrir o elo.exe)

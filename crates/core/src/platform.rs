@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Captura de tela e injeção de mouse/teclado por sistema.
 //!
 //! - Linux (X11): protocolo X puro (x11rb): `GetImage` para a tela e XTest

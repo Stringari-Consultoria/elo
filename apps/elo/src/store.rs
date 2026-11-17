@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Elo instalado pela Microsoft Store (pacote MSIX, `packaging/windows/msix`).
 //!
 //! Dentro do pacote, duas coisas mudam:

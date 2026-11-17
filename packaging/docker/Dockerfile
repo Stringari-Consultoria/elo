@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Servidor do Elo em contêiner. O CI copia o executável já compilado de cada
 # arquitetura (amd64, arm64) para cá antes de montar a imagem.
 #

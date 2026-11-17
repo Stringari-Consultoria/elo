@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Avisa por pull request quando uma dependência ou ação tem versão nova
 # (inclusive correções de segurança). Tudo junto num pedido por semana para
 # cada tipo: um pedido por pacote enchia a fila do CI e atrasava as versões.

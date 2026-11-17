@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 
 #[macro_use]
 mod i18n;

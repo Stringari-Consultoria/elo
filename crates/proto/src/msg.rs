@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Mensagens da sessão (sempre dentro do canal cifrado).
 
 use serde::{Deserialize, Serialize};

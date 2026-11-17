@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Empresas: a aba "Clientes" do técnico (pedidos de ajuda, empresas,
 //! computadores, convites e técnicos), a conta de técnico nas configurações e
 //! a tela do Elo Cliente (só recebe conexões e pede ajuda).

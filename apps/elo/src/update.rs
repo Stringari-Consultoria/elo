@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Atualização automática.
 //!
 //! A cada release, o CI publica `latest.json` (versão, endereço base e, por

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Quadros: u32 (LE) com o tamanho, seguido dos bytes.
 
 use std::io::{Read, Write};

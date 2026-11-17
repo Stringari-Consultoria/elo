@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Traduções para o inglês (chave: o texto em português do código).
 //! Gerado a partir da lista do código; mantenha a mesma quantidade de `{}`.
 
@@ -603,6 +605,11 @@ pub static PARTS: &[(&str, &str)] = &[
     ("sem som do outro computador: ", "no sound from the other computer: "),
     ("a tela do outro computador está protegida (pedido de administrador ou tela de bloqueio): o Elo não consegue vê-la nem controlá-la. Peça para a pessoa responder lá; a imagem volta sozinha", "the other computer's screen is protected (administrator prompt or lock screen): Elo can't see or control it. Ask the person there to answer it; the image comes back by itself"),
     ("a tela do outro computador voltou", "the other computer's screen is back"),
+    ("build oficial", "official build"),
+    ("build não oficial", "unofficial build"),
+    ("Builds oficiais saem do GitHub da Stringari e se atualizam pelo manifesto assinado.", "Official builds come from Stringari's GitHub and update through the signed manifest."),
+    ("Servidor: {}", "Server: {}"),
+    ("código-fonte", "source code"),
     ("o outro computador parou de mandar a imagem da tela (tela bloqueada, monitor desligado ou a sessão gráfica reiniciando). O Elo está tentando de novo sozinho; a imagem volta assim que der", "the other computer stopped sending its screen (locked screen, monitor turned off or the graphical session restarting). Elo is retrying by itself; the image comes back as soon as it can"),
     ("formato de som não suportado: ", "unsupported audio format: "),
     (" (no Mac, precisa do macOS 14.2 ou mais novo e da permissão \"Gravação de áudio do sistema\" para o Elo)", " (on Mac, requires macOS 14.2 or newer and the \"System audio recording\" permission for Elo)"),

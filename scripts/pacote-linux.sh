@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Gera os instaladores do Linux em dist/:
 #   elo_<versão>_<arq>.deb             (Debian, Ubuntu e derivados: instala em /usr)
 #   elo-<versão>-linux-<arq>.tar.gz    (qualquer distro: ./instalar.sh, sem root)

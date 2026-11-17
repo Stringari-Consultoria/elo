@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Ícones vetoriais do design system: traço de 1,5 px numa grade de 24, cantos
 //! arredondados. Desenhados direto no painter (sem emoji, sem imagens), então ficam nítidos
 //! em qualquer escala e herdam a cor do contexto. A faísca é reservada à IA.

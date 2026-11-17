@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Arquivos assinados: os bytes não podem mudar (o Git no Windows converteria
 # as quebras de linha e a assinatura deixaria de conferir).
 apps/elo/src/testdata/** -text

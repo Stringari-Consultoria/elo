@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Instala o Elo para o usuário atual: ~/.local/bin/elo e elo-server, atalho no
 # menu de aplicativos e ícone. Não precisa de root.
 #

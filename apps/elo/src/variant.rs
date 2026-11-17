@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Elo (completo, para quem dá suporte) ou Elo Cliente (instalado no
 //! computador do cliente: só recebe conexões e pede ajuda). É o mesmo
 //! programa: o Elo Cliente vem com o executável chamado `elo-cliente`.

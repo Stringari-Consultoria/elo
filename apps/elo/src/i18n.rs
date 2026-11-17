@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Idioma da interface: português (o texto do código) ou inglês.
 //!
 //! `t!("texto")` devolve o texto no idioma escolhido; com argumentos,

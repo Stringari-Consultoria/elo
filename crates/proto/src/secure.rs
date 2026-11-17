@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Aperto de mão e canal seguro.
 //!
 //! O par troca mensagens SPAKE2 (Ed25519) derivadas da senha: quem não sabe a

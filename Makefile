@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Elo — atalhos de build. `make` lista os comandos.
 #
 # Executáveis (build, run, install) são compilados no sistema, em target/host:

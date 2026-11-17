@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Wayland (GNOME, KDE e outros): captura e controle pelo portal do sistema
 //! (xdg-desktop-portal: RemoteDesktop + ScreenCast) e os quadros pelo PipeWire.
 //!

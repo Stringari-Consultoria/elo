@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Ponta a ponta: servidor real (sem TLS), anfitrião e visualizador pelo relay.
 //! A captura usa o X11 de `DISPLAY`; sem tela, o teste é pulado.
 
@@ -469,7 +471,11 @@ fn companies_techs_and_help_requests() {
     // Técnico: sem técnicos ainda, o servidor pede o primeiro acesso.
     let tech = client::start(cfg.clone(), [11u8; 32], "Notebook do técnico".into());
     let Some(Event::Online { id: tech_id }) = wait(&tech.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("técnico offline") };
-    assert!(matches!(wait(&tech.rx, 5, |e| matches!(e, Event::Features(_))), Some(Event::Features(f)) if f.contains(&"empresas".to_string())));
+    let Some(Event::Features(f)) = wait(&tech.rx, 5, |e| matches!(e, Event::Features(_))) else { panic!("sem recursos") };
+    assert!(f.contains(&"empresas".to_string()));
+    // AGPL, seção 13: o servidor informa a versão e o código-fonte dele.
+    assert!(f.iter().any(|x| x.starts_with("versao=elo-server ")), "{f:?}");
+    assert!(f.iter().any(|x| x.strip_prefix("fonte=").is_some_and(|u| u.starts_with(elo_proto::build::REPO))), "{f:?}");
     let login = |password: &str, setup: Option<String>| client::Command::Login { user: "Ana".into(), password: password.into(), setup, name: "Ana Souza".into() };
     tech.tx.send(login("s3nha-da-ana", None)).unwrap();
     assert!(wait(&tech.rx, 5, |e| matches!(e, Event::NeedsSetup)).is_some(), "devia pedir o primeiro acesso");

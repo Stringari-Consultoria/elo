@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Peças no estilo do macOS usadas na tela da sessão: cores do sistema,
 //! botões em cápsula, ícones em quadrado arredondado e alertas.
 

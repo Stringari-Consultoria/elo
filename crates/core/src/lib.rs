@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Núcleo do Elo: conexão com o servidor, sessões e acesso ao sistema.
 
 #![forbid(unsafe_code)]

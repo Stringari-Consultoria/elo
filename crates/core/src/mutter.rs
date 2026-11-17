@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! GNOME no Wayland sem pedir na tela: a API do próprio Mutter
 //! (`org.gnome.Mutter.RemoteDesktop` + `org.gnome.Mutter.ScreenCast`), a
 //! mesma do compartilhamento de tela do GNOME.

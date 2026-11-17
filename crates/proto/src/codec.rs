@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Codificação da tela: divide em blocos de 64 × 64, compara com o quadro
 //! anterior e envia só os blocos que mudaram, em JPEG. Quando a tela fica
 //! parada, os blocos enviados com qualidade baixa são reenviados com

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Iniciar o Elo junto com o computador, por usuário e sem administrador:
 //!
 //! - Linux: `~/.config/autostart/br.com.stringari.elo.desktop` (XDG);

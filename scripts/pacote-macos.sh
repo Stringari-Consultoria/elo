@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Gera dist/Elo-<versão>-macos.dmg com o Elo.app (universal: Apple Silicon e
 # Intel). Só roda no macOS (usa lipo, sips, iconutil, codesign e hdiutil).
 #

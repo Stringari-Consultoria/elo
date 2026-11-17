@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! No Windows, embute o ícone e os dados do produto no elo.exe.
 
 fn main() {

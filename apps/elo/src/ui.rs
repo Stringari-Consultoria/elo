@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Interface do Elo.
 
 use egui::{Align, Align2, Color32, CornerRadius, Layout, Margin, RichText, Sense, Stroke, Vec2};
@@ -1450,6 +1452,28 @@ impl EloApp {
             ui.add(egui::Label::new(RichText::new(t!("O Elo é software livre (licença AGPL 3.0) e vem sem nenhuma garantia. O código está no GitHub: sugestões, problemas e colaborações são bem-vindos.")).size(12.0).color(p.text2)).wrap());
             if ui.link(RichText::new("github.com/Stringari-Consultoria/elo").font(theme::mono(11.5))).on_hover_text(REPO).clicked() {
                 open_url(REPO);
+            }
+            // De onde veio este executável e o código do servidor em uso.
+            {
+                use elo_proto::build as b;
+                let mut v = crate::update::CURRENT.to_string();
+                if !b::COMMIT.is_empty() {
+                    v.push_str(&format!(" · {} {}", b::COMMIT, b::COMMIT_DATE));
+                }
+                v.push_str(&format!(" · {}", if b::OFFICIAL { t!("build oficial") } else { t!("build não oficial") }));
+                ui.label(RichText::new(v).font(theme::mono(11.0)).color(p.muted)).on_hover_text(t!("Builds oficiais saem do GitHub da Stringari e se atualizam pelo manifesto assinado."));
+                let server = self.features.iter().find_map(|f| f.strip_prefix(elo_proto::ctrl::FEATURE_VERSION));
+                let source = self.features.iter().find_map(|f| f.strip_prefix(elo_proto::ctrl::FEATURE_SOURCE)).map(str::to_string);
+                if let Some(server) = server {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(t!("Servidor: {}", server)).font(theme::mono(11.0)).color(p.muted));
+                        if let Some(src) = source
+                            && ui.link(RichText::new(t!("código-fonte")).size(11.0)).on_hover_text(&src).clicked()
+                        {
+                            open_url(&src);
+                        }
+                    });
+                }
             }
             });
             ui.add_space(12.0);

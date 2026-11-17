@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Mensagens entre o app e o servidor. O servidor só vê metadados (IDs,
 //! nomes dos computadores, horários e volume); o conteúdo das sessões é
 //! cifrado ponta a ponta.
@@ -41,6 +43,10 @@ pub enum ToServer {
 /// Recursos que o servidor anuncia logo depois do `Welcome` (no mesmo
 /// quadro; versões antigas do app ignoram os bytes a mais).
 pub const SERVER_FEATURES: &[&str] = &["empresas"];
+/// Prefixos de itens da lista de recursos que não são recursos: a versão do
+/// servidor e o endereço do código-fonte dele.
+pub const FEATURE_VERSION: &str = "versao=";
+pub const FEATURE_SOURCE: &str = "fonte=";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Manage {

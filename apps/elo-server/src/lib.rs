@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Servidor do Elo (biblioteca).
 //!
 //! - Registra dispositivos e devolve um ID de 9 dígitos estável (guarda só o
@@ -467,7 +469,7 @@ async fn control(state: Arc<State>, s: BoxStream, peer: SocketAddr, token: [u8; 
     }
     eprintln!("[+] {id} ({name}, {os}) de {peer}");
     // Welcome + recursos deste servidor (apps antigos ignoram o resto do quadro).
-    let welcome = postcard::to_stdvec(&FromServer::Welcome { id: id.clone() }).and_then(|mut v| postcard::to_stdvec(&elo_proto::ctrl::SERVER_FEATURES).map(|f| {
+    let welcome = postcard::to_stdvec(&FromServer::Welcome { id: id.clone() }).and_then(|mut v| postcard::to_stdvec(&server_features()).map(|f| {
         v.extend(f);
         v
     }));
@@ -1320,6 +1322,16 @@ fn tls_config(cfg: &Config) -> std::io::Result<Option<(Arc<rustls::ServerConfig>
         .with_single_cert(certs, key)
         .map_err(std::io::Error::other)?;
     Ok(Some((Arc::new(tls), fp)))
+}
+
+/// Recursos anunciados no `Welcome`, mais a versão e o endereço do código
+/// deste servidor (AGPL, seção 13: quem usa pela rede tem direito ao código).
+/// Apps antigos só procuram os recursos que conhecem e ignoram o resto.
+fn server_features() -> Vec<String> {
+    let mut f: Vec<String> = elo_proto::ctrl::SERVER_FEATURES.iter().map(|s| s.to_string()).collect();
+    f.push(format!("{}elo-server {}", elo_proto::ctrl::FEATURE_VERSION, elo_proto::build::describe(env!("CARGO_PKG_VERSION"))));
+    f.push(format!("{}{}", elo_proto::ctrl::FEATURE_SOURCE, elo_proto::build::source_url()));
+    f
 }
 
 /// Servidor já escutando na porta, pronto para [`Server::run`].

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Conexão de controle com o servidor: mantém o ID online, recebe convites e
 //! pede conexões. Reconecta sozinha.
 

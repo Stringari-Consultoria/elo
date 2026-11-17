@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Empresas, técnicos e computadores das empresas (`gestao.json`).
 //!
 //! - Técnicos entram com usuário e senha (Argon2); o app guarda só um token.

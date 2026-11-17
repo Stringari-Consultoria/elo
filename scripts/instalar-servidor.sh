@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Instala o servidor do Elo como serviço do systemd (vai no .tar.gz do servidor).
 #   sudo ./instalar.sh            instala (ou atualiza) e inicia
 #   sudo ./instalar.sh --remover  para e remove (mantém os dados em /var/lib/elo-server)

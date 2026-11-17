@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 [package]
 name = "elo-server"
 description = "Servidor do Elo: IDs, convites e relay das sessões (o conteúdo é cifrado ponta a ponta)"

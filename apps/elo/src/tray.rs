@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Ícone na bandeja do sistema (área de notificação / barra de menus): o Elo
 //! continua rodando com a janela fechada. Menu: seu ID, abrir, copiar ID, sair.
 //!

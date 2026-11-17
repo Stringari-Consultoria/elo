@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Stringari Design System aplicado ao egui (compartilhado pelos produtos Stringari).
 //!
 //! Fonte: o canvas "Stringari Design System" (tokens semânticos light/dark, Geist para a

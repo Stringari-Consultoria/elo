@@ -1,3 +1,6 @@
+; SPDX-FileCopyrightText: 2026 Gabriel Stringari
+; SPDX-License-Identifier: AGPL-3.0-only
+
 ; Instalador do Elo para Windows (Inno Setup 6).
 ; Gerado por scripts/pacote-windows.ps1, que passa:
 ;   /DAppVersion=0.1.0  /DBinDir=<pasta com elo.exe>  /DRaiz=<raiz do projeto>

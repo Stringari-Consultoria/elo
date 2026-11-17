@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Capturas para a Microsoft Store (1920x1080, mínimo 1366x768) a partir de docs/prints.
 # Uso: python3 scripts/loja-capturas.py docs/prints <saída> 01-inicio.png 08-tecnico-sessao.png ...
 import sys

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 name: Release
 # Gera os instaladores. Numa tag v*, publica uma release com eles; manualmente
 # (Actions → Release → Run workflow), deixa os arquivos como artefatos.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Gera o servidor avulso do Elo para Linux em dist/:
 #   elo-server_<versão>_<arq>.deb             (Debian/Ubuntu: serviço systemd)
 #   elo-server-<versão>-linux-<arq>.tar.gz    (qualquer distro: sudo ./instalar.sh)

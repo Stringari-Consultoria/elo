@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Opções do servidor do Elo. Depois de mudar: sudo systemctl restart elo-server
 #
 #   --listen ENDEREÇO:PORTA   onde aceitar conexões (21116 é o padrão dos apps)

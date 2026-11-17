@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Protocolo do Elo.
 //!
 //! - `frame`: quadros com prefixo de tamanho sobre qualquer `Read`/`Write`.
@@ -14,6 +16,7 @@ pub mod codec;
 pub mod ctrl;
 pub mod frame;
 pub mod msg;
+pub mod build;
 pub mod secure;
 
 /// 2: gerenciador de arquivos (ListDir, DirListing, FileRequest, Notice).

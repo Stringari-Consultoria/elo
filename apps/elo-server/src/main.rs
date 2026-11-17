@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Servidor do Elo (linha de comando). A lógica fica em `lib.rs`; o app
 //! desktop embute o mesmo servidor.
 //!
@@ -28,7 +30,9 @@ fn args() -> Config {
             "--proxy-confiavel" => trusted_proxies.extend(it.next()),
             "--impressao" => show_fp = true,
             "-V" | "--version" => {
-                println!("elo-server {}", env!("CARGO_PKG_VERSION"));
+                println!("elo-server {}", elo_proto::build::describe(env!("CARGO_PKG_VERSION")));
+                println!("código-fonte: {}", elo_proto::build::source_url());
+                println!("{}", elo_proto::build::NOTICE);
                 std::process::exit(0);
             }
             "-h" | "--help" => {
@@ -70,5 +74,8 @@ async fn main() -> std::io::Result<()> {
         eprintln!("Certificado autoassinado. Impressão digital (SHA-256) para os apps: {fp}");
     }
     eprintln!("Elo servidor em {listen} ({})", if server.tls() { "TLS" } else { "sem TLS: só aceita o próprio computador e os proxies confiáveis" });
+    // AGPL, seção 13: quem usa este servidor pela rede tem direito ao código
+    // dele (os apps também recebem este endereço ao conectar).
+    eprintln!("elo-server {} · código-fonte: {}", elo_proto::build::describe(env!("CARGO_PKG_VERSION")), elo_proto::build::source_url());
     server.run().await
 }

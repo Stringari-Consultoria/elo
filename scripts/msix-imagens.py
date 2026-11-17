@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Imagens do pacote MSIX (packaging/windows/msix/Assets) a partir do ícone.
 # Uso: python3 scripts/msix-imagens.py packaging/icons/elo-1024.png packaging/windows/msix/Assets
 import sys

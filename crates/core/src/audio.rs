@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Som da sessão: captura o que o anfitrião está tocando, comprime em Opus
 //! (48 kHz, estéreo, quadros de 20 ms) e toca do lado de quem acessa.
 //!

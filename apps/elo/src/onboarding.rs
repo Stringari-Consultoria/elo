@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Boas-vindas na primeira abertura: nome do computador, servidor (este
 //! computador ou um servidor existente, com teste) e início automático.
 

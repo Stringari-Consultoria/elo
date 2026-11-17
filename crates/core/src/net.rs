@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Conexão com o servidor (TCP, com TLS por padrão, ou WebSocket para passar
 //! por proxies como o Cloudflare Tunnel) e leitura de quadros sem bloquear
 //! (para alternar envio e recebimento na mesma thread).

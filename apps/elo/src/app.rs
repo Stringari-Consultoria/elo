@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Estado do app: conexão com o servidor, convites, sessões como anfitrião e
 //! como visualizador.
 

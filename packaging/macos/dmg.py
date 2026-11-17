@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Janela do .dmg (dmgbuild): fundo com a seta, Elo à esquerda e o atalho
 # para Aplicativos à direita. Usado por scripts/pacote-macos.sh, que passa
 # -D app=<Elo.app> -D fundo=<dmg-fundo.png> -D icone=<Elo.icns>.

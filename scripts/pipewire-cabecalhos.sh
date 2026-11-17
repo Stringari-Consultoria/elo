@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 # Cabeçalhos do PipeWire 1.0 (Ubuntu 24.04) para compilar no Ubuntu 22.04.
 #
 # O pacote do Linux é compilado no 22.04 (funciona nas distribuições mais

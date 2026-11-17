@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Preferências (JSON na pasta de configuração do usuário).
 
 use std::io::Write;

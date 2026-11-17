@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Linux com GDM (Ubuntu, Zorin, Fedora...): entrar sozinho quando a tela de
 //! login aparece. Se a sessão cair (no Wayland, uma quebra do gnome-shell
 //! derruba a sessão inteira) ou o computador reiniciar, ele volta para o

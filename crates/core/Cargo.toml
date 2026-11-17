@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 [package]
 name = "elo-core"
 description = "Núcleo do Elo: conexão com o servidor, sessões de anfitrião e visualizador, captura e controle"

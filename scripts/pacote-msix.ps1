@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Gera o pacote da Microsoft Store em dist\:
 #   Elo-<versao>-windows-x64.msix
 #

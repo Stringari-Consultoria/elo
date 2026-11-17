@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
 """Gera o latest.json da atualização automática (o CI assina em seguida).
 
 Uso: scripts/manifesto.py <versão> <pasta com os pacotes> > latest.json

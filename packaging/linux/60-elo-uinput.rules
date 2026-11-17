@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Elo: rolagem suave quando este computador é acessado. O Elo cria um mouse
 # virtual (uinput) com rodas de alta resolução; esta regra libera o
 # /dev/uinput para quem está logado na tela (como fazem a Steam e outros).

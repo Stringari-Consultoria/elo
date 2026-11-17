@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Um Elo por configuração. Abrir de novo (atalho, menu Iniciar) com o Elo
 //! já rodando na bandeja traz a janela que existe para a frente, em vez de
 //! abrir um segundo Elo que brigaria pela porta do servidor embutido e pelo

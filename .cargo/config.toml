@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Gabriel Stringari
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # Windows: runtime do Visual C++ dentro do executável. Sem isso o Elo pede
 # VCRUNTIME140.dll e não abre num Windows recém-instalado (o "Visual C++
 # Redistributable" não vem com o sistema; os runners do CI já têm, por isso

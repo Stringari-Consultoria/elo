@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Rolagem suave no Linux: um mouse virtual (uinput) com rodas de alta
 //! resolução (1/120 de clique). O X11 só simula cliques inteiros da roda; por
 //! aqui os apps recebem rolagem contínua, como a de um touchpad.

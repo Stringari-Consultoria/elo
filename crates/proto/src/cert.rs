@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Chave dos técnicos: quem atende um computador de empresa (Elo Cliente)
 //! prova quem é de ponta a ponta, sem depender do servidor.
 //!

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Gabriel Stringari
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Sessões: anfitrião (quem é acessado) e visualizador (quem acessa).
 
 use std::fs::File;
