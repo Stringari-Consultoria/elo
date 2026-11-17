@@ -830,6 +830,8 @@ fn gnome_wayland_without_asking() {
     until("o cursor não apareceu na segunda tela", &|r| area(r) != before);
     // O GNOME fecha a sessão de acesso remoto (tela bloqueada, monitor que
     // some): o Elo percebe, abre outra sozinho e a imagem e o mouse voltam.
+    // (Teste só do Linux: o GNOME de teste.)
+    #[cfg(target_os = "linux")]
     elo_core::wayland::stop_session_for_test();
     // (Reabre tão rápido que a imagem nem chega a faltar: aviso só se demorar.)
     std::thread::sleep(Duration::from_secs(2));
