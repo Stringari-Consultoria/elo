@@ -12,6 +12,7 @@ mod instance;
 mod mac;
 mod onboarding;
 mod settings;
+mod store;
 mod tray;
 mod ui;
 mod update;
@@ -29,7 +30,8 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions { renderer: eframe::Renderer::Wgpu, viewport, ..Default::default() };
     // Aberto pelo início automático: começa minimizado.
-    let background = std::env::args().any(|a| a == autostart::ARG);
+    // (Pela Microsoft Store, a tarefa de inicialização abre sem argumentos.)
+    let background = std::env::args().any(|a| a == autostart::ARG) || store::started_by_system();
     // Já tem um Elo aberto com esta configuração: ele mostra a janela e este sai.
     let instance = match instance::claim(&settings::config_dir(), !background) {
         instance::Claim::Running => return Ok(()),

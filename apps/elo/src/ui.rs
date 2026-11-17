@@ -1262,6 +1262,12 @@ impl EloApp {
             ui.add_space(8.0);
             ui.separator();
             ui.label(RichText::new(t!("Atualizações")).font(theme::semibold(13.0)).color(p.text));
+            let store = self.updater.install == crate::update::Install::Store;
+            if store {
+                ui.label(RichText::new(t!("Versão instalada: {}", crate::update::CURRENT)).size(12.5).color(p.text2));
+                ui.add(egui::Label::new(RichText::new(t!("Instalado pela Microsoft Store: as atualizações chegam por ela.")).size(11.5).color(p.muted)).wrap());
+            }
+            if !store {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(t!("Versão instalada: {}", crate::update::CURRENT)).size(12.5).color(p.text2));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1319,6 +1325,7 @@ impl EloApp {
             ui.checkbox(&mut self.settings.auto_update, t!("Atualizar automaticamente")).on_hover_text(t!("Baixa sozinho e instala quando não há sessão em andamento. O Elo reabre em seguida."));
             if let crate::update::Install::Manual(why) = &self.updater.install {
                 ui.add(egui::Label::new(RichText::new(t!("Este Elo não se atualiza sozinho: {}.", why)).size(11.5).color(p.muted)).wrap());
+            }
             }
             ui.add_space(8.0);
             ui.separator();

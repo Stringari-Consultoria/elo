@@ -176,6 +176,20 @@ jobs:
         shell: pwsh
         env:
           VARIANTE: cliente
+      # Pacote da Microsoft Store: sem assinatura (a loja assina) e fora da
+      # release; vai para o Partner Center. A identidade fica nas variáveis do
+      # repositório (Settings → Variables); sem elas, sai um pacote de teste.
+      - run: scripts/pacote-msix.ps1
+        shell: pwsh
+        env:
+          MSIX_NOME: ${{ vars.MSIX_NOME }}
+          MSIX_EDITOR: ${{ vars.MSIX_EDITOR }}
+          MSIX_EDITOR_NOME: ${{ vars.MSIX_EDITOR_NOME }}
+          MSIX_NOME_EXIBIDO: ${{ vars.MSIX_NOME_EXIBIDO }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: loja-windows
+          path: dist/*.msix
       # Nome fora do padrão elo-*: senão o job release baixava este junto e
       # o arquivo sem assinatura podia sobrescrever o assinado.
       - name: Pacotes para assinar

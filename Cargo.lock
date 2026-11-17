@@ -1568,6 +1568,7 @@ dependencies = [
  "sys-locale",
  "tray-icon",
  "ureq",
+ "windows 0.62.2",
  "winreg",
  "winresource",
 ]

@@ -107,6 +107,8 @@ pub enum Install {
     LinuxDeb,
     /// Não dá para atualizar sozinho (portátil, desenvolvimento): só avisa.
     Manual(String),
+    /// Microsoft Store: a loja atualiza; o Elo nem verifica.
+    Store,
 }
 
 impl Install {
@@ -117,7 +119,7 @@ impl Install {
             Install::MacApp(_) => "macos",
             Install::LinuxDir(_) => "linux-x86_64",
             Install::LinuxDeb => "linux-x86_64-deb",
-            Install::Manual(_) => return None,
+            Install::Manual(_) | Install::Store => return None,
         };
         Some(if crate::variant::client_build() { format!("{k}-cliente") } else { k.to_string() })
     }
@@ -145,6 +147,9 @@ pub fn detect() -> Install {
     let Ok(exe) = std::env::current_exe() else { return Install::Manual(t!("caminho do Elo desconhecido").into()) ; };
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    if crate::store::packaged() {
+        return Install::Store;
+    }
     if cfg!(target_os = "windows") {
         // O desinstalador do Inno Setup fica ao lado do elo.exe; sem ele, é o .zip portátil.
         if dir.join("unins000.exe").exists() {
@@ -264,6 +269,7 @@ pub fn install(how: &Install, file: &Path, background: bool) -> Result<(), Strin
     let _ = background;
     match how {
         Install::Manual(why) => Err(why.clone()),
+        Install::Store => Err(t!("a Microsoft Store atualiza o Elo").into()),
         #[cfg(target_os = "windows")]
         Install::WindowsSetup { all_users } => {
             // O instalador fecha o Elo, instala em silêncio e reabre (seção [Run]).
@@ -390,7 +396,7 @@ impl Updater {
     }
 
     pub fn check_now(&mut self) {
-        if self.busy() {
+        if self.busy() || self.install == Install::Store {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();

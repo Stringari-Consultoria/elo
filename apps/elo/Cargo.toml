@@ -38,6 +38,8 @@ tray-icon = "0.26"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.56"
+# Pacote da Microsoft Store: identidade e tarefa de inicialização.
+windows = { version = "0.62", features = ["ApplicationModel", "ApplicationModel_Activation"] }
 
 [build-dependencies]
 winresource = { version = "0.1", default-features = false }

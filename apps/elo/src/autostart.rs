@@ -2,7 +2,9 @@
 //!
 //! - Linux: `~/.config/autostart/br.com.stringari.elo.desktop` (XDG);
 //! - macOS: `~/Library/LaunchAgents/br.com.stringari.elo.plist` (LaunchAgent);
-//! - Windows: valor `Elo` em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+//! - Windows: valor `Elo` em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+//!   (instalado pela Microsoft Store: a tarefa de inicialização do pacote,
+//!   em [`crate::store`]).
 //!
 //! O Elo aberto assim recebe [`ARG`] e começa minimizado.
 
@@ -160,6 +162,9 @@ mod imp {
     const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
     pub fn set(on: bool) -> Result<(), String> {
+        if crate::store::packaged() {
+            return crate::store::set_startup(on);
+        }
         let name = crate::variant::app_name();
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN).map_err(|e| format!("registro: {e}"))?;
         if !on {
@@ -174,6 +179,9 @@ mod imp {
     }
 
     pub fn enabled() -> bool {
+        if crate::store::packaged() {
+            return crate::store::startup_enabled();
+        }
         RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN, KEY_READ).and_then(|k| k.get_value::<String, _>(crate::variant::app_name())).is_ok()
     }
 }
