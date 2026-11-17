@@ -1035,7 +1035,12 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
 }
 
 /// Aviso quando a tela some (UAC, Ctrl+Alt+Del, bloqueio) e quando volta.
+#[cfg(not(target_os = "linux"))]
 const BLIND: &str = "a tela do outro computador está protegida (pedido de administrador ou tela de bloqueio): o Elo não consegue vê-la nem controlá-la. Peça para a pessoa responder lá; a imagem volta sozinha";
+/// No Linux não há nada para aceitar: é o sistema que parou de mandar a
+/// imagem (no Wayland, tela bloqueada ou monitor desligado), e o Elo reabre.
+#[cfg(target_os = "linux")]
+const BLIND: &str = "o outro computador parou de mandar a imagem da tela (tela bloqueada, monitor desligado ou a sessão gráfica reiniciando). O Elo está tentando de novo sozinho; a imagem volta assim que der";
 const BACK: &str = "a tela do outro computador voltou";
 /// Sem tela por mais que isso, desiste (captura quebrada de vez).
 const BLIND_MAX: Duration = Duration::from_secs(600);

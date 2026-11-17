@@ -49,6 +49,9 @@ enum Cmd {
     Axis(f64, f64),
     Discrete(Axis, i32),
     Keysym(i32, bool),
+    /// Testes: pede ao sistema para encerrar a sessão, como o GNOME faz ao
+    /// bloquear a tela (o Elo só fica sabendo pelo aviso de fechamento).
+    StopForTest,
 }
 
 /// Sessão do portal (compartilhada entre a captura e o controle).
@@ -66,6 +69,9 @@ struct Portal {
     stop: Arc<AtomicBool>,
     /// Alguém está capturando (sem ninguém, os quadros são descartados).
     wanted: Arc<AtomicBool>,
+    /// Cai quando o sistema fecha a sessão por conta própria (no GNOME:
+    /// tela bloqueada, monitor que some e volta). Aí a captura abre outra.
+    alive: Arc<AtomicBool>,
 }
 
 impl Drop for Portal {
@@ -159,6 +165,15 @@ enum Backend {
 }
 
 impl Backend {
+    /// Termina quando o sistema fechar a sessão (só o Mutter avisa; no portal,
+    /// a queda aparece pelo PipeWire).
+    async fn closed(&self) {
+        match self {
+            Backend::Mutter(m) => m.closed().await,
+            Backend::Portal(..) => std::future::pending().await,
+        }
+    }
+
     async fn close(&self) {
         match self {
             Backend::Portal(_, s) => {
@@ -185,7 +200,17 @@ async fn open_any() -> Result<(Backend, Vec<StreamMeta>, Option<OwnedFd>), Strin
     Ok((Backend::Portal(rd, session), streams, Some(fd)))
 }
 
-async fn apply(b: &Backend, nodes: &[u32], c: Cmd) {
+/// Erro de entrada que quer dizer "essa sessão não existe mais".
+fn gone(e: &str) -> bool {
+    e.contains("UnknownMethod") || e.contains("UnknownObject") || e.contains("não existe") || e.contains("does not exist") || e.contains("doesn't exist")
+}
+
+/// Manda a entrada; `false` se a sessão já não existe.
+async fn apply(b: &Backend, nodes: &[u32], c: Cmd) -> bool {
+    if matches!(c, Cmd::StopForTest) {
+        b.close().await;
+        return true;
+    }
     let r: Result<(), String> = match b {
         Backend::Portal(rd, s) => {
             let e = |r: Result<(), ashpd::Error>| r.map_err(|e| e.to_string());
@@ -195,6 +220,7 @@ async fn apply(b: &Backend, nodes: &[u32], c: Cmd) {
                 Cmd::Axis(dx, dy) => e(rd.notify_pointer_axis(s, dx, dy, Default::default()).await),
                 Cmd::Discrete(axis, steps) => e(rd.notify_pointer_axis_discrete(s, axis, steps, Default::default()).await),
                 Cmd::Keysym(k, down) => e(rd.notify_keyboard_keysym(s, k, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await),
+                Cmd::StopForTest => Ok(()),
             }
         }
         Backend::Mutter(m) => match c {
@@ -203,19 +229,23 @@ async fn apply(b: &Backend, nodes: &[u32], c: Cmd) {
             Cmd::Axis(dx, dy) => m.axis(dx, dy).await,
             Cmd::Discrete(axis, steps) => m.discrete(if matches!(axis, Axis::Horizontal) { 1 } else { 0 }, steps).await,
             Cmd::Keysym(k, down) => m.keysym(k as u32, down).await,
+            Cmd::StopForTest => Ok(()),
         },
     };
     // Raro (ex.: o usuário revogou o controle); um aviso por tipo de erro basta.
     if let Err(e) = r {
         static AVISADO: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let m = e.to_string();
+        let dead = gone(&m);
         if let Ok(mut v) = AVISADO.lock()
             && !v.contains(&m)
         {
             eprintln!("[portal] entrada recusada: {m}");
             v.push(m);
         }
+        return !dead;
     }
+    true
 }
 
 fn start() -> Result<Arc<Portal>, String> {
@@ -224,6 +254,8 @@ fn start() -> Result<Arc<Portal>, String> {
     let epoch = Arc::new(AtomicU64::new(0));
     let pending = Arc::new(AtomicUsize::new(0));
     let (run_epoch, run_pending) = (epoch.clone(), pending.clone());
+    let alive = Arc::new(AtomicBool::new(true));
+    let run_alive = alive.clone();
     std::thread::Builder::new()
         .name("elo-portal".into())
         .spawn(move || {
@@ -239,11 +271,26 @@ fn start() -> Result<Arc<Portal>, String> {
                     Ok((backend, streams, fd)) => {
                         let nodes: Vec<u32> = streams.iter().map(|s| s.node).collect();
                         let _ = ready_tx.send(Ok((streams, fd)));
-                        // Entradas até a sessão acabar (o `Portal` é descartado).
-                        while let Some((e, c)) = cmd_rx.recv().await {
-                            run_pending.fetch_sub(1, Ordering::Relaxed);
-                            if e == run_epoch.load(Ordering::Relaxed) {
-                                apply(&backend, &nodes, c).await;
+                        // Entradas até a sessão acabar (o `Portal` é descartado)
+                        // ou o sistema fechá-la por conta própria.
+                        let closed = backend.closed();
+                        tokio::pin!(closed);
+                        loop {
+                            tokio::select! {
+                                m = cmd_rx.recv() => {
+                                    let Some((e, c)) = m else { break };
+                                    run_pending.fetch_sub(1, Ordering::Relaxed);
+                                    if e == run_epoch.load(Ordering::Relaxed) && !apply(&backend, &nodes, c).await {
+                                        eprintln!("[portal] a sessão de acesso remoto não existe mais; abrindo outra");
+                                        run_alive.store(false, Ordering::Relaxed);
+                                        break;
+                                    }
+                                }
+                                _ = &mut closed => {
+                                    eprintln!("[gnome] o GNOME fechou a sessão de acesso remoto (tela bloqueada ou monitor desligado?); abrindo outra");
+                                    run_alive.store(false, Ordering::Relaxed);
+                                    break;
+                                }
                             }
                         }
                         backend.close().await;
@@ -266,19 +313,22 @@ fn start() -> Result<Arc<Portal>, String> {
     let nodes: Vec<u32> = streams.iter().map(|s| s.node).collect();
     let slots = frames.clone();
     let w = wanted.clone();
+    let pw_alive = alive.clone();
+    let pw_stop = stop.clone();
     std::thread::Builder::new()
         .name("elo-pipewire".into())
         .spawn(move || {
-            if let Err(e) = pipewire_loop(fd, nodes, slots, w, quit_rx) {
+            if let Err(e) = pipewire_loop(fd, nodes, slots, w, pw_alive.clone(), pw_stop, quit_rx) {
                 eprintln!("PipeWire: {e}");
+                pw_alive.store(false, Ordering::Relaxed);
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(Arc::new(Portal { streams, frames, cmd: cmd_tx, epoch, pending, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted }))
+    Ok(Arc::new(Portal { streams, frames, cmd: cmd_tx, epoch, pending, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted, alive }))
 }
 
 /// Recebe os quadros de cada monitor e guarda o último, em RGBA.
-fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame>>>>, wanted: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
+fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame>>>>, wanted: Arc<AtomicBool>, alive: Arc<AtomicBool>, stop: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
     use pipewire as pw;
     use pw::spa;
     use spa::param::video::{VideoFormat, VideoInfoRaw};
@@ -327,6 +377,8 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
     let mut keep = Vec::new();
     for (node, slot) in nodes.into_iter().zip(slots) {
         let wanted = wanted.clone();
+        let alive = alive.clone();
+        let stop = stop.clone();
         let stream = pw::stream::StreamRc::new(core.clone(), "elo-tela", pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -335,6 +387,15 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
         .map_err(|e| e.to_string())?;
         let listener = stream
             .add_local_listener_with_user_data(VideoInfoRaw::default())
+            // O sistema derrubou o fluxo (sessão fechada, monitor que sumiu).
+            .state_changed(move |_, _, old, new| {
+                let dead = matches!(new, pw::stream::StreamState::Error(_)) || (matches!(new, pw::stream::StreamState::Unconnected) && !matches!(old, pw::stream::StreamState::Connecting));
+                // (No fim normal da sessão os fluxos também desconectam.)
+                if dead && !stop.load(Ordering::Relaxed) {
+                    eprintln!("[pipewire] a imagem de uma tela parou ({old:?} → {new:?})");
+                    alive.store(false, Ordering::Relaxed);
+                }
+            })
             .param_changed(|_, info, id, param| {
                 if let Some(param) = param
                     && id == pw::spa::param::ParamType::Format.as_raw()
@@ -400,8 +461,20 @@ fn portal() -> Result<Arc<Portal>, String> {
     // usa a mesma sessão. O prazo é o mesmo da resposta na tela.
     let since = Instant::now();
     let p = loop {
-        if let Some(p) = CURRENT.lock().map_err(|e| e.to_string())?.upgrade() {
-            break p;
+        // (Solta a trava antes: abaixo ela é pega de novo.)
+        let cur = CURRENT.lock().map_err(|e| e.to_string())?.upgrade();
+        if let Some(p) = cur {
+            if p.alive.load(Ordering::Relaxed) {
+                break p;
+            }
+            // Morta: não serve nem para reaproveitar depois de um acesso.
+            *CURRENT.lock().map_err(|e| e.to_string())? = Weak::new();
+            if let Ok(mut k) = KEEP.lock()
+                && k.as_ref().is_some_and(|(kp, _)| Arc::ptr_eq(kp, &p))
+            {
+                *k = None;
+            }
+            continue;
         }
         if !STARTING.swap(true, Ordering::SeqCst) {
             let r = start();
@@ -452,7 +525,12 @@ fn release() {
 struct WaylandScreen {
     portal: Arc<Portal>,
     last: Vec<Option<Frame>>,
+    /// Próxima tentativa de abrir outra sessão quando a atual morre.
+    retry_at: Instant,
 }
+
+/// Sem sessão com o sistema (fechada por ele): a captura tenta de novo.
+const GONE: &str = "o sistema fechou o compartilhamento da tela; abrindo de novo";
 
 impl Drop for WaylandScreen {
     fn drop(&mut self) {
@@ -471,6 +549,16 @@ impl Screen for WaylandScreen {
     }
 
     fn capture(&mut self, monitor: u8) -> Result<Frame, String> {
+        if !self.portal.alive.load(Ordering::Relaxed) {
+            // Uma tentativa a cada 2 s (no GNOME é na hora; o portal pergunta).
+            if Instant::now() < self.retry_at {
+                return Err(GONE.into());
+            }
+            self.retry_at = Instant::now() + Duration::from_secs(2);
+            let p = portal()?;
+            self.last = p.streams.iter().map(|_| None).collect();
+            self.portal = p;
+        }
         let i = (monitor as usize).min(self.portal.frames.len().saturating_sub(1));
         // O PipeWire só manda quadro quando a tela muda: guarda o último.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -481,7 +569,7 @@ impl Screen for WaylandScreen {
             if let Some(f) = &self.last[i] {
                 return Ok(Frame { width: f.width, height: f.height, rgba: f.rgba.clone() });
             }
-            if Instant::now() > deadline {
+            if Instant::now() > deadline || !self.portal.alive.load(Ordering::Relaxed) {
                 return Err("a tela compartilhada pelo portal não mandou imagem".into());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -505,12 +593,18 @@ struct WaylandControl {
 }
 
 impl WaylandControl {
-    fn send(&self, c: Cmd) {
+    fn send(&mut self, c: Cmd) {
+        // A sessão morreu e a captura já abriu outra: passa a usar a nova.
+        if !self.portal.alive.load(Ordering::Relaxed)
+            && let Some(p) = CURRENT.lock().ok().and_then(|c| c.upgrade()).filter(|p| p.alive.load(Ordering::Relaxed))
+        {
+            self.portal = p;
+        }
         self.portal.pending.fetch_add(1, Ordering::Relaxed);
         let _ = self.portal.cmd.send((self.portal.epoch.load(Ordering::Relaxed), c));
     }
 
-    fn key(&self, sym: u32, down: bool) {
+    fn key(&mut self, sym: u32, down: bool) {
         self.send(Cmd::Keysym(sym as i32, down));
     }
 }
@@ -568,10 +662,19 @@ impl Control for WaylandControl {
     }
 }
 
+/// Testes: o sistema encerra a sessão atual (como o GNOME ao bloquear a tela).
+#[doc(hidden)]
+pub fn stop_session_for_test() {
+    if let Some(p) = CURRENT.lock().ok().and_then(|c| c.upgrade()) {
+        p.pending.fetch_add(1, Ordering::Relaxed);
+        let _ = p.cmd.send((p.epoch.load(Ordering::Relaxed), Cmd::StopForTest));
+    }
+}
+
 pub fn open_screen() -> Result<Box<dyn Screen>, String> {
     let portal = portal()?;
     let last = portal.streams.iter().map(|_| None).collect();
-    Ok(Box::new(WaylandScreen { portal, last }))
+    Ok(Box::new(WaylandScreen { portal, last, retry_at: Instant::now() }))
 }
 
 pub fn open_control() -> Result<Box<dyn Control>, String> {

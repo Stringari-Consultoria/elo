@@ -822,6 +822,17 @@ fn gnome_wayland_without_asking() {
     let before = area(&remote.lock().unwrap());
     vh.cmd.send(session::Cmd::InputOn(1, elo_proto::msg::Input::MouseMove { x: 510, y: 310 })).unwrap();
     until("o cursor não apareceu na segunda tela", &|r| area(r) != before);
+    // O GNOME fecha a sessão de acesso remoto (tela bloqueada, monitor que
+    // some): o Elo percebe, abre outra sozinho e a imagem e o mouse voltam.
+    elo_core::wayland::stop_session_for_test();
+    // (Reabre tão rápido que a imagem nem chega a faltar: aviso só se demorar.)
+    std::thread::sleep(Duration::from_secs(2));
+    let v0 = remote.lock().unwrap().extra[&1].version;
+    let before = area(&remote.lock().unwrap());
+    vh.cmd.send(session::Cmd::InputOn(1, elo_proto::msg::Input::MouseMove { x: 530, y: 330 })).unwrap();
+    until("o mouse não voltou depois de reabrir a sessão", &|r| area(r) != before);
+    until("a imagem não voltou depois de reabrir a sessão", &|r| r.extra[&1].version > v0);
+    assert!(!matches!(vrx.try_recv(), Ok(ViewerEvent::Ended(_))), "a sessão caiu");
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -135,6 +135,17 @@ impl Mutter {
         self.call("NotifyKeyboardKeysym", &(sym, down)).await
     }
 
+    /// Espera o GNOME fechar a sessão por conta própria (tela bloqueada,
+    /// monitor que some e volta, gnome-shell reiniciando).
+    pub(crate) async fn closed(&self) {
+        match self.rd.receive_signal("Closed").await {
+            Ok(mut s) => {
+                s.next().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    }
+
     pub(crate) async fn close(&self) {
         let _ = self.rd.call::<_, _, ()>("Stop", &()).await;
     }
