@@ -145,7 +145,13 @@ Para compilar a partir do código, veja [Desenvolvimento](#desenvolvimento).
 
 **Acesso não assistido:** defina uma senha fixa (8 ou mais caracteres) nas
 configurações e ligue a opção na tela inicial. A conexão então entra sem
-ninguém do outro lado.
+ninguém do outro lado. No Linux com GDM (Ubuntu, Zorin, Fedora...), ligue
+também **"Entrar sozinho se a sessão cair"** nas configurações: se a sessão
+cair (no Wayland, uma falha do gnome-shell derruba a sessão inteira) ou o
+computador reiniciar, ele entra sozinho no seu usuário 10 s depois da tela de
+login e o Elo volta a aceitar conexões. Pede a senha de administrador e vale a
+partir do próximo reinício; quem estiver na frente do computador também entra
+sem senha.
 
 **Atualizações:** o Elo procura versão nova ao abrir e a cada 6 horas. Com
 "Atualizar automaticamente" ligado (padrão), baixa sozinho e instala quando não

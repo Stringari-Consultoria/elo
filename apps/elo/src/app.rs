@@ -340,6 +340,10 @@ pub struct EloApp {
     pub onboarding: Option<crate::onboarding::Onboarding>,
     /// Iniciar com o computador (como está no sistema).
     pub autostart: bool,
+    /// Entrar sozinho na tela de login do GDM (Linux), como está nas configurações.
+    pub autologin: bool,
+    /// Pedido ao sistema (pkexec) em andamento.
+    pub autologin_job: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
     /// Aberto pelo início automático: minimiza no primeiro quadro.
     pub start_minimized: bool,
     /// Sessão em tela cheia (esconde as barras do Elo).
@@ -455,6 +459,8 @@ impl EloApp {
             probe_result: None,
             onboarding: None,
             autostart: crate::autostart::enabled(),
+            autologin: crate::autologin::enabled(),
+            autologin_job: None,
             start_minimized: background,
             fullscreen: false,
             renaming: None,
@@ -704,6 +710,15 @@ impl EloApp {
 
     /// Eventos do ícone da bandeja.
     pub fn tray_tick(&mut self, ctx: &egui::Context) {
+        if let Some(r) = self.autologin_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.autologin_job = None;
+            match r {
+                Ok(true) => self.toast(t!("Entrada automática ligada. Vale a partir do próximo reinício do computador.")),
+                Ok(false) => self.toast(t!("Entrada automática desligada.")),
+                Err(e) => self.error(t!("Entrada automática: {}", e)),
+            }
+            self.autologin = crate::autologin::enabled();
+        }
         if self.show_requested.swap(false, std::sync::atomic::Ordering::Relaxed) {
             self.show_window(ctx);
         }

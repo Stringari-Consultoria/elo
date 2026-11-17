@@ -89,7 +89,16 @@ impl EloApp {
                 v.push((t!("só na rede local ({})", a), ServerCfg { address: a, tls: true, pin: self.local.fingerprint.clone() }));
             }
         } else if !self.settings.server.address.trim().is_empty() {
-            v.push((t!("servidor configurado ({})", self.settings.server.address.trim()), self.settings.server.clone()));
+            let addr = self.settings.server.address.trim();
+            // Servidor do sistema nesta mesma máquina (elo-server como serviço,
+            // que continua no ar quando a sessão cai): o app fala com ele por
+            // 127.0.0.1, mas os clientes chegam pelo endereço público.
+            let here = addr.starts_with("127.0.0.1:") || addr.starts_with("localhost:");
+            match ls.public_ws() {
+                Some(w) if here => v.push((t!("pela internet ({})", w), ServerCfg { address: w.to_string(), tls: true, pin: String::new() })),
+                _ if here => {}
+                _ => v.push((t!("servidor configurado ({})", addr), self.settings.server.clone())),
+            }
         }
         v
     }

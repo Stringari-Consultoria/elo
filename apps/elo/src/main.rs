@@ -5,6 +5,7 @@ mod i18n;
 mod i18n_en;
 
 mod app;
+mod autologin;
 mod autostart;
 mod empresa;
 mod instance;
@@ -17,6 +18,10 @@ mod update;
 mod variant;
 
 fn main() -> eframe::Result {
+    // Execução como administrador (pkexec) só para mexer no login do GDM.
+    if let Some(code) = autologin::cli() {
+        std::process::exit(code);
+    }
     let app_id = if variant::client_build() { "br.com.stringari.elo-cliente" } else { "br.com.stringari.elo" };
     let mut viewport = egui::ViewportBuilder::default().with_title(variant::app_name()).with_app_id(app_id).with_inner_size([1100.0, 720.0]).with_min_inner_size([760.0, 520.0]);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../../../packaging/icons/elo-256.png")) {

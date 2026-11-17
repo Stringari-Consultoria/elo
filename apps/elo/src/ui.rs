@@ -1217,6 +1217,13 @@ impl EloApp {
             ui.add(egui::TextEdit::singleline(&mut self.settings.device_name).desired_width(f32::INFINITY));
             ui.add_space(6.0);
             ui.checkbox(&mut self.autostart, t!("Iniciar o Elo junto com o computador")).on_hover_text(t!("Abre na bandeja ao entrar no sistema, para continuar acessível depois de reiniciar."));
+            if crate::autologin::conf_path().is_some() && !self.client_mode() {
+                ui.add_enabled_ui(self.autologin_job.is_none(), |ui| {
+                    ui.checkbox(&mut self.autologin, t!("Entrar sozinho se a sessão cair (login automático)")).on_hover_text(t!(
+                        "Se a sessão cair ou o computador reiniciar, ele entra sozinho no seu usuário 10 s depois da tela de login, e o Elo volta a aceitar conexões sem ninguém aqui. Quem estiver na frente do computador também entra sem senha. Pede a senha de administrador e vale a partir do próximo reinício."
+                    ));
+                });
+            }
             ui.add_enabled_ui(self.tray.is_some(), |ui| {
                 ui.checkbox(&mut self.settings.close_to_tray, t!("Ao fechar a janela, continuar rodando na bandeja"))
                     .on_hover_text(t!("O Elo fica perto do relógio e continua aceitando conexões. Para sair, use \"Sair do Elo\" no menu do ícone."))
@@ -1454,6 +1461,7 @@ impl EloApp {
                 if theme::secondary(ui, None, t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.settings = crate::settings::Settings::load();
                     self.autostart = crate::autostart::enabled();
+                    self.autologin = crate::autologin::enabled();
                     self.new_permanent.clear();
                     close = true;
                 }
@@ -1474,6 +1482,13 @@ impl EloApp {
                 self.error(t!("Iniciar com o computador: {}", e));
             }
             self.autostart = crate::autostart::enabled();
+            if self.autologin != crate::autologin::enabled() && self.autologin_job.is_none() && crate::autologin::conf_path().is_some() {
+                // Sem o Elo abrindo com o sistema, entrar sozinho não adianta.
+                if self.autologin && !self.autostart && crate::autostart::set(true).is_ok() {
+                    self.autostart = true;
+                }
+                self.autologin_job = Some(crate::autologin::request(self.autologin));
+            }
             // O nome só vai ao servidor ao conectar.
             if renamed {
                 self.restart_control();

@@ -147,7 +147,13 @@ To build from source, see [Development](#development).
 
 **Unattended access:** set a fixed password (8 or more characters) in
 Settings and turn the option on in the home screen. Connections then get in
-with nobody on the other side.
+with nobody on the other side. On Linux with GDM (Ubuntu, Zorin, Fedora...),
+also turn on **"Log in by itself if the session drops"** in Settings: if the
+session drops (on Wayland, a gnome-shell crash takes the whole session down)
+or the computer restarts, it logs in to your user 10 s after the login screen
+and Elo accepts connections again. It asks for the administrator password and
+takes effect after the next restart; anyone in front of the computer also gets
+in without a password.
 
 **Updates:** Elo checks for a new version when it opens and every 6 hours.
 With "Update automatically" on (the default), it downloads by itself and

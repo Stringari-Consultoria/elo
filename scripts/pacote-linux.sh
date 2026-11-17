@@ -76,6 +76,12 @@ install -m 644 "$RAIZ/LICENSE" "$RAIZ/NOTICE" "$PKG/usr/share/doc/$PACOTE/"
 # quem está logado (um arquivo por pacote: os dois podem estar instalados).
 mkdir -p "$PKG/usr/lib/udev/rules.d"
 install -m 644 "$RAIZ/packaging/linux/60-elo-uinput.rules" "$PKG/usr/lib/udev/rules.d/60-$PACOTE-uinput.rules"
+# Janela de senha clara para "Entrar sozinho se a sessão cair" (só o Elo
+# completo tem a opção; o Elo Cliente não).
+if [[ "$EXE" == elo ]]; then
+    mkdir -p "$PKG/usr/share/polkit-1/actions"
+    install -m 644 "$RAIZ/packaging/linux/br.com.stringari.elo.policy" "$PKG/usr/share/polkit-1/actions/"
+fi
 cat > "$PKG/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e

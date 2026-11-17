@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Janela de senha do "Entrar sozinho se a sessão cair" (o Elo chamado pelo
+     pkexec com o argumento gdm-entrada-automatica): só troca o login
+     temporizado do GDM. -->
+<policyconfig>
+  <vendor>Stringari Consultoria</vendor>
+  <vendor_url>https://github.com/Stringari-Consultoria/elo</vendor_url>
+  <action id="br.com.stringari.elo.entrada-automatica">
+    <description>Change automatic login for Elo</description>
+    <description xml:lang="pt_BR">Mudar a entrada automática do Elo</description>
+    <message>Elo needs the administrator password to change automatic login on the login screen (so the computer comes back by itself if the session drops).</message>
+    <message xml:lang="pt_BR">O Elo precisa da senha de administrador para mudar a entrada automática na tela de login (para o computador voltar sozinho se a sessão cair).</message>
+    <icon_name>br.com.stringari.elo</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/elo</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--gdm-entrada-automatica</annotate>
+  </action>
+</policyconfig>
