@@ -44,7 +44,8 @@ Dentro do pacote, o Elo:
 
 **Propriedades:** categoria *Utilitários e ferramentas*. O app tem política de
 privacidade, então informe a URL
-`https://github.com/Stringari-Consultoria/elo/blob/main/PRIVACIDADE.md`. Em
+`https://stringariconsultoria.com.br/en/projects/elo/privacy` (o mesmo texto
+de `PRIVACY.md`; em português, `/pt/projects/elo/privacy`). Em
 requisitos do sistema, deixe teclado e mouse como recomendados.
 
 **Classificação etária:** responda o questionário IARC. O Elo tem chat entre
