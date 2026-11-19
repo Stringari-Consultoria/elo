@@ -51,16 +51,29 @@ enum Cmd {
     Axis(f64, f64),
     Discrete(Axis, i32),
     Keysym(i32, bool),
+    /// Espera um pouco antes do próximo comando (ver `PAUSE`).
+    Pause(Duration),
     /// Testes: pede ao sistema para encerrar a sessão, como o GNOME faz ao
     /// bloquear a tela (o Elo só fica sabendo pelo aviso de fechamento).
     StopForTest,
 }
 
+/// Último quadro de um monitor e o número dele (sobe a cada quadro novo).
+/// Cada acesso lembra o número que já viu: vários acessos ao mesmo tempo leem
+/// o mesmo quadro sem tirá-lo um do outro.
+type Slot = Arc<Mutex<(u64, Option<Arc<Frame>>)>>;
+
 /// Sessão do portal (compartilhada entre a captura e o controle).
 struct Portal {
     streams: Vec<StreamMeta>,
     /// Último quadro de cada monitor.
-    frames: Vec<Arc<Mutex<Option<Frame>>>>,
+    frames: Vec<Slot>,
+    /// Sessão do Mutter (GNOME): abre na hora e sem perguntar, então não
+    /// fica aberta depois do último acesso (o GNOME mostra no alto da tela
+    /// que ela está sendo compartilhada).
+    mutter: bool,
+    /// Acessos capturando desta sessão agora (ver `Use`).
+    users: AtomicUsize,
     /// Comandos com a época em que foram pedidos (ver `epoch`).
     cmd: tokio::sync::mpsc::UnboundedSender<(u64, Cmd)>,
     /// Sobe no fim da sessão: o que ainda estava na fila é descartado.
@@ -69,7 +82,8 @@ struct Portal {
     pending: Arc<AtomicUsize>,
     quit_pw: Mutex<Option<pipewire::channel::Sender<()>>>,
     stop: Arc<AtomicBool>,
-    /// Alguém está capturando (sem ninguém, os quadros são descartados).
+    /// Alguém está capturando (`users > 0`; sem ninguém, os quadros quase
+    /// todos são descartados).
     wanted: Arc<AtomicBool>,
     /// Cai quando o sistema fecha a sessão por conta própria (no GNOME:
     /// tela bloqueada, monitor que some e volta). Aí a captura abre outra.
@@ -215,6 +229,10 @@ async fn apply(b: &Backend, nodes: &[u32], c: Cmd) -> bool {
         b.close().await;
         return true;
     }
+    if let Cmd::Pause(d) = c {
+        tokio::time::sleep(d).await;
+        return true;
+    }
     let r: Result<(), String> = match b {
         Backend::Portal(rd, s) => {
             let e = |r: Result<(), ashpd::Error>| r.map_err(|e| e.to_string());
@@ -224,7 +242,7 @@ async fn apply(b: &Backend, nodes: &[u32], c: Cmd) -> bool {
                 Cmd::Axis(dx, dy) => e(rd.notify_pointer_axis(s, dx, dy, Default::default()).await),
                 Cmd::Discrete(axis, steps) => e(rd.notify_pointer_axis_discrete(s, axis, steps, Default::default()).await),
                 Cmd::Keysym(k, down) => e(rd.notify_keyboard_keysym(s, k, if down { KeyState::Pressed } else { KeyState::Released }, Default::default()).await),
-                Cmd::StopForTest => Ok(()),
+                Cmd::StopForTest | Cmd::Pause(_) => Ok(()),
             }
         }
         Backend::Mutter(m) => match c {
@@ -233,7 +251,7 @@ async fn apply(b: &Backend, nodes: &[u32], c: Cmd) -> bool {
             Cmd::Axis(dx, dy) => m.axis(dx, dy).await,
             Cmd::Discrete(axis, steps) => m.discrete(if matches!(axis, Axis::Horizontal) { 1 } else { 0 }, steps).await,
             Cmd::Keysym(k, down) => m.keysym(k as u32, down).await,
-            Cmd::StopForTest => Ok(()),
+            Cmd::StopForTest | Cmd::Pause(_) => Ok(()),
         },
     };
     // Raro (ex.: o usuário revogou o controle); um aviso por tipo de erro basta.
@@ -291,7 +309,7 @@ fn start() -> Result<Arc<Portal>, String> {
                                     }
                                 }
                                 _ = &mut closed => {
-                                    eprintln!("[gnome] o GNOME fechou a sessão de acesso remoto (tela bloqueada ou monitor desligado?); abrindo outra");
+                                    eprintln!("[gnome] abrindo outra sessão de acesso remoto");
                                     run_alive.store(false, Ordering::Relaxed);
                                     break;
                                 }
@@ -310,9 +328,11 @@ fn start() -> Result<Arc<Portal>, String> {
     // Portal: espera alguém aceitar na tela (menos que os 95 s de quem acessa,
     // para o aviso chegar lá). O Mutter responde na hora.
     let (streams, fd) = ready_rx.recv_timeout(Duration::from_secs(75)).map_err(|_| NOBODY_ANSWERED.to_string())??;
-    let frames: Vec<Arc<Mutex<Option<Frame>>>> = streams.iter().map(|_| Arc::new(Mutex::new(None))).collect();
+    let frames: Vec<Slot> = streams.iter().map(|_| Arc::new(Mutex::new((0, None)))).collect();
+    // Só o Mutter não passa o acesso ao PipeWire (usa o da sessão).
+    let mutter = fd.is_none();
     let stop = Arc::new(AtomicBool::new(false));
-    let wanted = Arc::new(AtomicBool::new(true));
+    let wanted = Arc::new(AtomicBool::new(false));
     let (quit_tx, quit_rx) = pipewire::channel::channel::<()>();
     let nodes: Vec<u32> = streams.iter().map(|s| s.node).collect();
     let slots = frames.clone();
@@ -328,11 +348,11 @@ fn start() -> Result<Arc<Portal>, String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    Ok(Arc::new(Portal { streams, frames, cmd: cmd_tx, epoch, pending, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted, alive }))
+    Ok(Arc::new(Portal { streams, frames, mutter, users: AtomicUsize::new(0), cmd: cmd_tx, epoch, pending, quit_pw: Mutex::new(Some(quit_tx)), stop, wanted, alive }))
 }
 
 /// Recebe os quadros de cada monitor e guarda o último, em RGBA.
-fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Option<Frame>>>>, wanted: Arc<AtomicBool>, alive: Arc<AtomicBool>, stop: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
+fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Slot>, wanted: Arc<AtomicBool>, alive: Arc<AtomicBool>, stop: Arc<AtomicBool>, quit: pipewire::channel::Receiver<()>) -> Result<(), String> {
     use pipewire as pw;
     use pw::spa;
     use spa::param::video::{VideoFormat, VideoInfoRaw};
@@ -373,7 +393,9 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
             Fraction,
             spa::utils::Fraction { num: 30, denom: 1 },
             spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction { num: 120, denom: 1 }
+            // O Elo manda no máximo 24 por segundo: mais que isso só gasta
+            // processador convertendo quadros que ninguém vai ver.
+            spa::utils::Fraction { num: 30, denom: 1 }
         ),
     );
     let values: Vec<u8> = pw::spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &pw::spa::pod::Value::Object(obj)).map_err(|e| format!("{e:?}"))?.0.into_inner();
@@ -383,6 +405,10 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
         let wanted = wanted.clone();
         let alive = alive.clone();
         let stop = stop.clone();
+        // Sem ninguém capturando, guarda um quadro por segundo: quem chegar
+        // tem uma imagem recente mesmo com a tela parada (o PipeWire só manda
+        // quadro quando ela muda).
+        let mut kept = Instant::now() - Duration::from_secs(10);
         let stream = pw::stream::StreamRc::new(core.clone(), "elo-tela", pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -409,9 +435,10 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
             })
             .process(move |stream, info| {
                 let Some(mut buffer) = stream.dequeue_buffer() else { return };
-                if !wanted.load(Ordering::Relaxed) {
+                if !wanted.load(Ordering::Relaxed) && kept.elapsed() < Duration::from_secs(1) {
                     return;
                 }
+                kept = Instant::now();
                 let datas = buffer.datas_mut();
                 let Some(d) = datas.first_mut() else { return };
                 let (w, h) = (info.size().width, info.size().height);
@@ -439,7 +466,7 @@ fn pipewire_loop(fd: Option<OwnedFd>, nodes: Vec<u32>, slots: Vec<Arc<Mutex<Opti
                     }
                 }
                 if let Ok(mut s) = slot.lock() {
-                    *s = Some(Frame { width: w, height: h, rgba });
+                    *s = (s.0 + 1, Some(Arc::new(Frame { width: w, height: h, rgba })));
                 }
             })
             .register()
@@ -498,27 +525,51 @@ fn portal() -> Result<Arc<Portal>, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    p.wanted.store(true, Ordering::Relaxed);
-    // Segura enquanto houver acesso (o prazo conta a partir do fim).
-    if let Ok(mut k) = KEEP.lock() {
-        *k = Some((p.clone(), Instant::now() + Duration::from_secs(365 * 86_400)));
-    }
     Ok(p)
 }
 
-/// Fim de um acesso: a sessão fica aberta por `KEEP_FOR` e depois fecha.
-fn release() {
-    if let Ok(mut k) = KEEP.lock()
-        && let Some((p, _)) = k.take()
-    {
+/// Um acesso capturando de uma sessão. Enquanto houver algum, os quadros
+/// chegam; quando o último acaba, a sessão do portal fica aberta por
+/// `KEEP_FOR` (para não perguntar de novo a quem reconectar) e a do Mutter
+/// fecha na hora.
+struct Use(Arc<Portal>);
+
+impl Use {
+    fn new(p: Arc<Portal>) -> Self {
+        p.users.fetch_add(1, Ordering::SeqCst);
+        p.wanted.store(true, Ordering::Relaxed);
+        // Segura enquanto houver acesso (o prazo conta a partir do fim).
+        if let Ok(mut k) = KEEP.lock()
+            && !k.as_ref().is_some_and(|(kp, _)| Arc::ptr_eq(kp, &p))
+        {
+            *k = Some((p.clone(), Instant::now() + Duration::from_secs(365 * 86_400)));
+        }
+        Use(p)
+    }
+}
+
+impl Drop for Use {
+    fn drop(&mut self) {
+        let p = &self.0;
+        if p.users.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
         p.wanted.store(false, Ordering::Relaxed);
+        let Ok(mut k) = KEEP.lock() else { return };
+        if !k.as_ref().is_some_and(|(kp, _)| Arc::ptr_eq(kp, p)) {
+            return;
+        }
+        if p.mutter || !p.alive.load(Ordering::Relaxed) {
+            *k = None;
+            return;
+        }
         let until = Instant::now() + KEEP_FOR;
-        *k = Some((p, until));
+        *k = Some((p.clone(), until));
         drop(k);
         let _ = std::thread::Builder::new().name("elo-portal-fim".into()).spawn(move || {
             std::thread::sleep(KEEP_FOR + Duration::from_secs(1));
             if let Ok(mut k) = KEEP.lock()
-                && k.as_ref().is_some_and(|(_, t)| *t <= Instant::now())
+                && k.as_ref().is_some_and(|(kp, t)| *t <= Instant::now() && kp.users.load(Ordering::SeqCst) == 0)
             {
                 *k = None;
             }
@@ -543,10 +594,11 @@ fn locked_monitors() -> Vec<Monitor> {
 
 struct WaylandScreen {
     /// `None`: a tela estava bloqueada ao conectar; abre ao desbloquear.
-    portal: Option<Arc<Portal>>,
+    portal: Option<Use>,
     /// Lista de telas quando não há sessão aberta.
     locked: Vec<Monitor>,
-    last: Vec<Option<Frame>>,
+    /// Último quadro visto de cada tela e o número dele.
+    last: Vec<(u64, Option<Arc<Frame>>)>,
     /// Próxima tentativa de abrir outra sessão quando a atual morre.
     retry_at: Instant,
     /// A última tentativa foi recusada porque a tela está bloqueada.
@@ -556,15 +608,9 @@ struct WaylandScreen {
 /// Sem sessão com o sistema (fechada por ele): a captura tenta de novo.
 const GONE: &str = "o sistema fechou o compartilhamento da tela; abrindo de novo";
 
-impl Drop for WaylandScreen {
-    fn drop(&mut self) {
-        release();
-    }
-}
-
 impl Screen for WaylandScreen {
     fn monitors(&mut self) -> Vec<Monitor> {
-        let Some(portal) = &self.portal else { return self.locked.clone() };
+        let Some(Use(portal)) = &self.portal else { return self.locked.clone() };
         portal
             .streams
             .iter()
@@ -574,7 +620,7 @@ impl Screen for WaylandScreen {
     }
 
     fn capture(&mut self, monitor: u8) -> Result<Frame, String> {
-        if !self.portal.as_ref().is_some_and(|p| p.alive.load(Ordering::Relaxed)) {
+        if !self.portal.as_ref().is_some_and(|p| p.0.alive.load(Ordering::Relaxed)) {
             // Uma tentativa a cada 2 s (no GNOME é na hora; o portal pergunta).
             if Instant::now() < self.retry_at {
                 return Err(if self.blocked { LOCKED.into() } else { GONE.into() });
@@ -582,18 +628,21 @@ impl Screen for WaylandScreen {
             self.retry_at = Instant::now() + Duration::from_secs(2);
             let p = portal().inspect_err(|e| self.blocked = e == LOCKED)?;
             self.blocked = false;
-            self.last = p.streams.iter().map(|_| None).collect();
-            self.portal = Some(p);
+            self.last = p.streams.iter().map(|_| (0, None)).collect();
+            self.portal = Some(Use::new(p));
         }
-        let Some(portal) = &self.portal else { return Err(GONE.into()) };
+        let Some(Use(portal)) = &self.portal else { return Err(GONE.into()) };
         let i = (monitor as usize).min(portal.frames.len().saturating_sub(1));
         // O PipeWire só manda quadro quando a tela muda: guarda o último.
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if let Some(f) = portal.frames[i].lock().map_err(|e| e.to_string())?.take() {
-                self.last[i] = Some(f);
+            {
+                let slot = portal.frames[i].lock().map_err(|e| e.to_string())?;
+                if slot.0 != self.last[i].0 {
+                    self.last[i] = (slot.0, slot.1.clone());
+                }
             }
-            if let Some(f) = &self.last[i] {
+            if let Some(f) = &self.last[i].1 {
                 return Ok(Frame { width: f.width, height: f.height, rgba: f.rgba.clone() });
             }
             if Instant::now() > deadline || !portal.alive.load(Ordering::Relaxed) {
@@ -612,12 +661,20 @@ impl Screen for WaylandScreen {
 /// Ninguém respondeu à janela do sistema que pede para compartilhar a tela.
 pub const NOBODY_ANSWERED: &str = "o outro computador (Linux com Wayland) pediu na tela dele para liberar o compartilhamento e ninguém respondeu. Alguém precisa clicar em Compartilhar lá; para acessar sem ninguém por perto, entre lá na sessão Xorg";
 
+/// Antes e depois de uma letra feita com tecla morta. Sem a pausa, a janela
+/// que recebe troca a ordem: a letra acentuada passa na frente das teclas
+/// mandadas logo antes ("você" saía "vêoc").
+const PAUSE: Duration = Duration::from_millis(15);
+
 /// Acima disto na fila, texto novo é ignorado.
 const MAX_QUEUED: usize = 8192;
 
 struct WaylandControl {
     /// `None` enquanto a tela está bloqueada (a captura abre ao desbloquear).
     portal: Option<Arc<Portal>>,
+    /// Mapa de teclado daqui e quando foi lido (relido de vez em quando: a
+    /// pessoa pode trocar o teclado).
+    keymap: Option<(Instant, Option<crate::keymap::Keymap>)>,
 }
 
 impl WaylandControl {
@@ -635,6 +692,13 @@ impl WaylandControl {
 
     fn key(&mut self, sym: u32, down: bool) {
         self.send(Cmd::Keysym(sym as i32, down));
+    }
+
+    fn keymap(&mut self) -> Option<&crate::keymap::Keymap> {
+        if !self.keymap.as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(10)) {
+            self.keymap = Some((Instant::now(), crate::keymap::Keymap::current()));
+        }
+        self.keymap.as_ref().and_then(|(_, k)| k.as_ref())
     }
 }
 
@@ -676,9 +740,20 @@ impl Control for WaylandControl {
                     return;
                 }
                 for c in t.chars() {
-                    let k = crate::platform::char_keysym(c);
-                    self.key(k, true);
-                    self.key(k, false);
+                    // Letra que não existe direto no teclado daqui: tecla
+                    // morta + letra (senão o sistema descarta).
+                    let keys = self.keymap().and_then(|k| k.plan(c)).unwrap_or_else(|| vec![crate::platform::char_keysym(c)]);
+                    let dead = keys.len() > 1;
+                    if dead {
+                        self.send(Cmd::Pause(PAUSE));
+                    }
+                    for k in keys {
+                        self.key(k, true);
+                        self.key(k, false);
+                    }
+                    if dead {
+                        self.send(Cmd::Pause(PAUSE));
+                    }
                 }
             }
             Input::SecureAttention => {
@@ -703,17 +778,23 @@ pub fn stop_session_for_test() {
     }
 }
 
+/// Testes: há uma sessão de captura aberta com o sistema?
+#[doc(hidden)]
+pub fn session_open_for_test() -> bool {
+    CURRENT.lock().ok().and_then(|c| c.upgrade()).is_some()
+}
+
 pub fn open_screen() -> Result<Box<dyn Screen>, String> {
     match portal() {
         Ok(portal) => {
-            let last = portal.streams.iter().map(|_| None).collect();
-            Ok(Box::new(WaylandScreen { portal: Some(portal), locked: Vec::new(), last, retry_at: Instant::now(), blocked: false }))
+            let last = portal.streams.iter().map(|_| (0, None)).collect();
+            Ok(Box::new(WaylandScreen { portal: Some(Use::new(portal)), locked: Vec::new(), last, retry_at: Instant::now(), blocked: false }))
         }
         // Tela bloqueada: a sessão começa sem imagem (quem acessa pode
         // desbloquear com a senha de lá) e a captura abre depois.
         Err(e) if e == LOCKED => {
             let locked = locked_monitors();
-            Ok(Box::new(WaylandScreen { portal: None, last: locked.iter().map(|_| None).collect(), locked, retry_at: Instant::now(), blocked: true }))
+            Ok(Box::new(WaylandScreen { portal: None, last: locked.iter().map(|_| (0, None)).collect(), locked, retry_at: Instant::now(), blocked: true }))
         }
         Err(e) => Err(e),
     }
@@ -721,8 +802,8 @@ pub fn open_screen() -> Result<Box<dyn Screen>, String> {
 
 pub fn open_control() -> Result<Box<dyn Control>, String> {
     match portal() {
-        Ok(p) => Ok(Box::new(WaylandControl { portal: Some(p) })),
-        Err(e) if e == LOCKED => Ok(Box::new(WaylandControl { portal: None })),
+        Ok(p) => Ok(Box::new(WaylandControl { portal: Some(p), keymap: None })),
+        Err(e) if e == LOCKED => Ok(Box::new(WaylandControl { portal: None, keymap: None })),
         Err(e) => Err(e),
     }
 }

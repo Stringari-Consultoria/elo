@@ -158,6 +158,9 @@ pub enum Msg {
     Unlock(String),
     /// Anfitrião → visualizador: a tela foi desbloqueada.
     Unlocked,
+    /// Anfitrião → visualizador: a lista de telas mudou (monitor ligado ou
+    /// desligado no meio do acesso). Versões antigas ignoram.
+    Monitors(Vec<Monitor>),
 }
 
 /// Aviso mandado junto com `Locked`, para quem acessa com uma versão que não

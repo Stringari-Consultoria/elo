@@ -48,8 +48,8 @@ impl eframe::App for EloApp {
         if std::mem::take(&mut self.start_minimized) {
             // Com bandeja, some de vez; sem, fica minimizado na barra de tarefas.
             if self.tray.is_some() {
+                hide(&ctx);
                 self.hidden = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
@@ -68,7 +68,7 @@ impl eframe::App for EloApp {
         // Fechar a janela: vai para a bandeja (a não ser que tenha pedido para sair).
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.settings.close_to_tray && self.tray.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            hide(&ctx);
             self.hidden = true;
             self.set_fullscreen(&ctx, false);
         }
@@ -3314,6 +3314,23 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
     painter.add(egui::Shape::closed_line(pts, Stroke::new(1.0, Color32::BLACK)));
 }
 
+/// A janela é do Wayland? (O winit usa o Wayland quando há `WAYLAND_DISPLAY`,
+/// a não ser que `WINIT_UNIX_BACKEND=x11`.)
+fn wayland_window() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) && std::env::var("WINIT_UNIX_BACKEND").map_or(true, |b| !b.eq_ignore_ascii_case("x11"))
+}
+
+/// Tira a janela da frente (vai para a bandeja). No Wayland um app não
+/// consegue esconder a própria janela (o pedido é ignorado e o X não fazia
+/// nada): minimiza.
+fn hide(ctx: &egui::Context) {
+    if wayland_window() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    } else {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3417,3 +3434,4 @@ mod tests {
         assert_eq!(clicks_per_unit(Line, false), 1.0);
     }
 }
+

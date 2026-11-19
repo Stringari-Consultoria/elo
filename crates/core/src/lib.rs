@@ -5,7 +5,11 @@
 #![forbid(unsafe_code)]
 
 pub mod audio;
+#[cfg(target_os = "linux")]
+mod awake;
 pub mod client;
+#[cfg(target_os = "linux")]
+mod keymap;
 #[cfg(target_os = "linux")]
 pub mod lock;
 pub mod net;

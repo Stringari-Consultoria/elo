@@ -1167,6 +1167,22 @@ impl EloApp {
                         p.error = e.map(|e| crate::i18n::tr_dyn(&e));
                     }
                     ViewerEvent::Unlocked => v.locked = None,
+                    ViewerEvent::Monitors(list) => {
+                        let n = list.len() as u8;
+                        v.monitors = list;
+                        // A tela da aba sumiu: volta para a principal.
+                        if v.monitor >= n {
+                            v.monitor = v.monitors.iter().position(|m| m.primary).unwrap_or(0) as u8;
+                            let _ = v.handle.cmd.send(session::Cmd::Monitor(v.monitor));
+                        }
+                        // Janelas de telas que sumiram fecham.
+                        let before = v.split.len();
+                        let main = v.monitor;
+                        v.split.retain(|w| w.monitor < n && w.monitor != main);
+                        if v.split.len() != before {
+                            let _ = v.handle.cmd.send(session::Cmd::Split(v.split.iter().map(|w| w.monitor).collect()));
+                        }
+                    }
                     ViewerEvent::Ended(r) => v.ended = Some(r),
                 }
             }

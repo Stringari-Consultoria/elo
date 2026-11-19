@@ -75,6 +75,20 @@ pub fn locked_error(e: &str) -> bool {
     }
 }
 
+/// Enquanto o valor existir, a tela daqui não bloqueia nem apaga por falta de
+/// uso (um por acesso em andamento). Por enquanto só no Linux.
+pub struct KeepAwake {
+    #[cfg(target_os = "linux")]
+    _inner: crate::awake::Awake,
+}
+
+pub fn keep_awake() -> KeepAwake {
+    KeepAwake {
+        #[cfg(target_os = "linux")]
+        _inner: crate::awake::keep_awake(),
+    }
+}
+
 /// Desbloqueia a tela com a senha do usuário daqui (ver `locked_error`).
 pub fn unlock_screen(password: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]

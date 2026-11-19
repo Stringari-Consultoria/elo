@@ -1595,6 +1595,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tungstenite",
+ "wayland-client",
  "webpki-roots",
  "x11rb",
  "xcap",

@@ -749,8 +749,13 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     let mut control = platform::open_control().ok().map(Injector::new);
     let mut clip = Clip::new();
     let monitors = screen.monitors();
-    let n_monitors = monitors.len();
+    let mut n_monitors = monitors.len();
+    // Para avisar quem acessa quando um monitor liga ou desliga.
+    let mut known = monitors.clone();
+    let mut monitors_checked = Instant::now();
     ch.send_with_features(&Msg::Welcome { name: opt.name.clone(), os: platform::os_name(), monitors, permissions: perms })?;
+    // A tela daqui não bloqueia por falta de uso enquanto durar o acesso.
+    let _awake = platform::keep_awake();
     let _ = ev.send(HostEvent::Started { from_id: from_id.into(), from_name: from_name.into(), sas: keys.sas.clone(), password: (keys.mode == AuthMode::Password).then_some(keys.which), verified: verified.clone() });
     ch.c.set_read_timeout(Some(Duration::from_millis(4)));
     let (mut jpeg_q, mut fps) = (60u8, 15u8);
@@ -1020,6 +1025,21 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                 ch.send(&Msg::Clipboard(t))?;
             }
         }
+        // Monitor ligado ou desligado no meio do acesso: a lista de lá muda.
+        if monitors_checked.elapsed() >= Duration::from_secs(3) {
+            monitors_checked = Instant::now();
+            let now = screen.monitors();
+            if now != known {
+                n_monitors = now.len();
+                if monitor as usize >= n_monitors {
+                    monitor = 0;
+                    main.full = true;
+                }
+                extras.retain(|(m, _)| (*m as usize) < n_monitors);
+                known = now.clone();
+                ch.send(&Msg::Monitors(now))?;
+            }
+        }
         // Quadro: no máximo 2 sem confirmação por tela e respeitando o fps.
         let interval = Duration::from_millis(1000 / fps.max(1) as u64);
         let window = 2 * (1 + extras.len() as u32);
@@ -1227,6 +1247,8 @@ pub enum ViewerEvent {
     Locked(Option<String>),
     /// A tela de lá foi desbloqueada.
     Unlocked,
+    /// A lista de telas de lá mudou (monitor ligado ou desligado).
+    Monitors(Vec<Monitor>),
     Ended(String),
 }
 
@@ -1433,6 +1455,9 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 }
                 Msg::Unlocked => {
                     let _ = ev.send(ViewerEvent::Unlocked);
+                }
+                Msg::Monitors(list) => {
+                    let _ = ev.send(ViewerEvent::Monitors(list));
                 }
                 Msg::Audio(packet) => {
                     if let Some(p) = player.as_mut() {

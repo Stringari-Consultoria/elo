@@ -35,9 +35,11 @@ evdev = "0.13"
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
 # A mesma versão do xcap (só pode haver uma cópia da biblioteca nativa).
 pipewire = "0.10"
-tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # GNOME: o nó do PipeWire de cada tela chega por sinal do D-Bus (Mutter).
 futures-util = { version = "0.3", default-features = false }
+# Mapa de teclado do compositor (letras acentuadas que só saem por tecla morta).
+wayland-client = "0.31"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 xcap = "0.9"

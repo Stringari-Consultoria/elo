@@ -931,3 +931,173 @@ fn gnome_locked_screen_unlocks_with_password() {
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// GNOME de teste: um acesso com senha a `host` (já online), como o app faz.
+#[cfg(target_os = "linux")]
+struct GnomeAccess {
+    vh: session::Handle,
+    vrx: std::sync::mpsc::Receiver<ViewerEvent>,
+    remote: Arc<Mutex<Remote>>,
+    monitors: Vec<elo_proto::msg::Monitor>,
+    _hh: session::Handle,
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_access(cfg: &ServerCfg, host: &client::Control, host_id: &str, seed: u8, dir: &std::path::Path) -> GnomeAccess {
+    let viewer = client::start(cfg.clone(), [seed; 32], format!("Visualizador {seed}"));
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
+    viewer.tx.send(client::Command::Connect { target: host_id.into() }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    let (htx, _hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-gnome".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: host_id.into(), tech_ca: None };
+    let _hh = session::host(cfg.clone(), hs, hsec, from_id, format!("Visualizador {seed}"), opt, htx);
+    let remote = Arc::new(Mutex::new(Remote::default()));
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(cfg.clone(), vs, vsec, "s3nha-gnome".into(), viewer_id, format!("Visualizador {seed}"), dir.join("baixados"), remote.clone(), vtx, host_id.into(), None);
+    // (O cliente do visualizador pode acabar: a sessão já está combinada.)
+    std::mem::forget(viewer);
+    let monitors = match wait(&vrx, 20, |e| matches!(e, ViewerEvent::Connected { .. } | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Connected { monitors, .. }) => monitors,
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("não conectou"),
+    };
+    GnomeAccess { vh, vrx, remote, monitors, _hh }
+}
+
+/// GNOME de teste: servidor e anfitrião online.
+#[cfg(target_os = "linux")]
+fn gnome_host(tag: &str, seed: u8) -> (elo_server::Background, ServerCfg, client::Control, String, std::path::PathBuf) {
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("elo-e2e-{tag}-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
+    let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
+    let host = client::start(cfg.clone(), [seed; 32], "Anfitrião".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    (bg, cfg, host, host_id, dir)
+}
+
+/// Dois acessos ao mesmo tempo no GNOME (ou uma reconexão, em que o acesso
+/// velho ainda não caiu): quando um acaba, a imagem do outro continua
+/// chegando (antes congelava, com o mouse ainda funcionando). Quando os dois
+/// acabam, a sessão do GNOME fecha na hora (antes ficava 5 min aberta, com o
+/// aviso de compartilhamento no alto da tela).
+#[cfg(target_os = "linux")]
+#[test]
+fn gnome_two_accesses_share_the_screen() {
+    if std::env::var("ELO_E2E_GNOME").is_err() {
+        eprintln!("fora de um GNOME de teste: pulado");
+        return;
+    }
+    let (_bg, cfg, host, host_id, dir) = gnome_host("duas", 25);
+    let a = gnome_access(&cfg, &host, &host_id, 26, &dir);
+    let b = gnome_access(&cfg, &host, &host_id, 27, &dir);
+    let until = |r: &Arc<Mutex<Remote>>, what: &str, f: &dyn Fn(&Remote) -> bool| {
+        let end = Instant::now() + Duration::from_secs(15);
+        while !f(&r.lock().unwrap()) {
+            assert!(Instant::now() < end, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    until(&a.remote, "a imagem do primeiro não chegou", &|r| r.version > 0);
+    until(&b.remote, "a imagem do segundo não chegou", &|r| r.version > 0);
+    // O primeiro sai; o segundo mexe o mouse e a imagem dele acompanha.
+    a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(Duration::from_secs(2));
+    let w = b.monitors[0].width as usize;
+    let area = move |r: &Remote| -> Vec<u8> { (300..340).flat_map(|y| (500..540).map(move |x| (y * w + x) * 4)).map(|i| r.dec.rgba[i]).collect() };
+    for (n, (x, y)) in [(510, 310), (530, 330), (515, 325)].into_iter().enumerate() {
+        let before = area(&b.remote.lock().unwrap());
+        b.vh.cmd.send(session::Cmd::Input(elo_proto::msg::Input::MouseMove { x, y })).unwrap();
+        until(&b.remote, &format!("a imagem do segundo congelou quando o primeiro saiu (movimento {n})"), &|r| area(r) != before);
+    }
+    assert!(!matches!(b.vrx.try_recv(), Ok(ViewerEvent::Ended(_))), "a sessão do segundo caiu");
+    // Os dois saíram: a sessão com o GNOME fecha logo.
+    b.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let end = Instant::now() + Duration::from_secs(5);
+    while elo_core::wayland::session_open_for_test() {
+        assert!(Instant::now() < end, "a sessão do GNOME ficou aberta depois do último acesso");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Texto digitado de longe com acentos no GNOME: "ã", "õ", "ê" e "à" não
+/// existem direto nos teclados `us+intl` e ABNT2 e o sistema descartava
+/// ("não" chegava "no"). Só no GNOME de teste, com uma janela de texto que
+/// grava o que recebe em `ELO_E2E_TEXTO`.
+#[cfg(target_os = "linux")]
+#[test]
+fn gnome_types_accents() {
+    let (Ok(_), Ok(out)) = (std::env::var("ELO_E2E_GNOME"), std::env::var("ELO_E2E_TEXTO")) else {
+        eprintln!("fora de um GNOME de teste com ELO_E2E_TEXTO: pulado");
+        return;
+    };
+    let (_bg, cfg, host, host_id, dir) = gnome_host("acentos", 28);
+    let a = gnome_access(&cfg, &host, &host_id, 29, &dir);
+    use elo_proto::msg::{Input, Key};
+    // A visão geral do GNOME (aberta ao iniciar) pega o teclado: Esc fecha.
+    for down in [true, false] {
+        a.vh.cmd.send(session::Cmd::Input(Input::Key { key: Key::Escape, down })).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    let text = "não você à ç ü á Ã";
+    a.vh.cmd.send(session::Cmd::Input(Input::Text(text.into()))).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = std::fs::read_to_string(&out).unwrap_or_default();
+        if got == text {
+            break;
+        }
+        assert!(Instant::now() < end, "chegou {got:?}, esperado {text:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Monitor desligado no meio do acesso (um HDMI que some): o GNOME fecha a
+/// sessão, o Elo abre outra e quem acessa recebe a lista nova de telas (antes
+/// ficava com a do começo). Só no GNOME de teste, com `ELO_E2E_MONITORES`:
+/// o comando que, com "um", deixa só o primeiro monitor ligado e, com "dois",
+/// liga os dois de novo.
+#[cfg(target_os = "linux")]
+#[test]
+fn gnome_monitor_unplugged() {
+    let (Ok(_), Ok(cmd)) = (std::env::var("ELO_E2E_GNOME"), std::env::var("ELO_E2E_MONITORES")) else {
+        eprintln!("fora de um GNOME de teste com ELO_E2E_MONITORES: pulado");
+        return;
+    };
+    let (_bg, cfg, host, host_id, dir) = gnome_host("monitor", 30);
+    let a = gnome_access(&cfg, &host, &host_id, 31, &dir);
+    assert_eq!(a.monitors.len(), 2, "{:?}", a.monitors);
+    let end = Instant::now() + Duration::from_secs(15);
+    while a.remote.lock().unwrap().version == 0 {
+        assert!(Instant::now() < end, "a imagem não chegou");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let monitors = |n: &str| assert!(Command::new("sh").args(["-c", &format!("{cmd} {n}")]).status().unwrap().success(), "não mudou os monitores ({n})");
+    monitors("um");
+    match wait(&a.vrx, 15, |e| matches!(e, ViewerEvent::Monitors(_) | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Monitors(list)) => assert_eq!(list.len(), 1, "{list:?}"),
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("a lista de telas não mudou"),
+    }
+    // A imagem continua chegando da tela que ficou.
+    let v0 = a.remote.lock().unwrap().version;
+    a.vh.cmd.send(session::Cmd::Input(elo_proto::msg::Input::MouseMove { x: 200, y: 200 })).unwrap();
+    let end = Instant::now() + Duration::from_secs(15);
+    while a.remote.lock().unwrap().version <= v0 {
+        assert!(Instant::now() < end, "a imagem não voltou depois de desligar o monitor");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Liga de novo: a lista volta a ter as duas.
+    monitors("dois");
+    match wait(&a.vrx, 15, |e| matches!(e, ViewerEvent::Monitors(_) | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Monitors(list)) => assert_eq!(list.len(), 2, "{list:?}"),
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("a lista de telas não voltou a ter as duas"),
+    }
+    a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

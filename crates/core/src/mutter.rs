@@ -157,13 +157,28 @@ impl Mutter {
     }
 
     /// Espera o GNOME fechar a sessão por conta própria (tela bloqueada,
-    /// monitor que some e volta, gnome-shell reiniciando).
+    /// gnome-shell reiniciando) ou os monitores mudarem (um que liga ou
+    /// desliga, outra resolução). Nesse último caso o GNOME nem sempre fecha
+    /// a sessão: a tela que sumiu só para de mandar imagem, e a lista de
+    /// telas fica velha. Quem chama abre outra sessão com os monitores novos.
     pub(crate) async fn closed(&self) {
-        match self.rd.receive_signal("Closed").await {
-            Ok(mut s) => {
-                s.next().await;
+        async fn next(s: Option<ashpd::zbus::proxy::SignalStream<'_>>) {
+            match s {
+                Some(mut s) => {
+                    s.next().await;
+                }
+                None => std::future::pending().await,
             }
-            Err(_) => std::future::pending().await,
+        }
+        let closed = self.rd.receive_signal("Closed").await.ok();
+        let dc = proxy(self.rd.connection(), DC, "/org/gnome/Mutter/DisplayConfig", DC).await.ok();
+        let changed = match &dc {
+            Some(dc) => dc.receive_signal("MonitorsChanged").await.ok(),
+            None => None,
+        };
+        tokio::select! {
+            _ = next(closed) => eprintln!("[gnome] o GNOME fechou a sessão de acesso remoto (tela bloqueada?)"),
+            _ = next(changed) => eprintln!("[gnome] os monitores mudaram"),
         }
     }
 
