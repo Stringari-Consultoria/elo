@@ -61,6 +61,33 @@ pub fn fine_scroll() -> bool {
     }
 }
 
+/// A captura parou porque a tela está bloqueada e ninguém de fora a vê
+/// (GNOME com Wayland): quem acessa pode desbloquear com a senha de lá.
+pub fn locked_error(e: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        e == crate::wayland::LOCKED
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = e;
+        false
+    }
+}
+
+/// Desbloqueia a tela com a senha do usuário daqui (ver `locked_error`).
+pub fn unlock_screen(password: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::lock::unlock(password)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = password;
+        Err("desbloquear a tela por aqui só funciona no Linux com GNOME".into())
+    }
+}
+
 pub fn os_name() -> String {
     match std::env::consts::OS {
         "linux" => "Linux".into(),

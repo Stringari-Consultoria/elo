@@ -621,6 +621,8 @@ pub enum Cmd {
     Audio(bool),
     /// Volume do som recebido (0 a 1,5).
     Volume(f32),
+    /// Visualizador: desbloquear a tela de lá com a senha do usuário de lá.
+    Unlock(String),
 }
 
 fn new_handle() -> (Handle, Receiver<Cmd>) {
@@ -769,6 +771,10 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     // (UAC), o Ctrl+Alt+Del e a tela de bloqueio ficam numa área de trabalho
     // que nenhum programa comum captura: a sessão espera a tela voltar.
     let mut blind: Option<Instant> = None;
+    // Tela bloqueada (GNOME com Wayland): quem acessa já foi avisado, e a
+    // conferência da senha de lá em andamento (leva uns segundos).
+    let mut told_locked = false;
+    let mut unlocking: Option<Receiver<Result<(), String>>> = None;
     // Som: manda só se quem acessa pediu e se aqui está permitido.
     let mut audio_allowed = opt.audio;
     let mut audio_wanted = false;
@@ -863,6 +869,20 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                             ch.send(&Msg::FileCancel { id })?;
                         }
                         let _ = ev.send(HostEvent::File(t));
+                    }
+                }
+                Msg::Unlock(password) => {
+                    if !perms.control {
+                        ch.send(&Msg::Locked(Some("sem permissão de controle para desbloquear a tela".into())))?;
+                    } else if unlocking.is_none() {
+                        let (tx, rx) = channel();
+                        std::thread::Builder::new()
+                            .name("elo-desbloqueio".into())
+                            .spawn(move || {
+                                let _ = tx.send(platform::unlock_screen(&password));
+                            })
+                            .map_err(|e| e.to_string())?;
+                        unlocking = Some(rx);
                     }
                 }
                 Msg::Restart => {
@@ -975,6 +995,23 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         for t in progress {
             let _ = ev.send(HostEvent::File(t));
         }
+        let unlocked = unlocking.as_ref().and_then(|rx| match rx.try_recv() {
+            Ok(r) => Some(r),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err("a conferência da senha parou no meio".into())),
+        });
+        if let Some(r) = unlocked {
+            unlocking = None;
+            match r {
+                Ok(()) => {
+                    ch.send(&Msg::Unlocked)?;
+                    let _ = ev.send(HostEvent::Chat(format!("[{from_name} desbloqueou a tela com a senha deste usuário]")));
+                    // A imagem volta já, sem esperar a próxima tentativa.
+                    last_frame = Instant::now() - Duration::from_secs(1);
+                }
+                Err(e) => ch.send(&Msg::Locked(Some(e)))?,
+            }
+        }
         // Área de transferência local → visualizador.
         if perms.clipboard && last_clip.elapsed() > Duration::from_millis(600) {
             last_clip = Instant::now();
@@ -991,6 +1028,7 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
             aim(&mut ch, &mut target, None)?;
             match screen.capture(monitor) {
                 Ok(f) => {
+                    told_locked = false;
                     if blind.take().is_some() {
                         // Tudo de novo: o que estava lá pode ter mudado inteiro.
                         main.full = true;
@@ -1001,9 +1039,17 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                     }
                 }
                 Err(e) => {
+                    let locked = platform::locked_error(&e);
+                    if locked && !told_locked {
+                        told_locked = true;
+                        ch.send(&Msg::Locked(None))?;
+                        ch.send(&Msg::Notice(elo_proto::msg::LOCKED.into()))?;
+                    }
                     if blind.is_none() {
                         blind = Some(Instant::now());
-                        ch.send(&Msg::Notice(BLIND.into()))?;
+                        if !locked {
+                            ch.send(&Msg::Notice(BLIND.into()))?;
+                        }
                     }
                     if blind.is_some_and(|t| t.elapsed() > BLIND_MAX) {
                         return Err(e);
@@ -1176,6 +1222,11 @@ pub enum ViewerEvent {
     Listing(Listing),
     /// Aviso do outro lado (ex.: não deu para baixar).
     Notice(String),
+    /// A tela de lá está bloqueada: pede a senha do usuário de lá. `Some`:
+    /// por que a última tentativa não deu.
+    Locked(Option<String>),
+    /// A tela de lá foi desbloqueada.
+    Unlocked,
     Ended(String),
 }
 
@@ -1372,8 +1423,16 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 Msg::DirListing { path, parent, entries, error } => {
                     let _ = ev.send(ViewerEvent::Listing(Listing { path, parent, entries, error }));
                 }
+                // Esse aviso é para versões que não sabem desbloquear.
+                Msg::Notice(t) if t == elo_proto::msg::LOCKED => {}
                 Msg::Notice(t) => {
                     let _ = ev.send(ViewerEvent::Notice(t));
+                }
+                Msg::Locked(e) => {
+                    let _ = ev.send(ViewerEvent::Locked(e));
+                }
+                Msg::Unlocked => {
+                    let _ = ev.send(ViewerEvent::Unlocked);
                 }
                 Msg::Audio(packet) => {
                     if let Some(p) = player.as_mut() {
@@ -1397,6 +1456,7 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 Cmd::Chat(t) => ch.send(&Msg::Chat(t))?,
                 Cmd::ListDir(path) => ch.send(&Msg::ListDir { path })?,
                 Cmd::Restart => ch.send(&Msg::Restart)?,
+                Cmd::Unlock(password) => ch.send(&Msg::Unlock(password))?,
                 Cmd::OpenTerminal => {
                     if ch.has("terminal") {
                         ch.send(&Msg::OpenTerminal)?;

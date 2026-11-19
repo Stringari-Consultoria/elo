@@ -195,6 +195,8 @@ async fn open_any() -> Result<(Backend, Vec<StreamMeta>, Option<OwnedFd>), Strin
     {
         match crate::mutter::open(&conn).await {
             Ok((m, streams)) => return Ok((Backend::Mutter(m), streams, None)),
+            // O portal também seria recusado (e ficaria esperando um aceite).
+            Err(e) if e == LOCKED => return Err(e),
             Err(e) => eprintln!("[gnome] {e}; tentando pelo portal"),
         }
     }
@@ -524,11 +526,31 @@ fn release() {
     }
 }
 
+/// Erro da captura com a tela bloqueada (o GNOME não deixa capturar).
+pub const LOCKED: &str = "a tela está bloqueada e o GNOME não deixa capturá-la";
+
+/// Monitores enquanto a tela está bloqueada (sem sessão de captura).
+fn locked_monitors() -> Vec<Monitor> {
+    let r = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string()).and_then(|rt| {
+        rt.block_on(async {
+            let conn = ashpd::zbus::Connection::session().await.map_err(|e| e.to_string())?;
+            crate::mutter::monitors(&conn).await
+        })
+    });
+    let list = r.ok().filter(|l| !l.is_empty()).unwrap_or_else(|| vec![(1920, 1080, true)]);
+    list.into_iter().enumerate().map(|(i, (width, height, primary))| Monitor { index: i as u8, name: format!("Tela {}", i + 1), width, height, primary }).collect()
+}
+
 struct WaylandScreen {
-    portal: Arc<Portal>,
+    /// `None`: a tela estava bloqueada ao conectar; abre ao desbloquear.
+    portal: Option<Arc<Portal>>,
+    /// Lista de telas quando não há sessão aberta.
+    locked: Vec<Monitor>,
     last: Vec<Option<Frame>>,
     /// Próxima tentativa de abrir outra sessão quando a atual morre.
     retry_at: Instant,
+    /// A última tentativa foi recusada porque a tela está bloqueada.
+    blocked: bool,
 }
 
 /// Sem sessão com o sistema (fechada por ele): a captura tenta de novo.
@@ -542,7 +564,8 @@ impl Drop for WaylandScreen {
 
 impl Screen for WaylandScreen {
     fn monitors(&mut self) -> Vec<Monitor> {
-        self.portal
+        let Some(portal) = &self.portal else { return self.locked.clone() };
+        portal
             .streams
             .iter()
             .enumerate()
@@ -551,27 +574,29 @@ impl Screen for WaylandScreen {
     }
 
     fn capture(&mut self, monitor: u8) -> Result<Frame, String> {
-        if !self.portal.alive.load(Ordering::Relaxed) {
+        if !self.portal.as_ref().is_some_and(|p| p.alive.load(Ordering::Relaxed)) {
             // Uma tentativa a cada 2 s (no GNOME é na hora; o portal pergunta).
             if Instant::now() < self.retry_at {
-                return Err(GONE.into());
+                return Err(if self.blocked { LOCKED.into() } else { GONE.into() });
             }
             self.retry_at = Instant::now() + Duration::from_secs(2);
-            let p = portal()?;
+            let p = portal().inspect_err(|e| self.blocked = e == LOCKED)?;
+            self.blocked = false;
             self.last = p.streams.iter().map(|_| None).collect();
-            self.portal = p;
+            self.portal = Some(p);
         }
-        let i = (monitor as usize).min(self.portal.frames.len().saturating_sub(1));
+        let Some(portal) = &self.portal else { return Err(GONE.into()) };
+        let i = (monitor as usize).min(portal.frames.len().saturating_sub(1));
         // O PipeWire só manda quadro quando a tela muda: guarda o último.
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if let Some(f) = self.portal.frames[i].lock().map_err(|e| e.to_string())?.take() {
+            if let Some(f) = portal.frames[i].lock().map_err(|e| e.to_string())?.take() {
                 self.last[i] = Some(f);
             }
             if let Some(f) = &self.last[i] {
                 return Ok(Frame { width: f.width, height: f.height, rgba: f.rgba.clone() });
             }
-            if Instant::now() > deadline || !self.portal.alive.load(Ordering::Relaxed) {
+            if Instant::now() > deadline || !portal.alive.load(Ordering::Relaxed) {
                 return Err("a tela compartilhada pelo portal não mandou imagem".into());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -591,19 +616,21 @@ pub const NOBODY_ANSWERED: &str = "o outro computador (Linux com Wayland) pediu 
 const MAX_QUEUED: usize = 8192;
 
 struct WaylandControl {
-    portal: Arc<Portal>,
+    /// `None` enquanto a tela está bloqueada (a captura abre ao desbloquear).
+    portal: Option<Arc<Portal>>,
 }
 
 impl WaylandControl {
     fn send(&mut self, c: Cmd) {
         // A sessão morreu e a captura já abriu outra: passa a usar a nova.
-        if !self.portal.alive.load(Ordering::Relaxed)
+        if !self.portal.as_ref().is_some_and(|p| p.alive.load(Ordering::Relaxed))
             && let Some(p) = CURRENT.lock().ok().and_then(|c| c.upgrade()).filter(|p| p.alive.load(Ordering::Relaxed))
         {
-            self.portal = p;
+            self.portal = Some(p);
         }
-        self.portal.pending.fetch_add(1, Ordering::Relaxed);
-        let _ = self.portal.cmd.send((self.portal.epoch.load(Ordering::Relaxed), c));
+        let Some(p) = &self.portal else { return };
+        p.pending.fetch_add(1, Ordering::Relaxed);
+        let _ = p.cmd.send((p.epoch.load(Ordering::Relaxed), c));
     }
 
     fn key(&mut self, sym: u32, down: bool) {
@@ -613,11 +640,14 @@ impl WaylandControl {
 
 impl Control for WaylandControl {
     fn discard_pending(&mut self) {
-        self.portal.epoch.fetch_add(1, Ordering::Relaxed);
+        if let Some(p) = &self.portal {
+            p.epoch.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn apply(&mut self, input: &Input, monitor: u8) {
-        let screen = (monitor as usize).min(self.portal.streams.len().saturating_sub(1));
+        let screens = self.portal.as_ref().map_or(1, |p| p.streams.len());
+        let screen = (monitor as usize).min(screens.saturating_sub(1));
         match input {
             Input::MouseMove { x, y } => self.send(Cmd::Motion(screen, *x as f64, *y as f64)),
             Input::MouseButton { button, down } => {
@@ -642,7 +672,7 @@ impl Control for WaylandControl {
             Input::ScrollFine { dx, dy } => self.send(Cmd::Axis(-*dx as f64 / 8.0, -*dy as f64 / 8.0)),
             Input::Key { key, down } => self.key(crate::platform::keysym_of(*key), *down),
             Input::Text(t) => {
-                if self.portal.pending.load(Ordering::Relaxed) > MAX_QUEUED {
+                if self.portal.as_ref().is_some_and(|p| p.pending.load(Ordering::Relaxed) > MAX_QUEUED) {
                     return;
                 }
                 for c in t.chars() {
@@ -674,11 +704,25 @@ pub fn stop_session_for_test() {
 }
 
 pub fn open_screen() -> Result<Box<dyn Screen>, String> {
-    let portal = portal()?;
-    let last = portal.streams.iter().map(|_| None).collect();
-    Ok(Box::new(WaylandScreen { portal, last, retry_at: Instant::now() }))
+    match portal() {
+        Ok(portal) => {
+            let last = portal.streams.iter().map(|_| None).collect();
+            Ok(Box::new(WaylandScreen { portal: Some(portal), locked: Vec::new(), last, retry_at: Instant::now(), blocked: false }))
+        }
+        // Tela bloqueada: a sessão começa sem imagem (quem acessa pode
+        // desbloquear com a senha de lá) e a captura abre depois.
+        Err(e) if e == LOCKED => {
+            let locked = locked_monitors();
+            Ok(Box::new(WaylandScreen { portal: None, last: locked.iter().map(|_| None).collect(), locked, retry_at: Instant::now(), blocked: true }))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 pub fn open_control() -> Result<Box<dyn Control>, String> {
-    Ok(Box::new(WaylandControl { portal: portal()? }))
+    match portal() {
+        Ok(p) => Ok(Box::new(WaylandControl { portal: Some(p) })),
+        Err(e) if e == LOCKED => Ok(Box::new(WaylandControl { portal: None })),
+        Err(e) => Err(e),
+    }
 }

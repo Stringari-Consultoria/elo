@@ -6,6 +6,8 @@
 
 pub mod audio;
 pub mod client;
+#[cfg(target_os = "linux")]
+pub mod lock;
 pub mod net;
 pub mod platform;
 pub mod session;

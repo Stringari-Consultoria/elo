@@ -29,7 +29,7 @@ pub(crate) struct Mutter {
     streams: Vec<OwnedObjectPath>,
 }
 
-async fn proxy(conn: &Connection, dest: &'static str, path: impl TryInto<ObjectPath<'static>, Error: Into<ashpd::zbus::Error>>, iface: &'static str) -> Result<Proxy<'static>, String> {
+pub(crate) async fn proxy(conn: &Connection, dest: &'static str, path: impl TryInto<ObjectPath<'static>, Error: Into<ashpd::zbus::Error>>, iface: &'static str) -> Result<Proxy<'static>, String> {
     Builder::new(conn).destination(dest).path(path).interface(iface).cache_properties(CacheProperties::No).build().await.map_err(|e| e.to_string())
 }
 
@@ -60,11 +60,30 @@ async fn connectors(conn: &Connection) -> Result<Vec<(String, bool)>, String> {
     Ok(out)
 }
 
+/// Monitores ligados, na mesma ordem de `connectors`: largura, altura (do
+/// modo atual) e se é o principal. Serve para a lista de telas enquanto a
+/// tela está bloqueada (sem captura).
+pub(crate) async fn monitors(conn: &Connection) -> Result<Vec<(u32, u32, bool)>, String> {
+    let dc = proxy(conn, DC, "/org/gnome/Mutter/DisplayConfig", DC).await?;
+    let (_, mons, logical, _): State = dc.call("GetCurrentState", &()).await.map_err(|e| format!("monitores do GNOME: {e}"))?;
+    let mut l = logical;
+    l.sort_by_key(|m| (m.0, m.1));
+    let size = |conn: &str| {
+        mons.iter()
+            .find(|m| m.0.0 == conn)
+            .and_then(|m| m.1.iter().find(|mode| mode.6.get("is-current").and_then(|v| bool::try_from(v.try_clone().ok()?).ok()).unwrap_or(false)))
+            .map(|mode| (mode.1.max(0) as u32, mode.2.max(0) as u32))
+            .unwrap_or((1920, 1080))
+    };
+    Ok(l.iter().flat_map(|m| m.5.iter().map(move |ids| (ids.0.clone(), m.4))).map(|(c, primary)| { let (w, h) = size(&c); (w, h, primary) }).collect())
+}
+
 /// Abre a sessão: controle + captura de todos os monitores. Não pergunta nada na tela.
 pub(crate) async fn open(conn: &Connection) -> Result<(Mutter, Vec<StreamMeta>), String> {
     let mons = connectors(conn).await?;
     let rdm = proxy(conn, RD, "/org/gnome/Mutter/RemoteDesktop", RD).await?;
-    let rd_path: OwnedObjectPath = rdm.call("CreateSession", &()).await.map_err(|e| format!("sessão de acesso remoto do GNOME: {e}"))?;
+    // Tela bloqueada: o gnome-shell proíbe o acesso remoto até desbloquear.
+    let rd_path: OwnedObjectPath = rdm.call("CreateSession", &()).await.map_err(|e| if e.to_string().contains("inhibited") { crate::wayland::LOCKED.to_string() } else { format!("sessão de acesso remoto do GNOME: {e}") })?;
     let rd = proxy(conn, RD, rd_path, "org.gnome.Mutter.RemoteDesktop.Session").await?;
     let r = async {
         let id: String = rd.get_property("SessionId").await.map_err(|e| e.to_string())?;

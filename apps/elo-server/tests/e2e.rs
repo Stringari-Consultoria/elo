@@ -844,3 +844,90 @@ fn gnome_wayland_without_asking() {
     vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// GNOME de teste: tranca ou destranca a tela pelo logind falso (a extensão
+/// elo-teste no barramento de sistema do GNOME isolado liga e desliga o
+/// bloqueio do acesso remoto do Mutter, como a tela de bloqueio faz).
+#[cfg(target_os = "linux")]
+fn fake_logind(method: &str) {
+    let bus = std::env::var("DBUS_SYSTEM_BUS_ADDRESS").expect("barramento de sistema do GNOME de teste");
+    let path = "/org/freedesktop/login1/session/auto";
+    let ok = Command::new("gdbus").env("DBUS_SESSION_BUS_ADDRESS", bus).args(["call", "--session", "--dest", "org.freedesktop.login1", "--object-path", path, "--method", &format!("org.freedesktop.login1.Session.{method}")]).output().is_ok_and(|o| o.status.success());
+    assert!(ok, "o logind falso não respondeu a {method} (extensão elo-teste ligada?)");
+}
+
+/// GNOME no Wayland com a tela bloqueada: o GNOME não deixa ninguém de fora
+/// ver nem controlar a tela. A sessão abre mesmo assim, quem acessa recebe o
+/// pedido da senha do usuário de lá e, com a senha certa, a tela desbloqueia
+/// e a imagem chega. Também quando a tela bloqueia no meio do acesso.
+/// Só no GNOME de teste com o logind falso (`ELO_E2E_GNOME=1` e
+/// `ELO_CHKPWD`: onde gravar o conferidor de senha de mentira).
+#[cfg(target_os = "linux")]
+#[test]
+fn gnome_locked_screen_unlocks_with_password() {
+    let (Ok(_), Ok(chk)) = (std::env::var("ELO_E2E_GNOME"), std::env::var("ELO_CHKPWD")) else {
+        eprintln!("fora de um GNOME de teste com ELO_CHKPWD: pulado");
+        return;
+    };
+    // Usuário "teste" (o do logind falso) com a senha "certa-123".
+    std::fs::write(&chk, "#!/bin/sh\n[ \"$1\" = teste ] || exit 9\np=$(head -c 200 | tr -d '\\000')\n[ \"$p\" = certa-123 ] && exit 0\nexit 7\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&chk, std::fs::Permissions::from_mode(0o700)).unwrap();
+    fake_logind("Lock");
+    session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("elo-e2e-bloqueio-{}", std::process::id()));
+    let bg = elo_server::Background::start(elo_server::Config { listen: "127.0.0.1:0".into(), data: dir.clone(), tls: elo_server::Tls::SelfSigned, retention_days: 90, trusted_proxies: Vec::new() }).unwrap();
+    let cfg = ServerCfg { address: format!("127.0.0.1:{}", bg.local_addr.port()), tls: true, pin: bg.fingerprint.clone().unwrap() };
+    let host = client::start(cfg.clone(), [23u8; 32], "Anfitrião".into());
+    let viewer = client::start(cfg.clone(), [24u8; 32], "Visualizador".into());
+    let Some(Event::Online { id: host_id }) = wait(&host.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("anfitrião offline") };
+    let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
+    viewer.tx.send(client::Command::Connect { target: host_id.clone() }).unwrap();
+    let Some(Event::SessionReady { session: vs, secret: vsec, .. }) = wait(&viewer.rx, 10, |e| matches!(e, Event::SessionReady { .. })) else { panic!("sem sessão") };
+    let Some(Event::Incoming { session: hs, secret: hsec, from_id, .. }) = wait(&host.rx, 5, |e| matches!(e, Event::Incoming { .. })) else { panic!("convite não chegou") };
+    let (htx, _hrx) = channel();
+    let opt = HostOptions { passwords: vec!["s3nha-gnome".into()], name: "Anfitrião".into(), downloads: dir.join("recebidos"), default_permissions: Default::default(), restart: restart_simulado, terminal: terminal_simulado, audio: false, id: host_id.clone(), tech_ca: None };
+    let _hh = session::host(cfg.clone(), hs, hsec, from_id, "Visualizador".into(), opt, htx);
+    let remote = Arc::new(Mutex::new(Remote::default()));
+    let (vtx, vrx) = channel();
+    let vh = session::viewer(cfg, vs, vsec, "s3nha-gnome".into(), viewer_id, "Visualizador".into(), dir.join("baixados"), remote.clone(), vtx, host_id, None);
+    // Conecta mesmo bloqueada: as telas vêm do GNOME, a imagem não.
+    let monitors = match wait(&vrx, 20, |e| matches!(e, ViewerEvent::Connected { .. } | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Connected { monitors, .. }) => monitors,
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("não conectou com a tela bloqueada"),
+    };
+    assert_eq!(monitors.len(), 2, "{monitors:?}");
+    let locked = |what: &str| match wait(&vrx, 10, |e| matches!(e, ViewerEvent::Locked(_) | ViewerEvent::Unlocked | ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Locked(e)) => e,
+        Some(ViewerEvent::Ended(r)) => panic!("{what}: encerrou: {r}"),
+        _ => panic!("{what}: não pediu a senha"),
+    };
+    assert_eq!(locked("ao conectar"), None);
+    assert_eq!(remote.lock().unwrap().version, 0, "veio imagem com a tela bloqueada");
+    // Senha errada: avisa e continua pedindo.
+    vh.cmd.send(session::Cmd::Unlock("errada".into())).unwrap();
+    assert_eq!(locked("senha errada").as_deref(), Some(elo_core::lock::WRONG));
+    let unlock = || {
+        vh.cmd.send(session::Cmd::Unlock("certa-123".into())).unwrap();
+        assert!(wait(&vrx, 10, |e| matches!(e, ViewerEvent::Unlocked)).is_some(), "não desbloqueou");
+    };
+    let image_after = |v0: u64, what: &str| {
+        let end = Instant::now() + Duration::from_secs(15);
+        while remote.lock().unwrap().version <= v0 {
+            assert!(Instant::now() < end, "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    unlock();
+    image_after(0, "a imagem não chegou depois de desbloquear");
+    // Bloqueia no meio do acesso: pede a senha de novo e a imagem volta.
+    fake_logind("Lock");
+    assert_eq!(locked("no meio do acesso"), None);
+    let v0 = remote.lock().unwrap().version;
+    unlock();
+    image_after(v0, "a imagem não voltou depois de desbloquear de novo");
+    assert!(!matches!(vrx.try_recv(), Ok(ViewerEvent::Ended(_))), "a sessão caiu");
+    vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

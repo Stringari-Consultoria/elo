@@ -167,6 +167,18 @@ pub struct ViewSession {
     pub multi: bool,
     /// Telas abertas cada uma na sua janela (além da que está na aba).
     pub split: Vec<SplitWin>,
+    /// A tela de lá está bloqueada: pedindo a senha do usuário de lá.
+    pub locked: Option<LockPrompt>,
+}
+
+/// Pedido da senha para desbloquear a tela do outro computador.
+#[derive(Default)]
+pub struct LockPrompt {
+    pub password: String,
+    /// Por que a última tentativa não deu.
+    pub error: Option<String>,
+    /// Senha enviada, esperando a resposta de lá.
+    pub busy: bool,
 }
 
 /// O que está apertado lá a partir de uma janela, para soltar exatamente o que
@@ -1003,6 +1015,7 @@ impl EloApp {
                         shot: None,
                         multi: false,
                         split: Vec::new(),
+                        locked: None,
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();
@@ -1147,6 +1160,13 @@ impl EloApp {
                         v.files.listing = Some(l);
                     }
                     ViewerEvent::Notice(t) => notices.push(crate::i18n::tr_dyn(&t)),
+                    ViewerEvent::Locked(e) => {
+                        let p = v.locked.get_or_insert_with(LockPrompt::default);
+                        p.busy = false;
+                        p.password.clear();
+                        p.error = e.map(|e| crate::i18n::tr_dyn(&e));
+                    }
+                    ViewerEvent::Unlocked => v.locked = None,
                     ViewerEvent::Ended(r) => v.ended = Some(r),
                 }
             }

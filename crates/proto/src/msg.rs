@@ -148,7 +148,21 @@ pub enum Msg {
     FrameTarget(Option<u8>),
     /// Entrada vinda da janela de outra tela (posição relativa a ela).
     InputOn { monitor: u8, input: Input },
+    /// Anfitrião → visualizador: a tela de lá está bloqueada e ninguém de fora
+    /// a vê (GNOME com Wayland); desbloqueia com a senha do usuário de lá.
+    /// `Some`: por que a última tentativa não deu. Versões antigas ignoram e
+    /// ficam com o aviso `LOCKED`.
+    Locked(Option<String>),
+    /// Visualizador → anfitrião: a senha do usuário de lá, para desbloquear
+    /// (exige permissão de controle).
+    Unlock(String),
+    /// Anfitrião → visualizador: a tela foi desbloqueada.
+    Unlocked,
 }
+
+/// Aviso mandado junto com `Locked`, para quem acessa com uma versão que não
+/// sabe desbloquear (as novas não mostram).
+pub const LOCKED: &str = "a tela do outro computador está bloqueada. Atualize o Elo deste computador para desbloquear daqui com a senha do usuário de lá, ou desbloqueie no próprio computador";
 
 /// Recursos que esta versão entende, além do básico. O anfitrião manda a
 /// lista logo depois do `Welcome`, no mesmo quadro: versões antigas ignoram

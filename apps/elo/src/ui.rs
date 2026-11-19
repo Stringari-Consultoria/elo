@@ -813,6 +813,56 @@ impl EloApp {
                 v.confirm_restart = false;
             }
         }
+        // Tela de lá bloqueada (GNOME com Wayland): a senha do usuário de lá.
+        if let Some(lp) = v.locked.as_mut() {
+            let (mut send, mut end) = (false, false);
+            let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+            let m = mac::DARK;
+            egui::Modal::new(egui::Id::unique(("desbloquear", idx))).frame(mac::alert_frame(&m)).show(&ctx, |ui| {
+                ui.style_mut().visuals = egui::Visuals::dark();
+                ui.set_width(300.0);
+                ui.vertical_centered(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                    mac::icon_tile(ui.painter(), r, Icon::Lock, m.accent);
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(t!("A tela de {} está bloqueada", name)).font(theme::semibold(15.0)).color(m.label));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(t!("Digite a senha do usuário de lá, a mesma da tela de bloqueio. Ela vai cifrada e só serve para desbloquear.")).size(12.0).color(m.label2)).halign(Align::Center).wrap());
+                });
+                ui.add_space(12.0);
+                let r = ui.add_enabled(!lp.busy, egui::TextEdit::singleline(&mut lp.password).password(true).hint_text(t!("Senha do usuário de lá")).desired_width(f32::INFINITY));
+                if !lp.busy && r.ctx.memory(|mem| mem.focused().is_none()) {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if let Some(e) = &lp.error {
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(e).size(11.5).color(m.red)).wrap());
+                }
+                ui.add_space(16.0);
+                let ready = !lp.busy && !lp.password.is_empty();
+                ui.columns(2, |c| {
+                    let w = Vec2::new(c[0].available_width(), 30.0);
+                    if mac::button(&mut c[0], &m, t!("Encerrar"), Kind::Secondary, Some(w), true).clicked() {
+                        end = true;
+                    }
+                    if mac::button(&mut c[1], &m, if lp.busy { t!("Conferindo…") } else { t!("Desbloquear") }, Kind::Primary, Some(w), ready).clicked() {
+                        send = true;
+                    }
+                });
+                if enter && ready {
+                    send = true;
+                }
+            });
+            if send {
+                lp.busy = true;
+                lp.error = None;
+                let _ = v.handle.cmd.send(Cmd::Unlock(std::mem::take(&mut lp.password)));
+            }
+            if end {
+                v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         // Tela remota.
         if !v.connected {
             // Cartão de vidro no meio: quem, situação, código e Cancelar.
