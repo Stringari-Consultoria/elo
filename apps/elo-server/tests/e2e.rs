@@ -934,6 +934,8 @@ fn gnome_locked_screen_unlocks_with_password() {
 
 /// Um acesso com senha a `host` (já online), como o app faz.
 #[cfg(unix)]
+// (A imagem e as telas só são conferidas nos testes do GNOME, no Linux.)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct GnomeAccess {
     vh: session::Handle,
     vrx: std::sync::mpsc::Receiver<ViewerEvent>,
