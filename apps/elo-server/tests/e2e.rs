@@ -932,8 +932,8 @@ fn gnome_locked_screen_unlocks_with_password() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// GNOME de teste: um acesso com senha a `host` (já online), como o app faz.
-#[cfg(target_os = "linux")]
+/// Um acesso com senha a `host` (já online), como o app faz.
+#[cfg(unix)]
 struct GnomeAccess {
     vh: session::Handle,
     vrx: std::sync::mpsc::Receiver<ViewerEvent>,
@@ -942,7 +942,7 @@ struct GnomeAccess {
     _hh: session::Handle,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn gnome_access(cfg: &ServerCfg, host: &client::Control, host_id: &str, seed: u8, dir: &std::path::Path) -> GnomeAccess {
     let viewer = client::start(cfg.clone(), [seed; 32], format!("Visualizador {seed}"));
     let Some(Event::Online { id: viewer_id }) = wait(&viewer.rx, 10, |e| matches!(e, Event::Online { .. })) else { panic!("visualizador offline") };
@@ -965,8 +965,8 @@ fn gnome_access(cfg: &ServerCfg, host: &client::Control, host_id: &str, seed: u8
     GnomeAccess { vh, vrx, remote, monitors, _hh }
 }
 
-/// GNOME de teste: servidor e anfitrião online.
-#[cfg(target_os = "linux")]
+/// Servidor e anfitrião online.
+#[cfg(unix)]
 fn gnome_host(tag: &str, seed: u8) -> (elo_server::Background, ServerCfg, client::Control, String, std::path::PathBuf) {
     session::AUDIO_ON_START.store(false, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("elo-e2e-{tag}-{}", std::process::id()));
@@ -1042,7 +1042,12 @@ fn gnome_types_accents() {
     }
     std::thread::sleep(Duration::from_millis(800));
     let text = "não você à ç ü á Ã";
-    a.vh.cmd.send(session::Cmd::Input(Input::Text(text.into()))).unwrap();
+    // Como alguém digitando rápido (40 letras por segundo): cada tecla vem
+    // numa mensagem.
+    for c in text.chars() {
+        a.vh.cmd.send(session::Cmd::Input(Input::Text(c.to_string()))).unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+    }
     let end = Instant::now() + Duration::from_secs(10);
     loop {
         let got = std::fs::read_to_string(&out).unwrap_or_default();
@@ -1098,6 +1103,85 @@ fn gnome_monitor_unplugged() {
         Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
         _ => panic!("a lista de telas não voltou a ter as duas"),
     }
+    a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Terminal de texto (como SSH): quem acessa abre o shell de lá, roda um
+/// comando e a saída chega; `exit` fecha e avisa. Funciona sem a imagem.
+#[cfg(unix)]
+#[test]
+fn text_terminal_like_ssh() {
+    if !test_screen() {
+        return;
+    }
+    let (_bg, cfg, host, host_id, dir) = gnome_host("terminal", 32);
+    let a = gnome_access(&cfg, &host, &host_id, 33, &dir);
+    a.vh.cmd.send(session::Cmd::ShellOpen { cols: 80, rows: 24 }).unwrap();
+    // A conta só sai pronta se o shell rodou o comando (o eco do que foi digitado não tem "elo-42").
+    a.vh.cmd.send(session::Cmd::ShellInput(b"echo elo-$((40+2))\r".to_vec())).unwrap();
+    let mut out = Vec::new();
+    let end = Instant::now() + Duration::from_secs(15);
+    while !String::from_utf8_lossy(&out).contains("elo-42") {
+        assert!(Instant::now() < end, "a saída do terminal não chegou: {:?}", String::from_utf8_lossy(&out));
+        match a.vrx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ViewerEvent::ShellOutput(d)) => out.extend(d),
+            Ok(ViewerEvent::ShellEnd(why)) => panic!("o terminal acabou: {why}"),
+            _ => {}
+        }
+    }
+    a.vh.cmd.send(session::Cmd::ShellInput(b"exit\r".to_vec())).unwrap();
+    assert!(wait(&a.vrx, 10, |e| matches!(e, ViewerEvent::ShellEnd(_))).is_some(), "o exit não fechou o terminal");
+    a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pedidos que o logind falso do GNOME de teste recebeu.
+#[cfg(target_os = "linux")]
+fn fake_logind_calls() -> String {
+    let bus = std::env::var("DBUS_SYSTEM_BUS_ADDRESS").expect("barramento de sistema do GNOME de teste");
+    let o = Command::new("gdbus")
+        .env("DBUS_SESSION_BUS_ADDRESS", bus)
+        .args(["call", "--session", "--dest", "org.freedesktop.login1", "--object-path", "/org/freedesktop/login1/session/auto", "--method", "org.freedesktop.DBus.Properties.Get", "org.freedesktop.login1.Session", "Calls"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+/// Socorro da tela travada no GNOME de teste (logind falso): o console de
+/// texto (Ctrl+Alt+F3) troca para o terminal 3 e a volta ativa a sessão.
+/// Reiniciar a sessão sem o login automático para o usuário é recusado com
+/// o motivo, sem encerrar nada. (O reinício de emergência não entra em teste:
+/// as teclas vão para o kernel desta máquina.)
+#[cfg(target_os = "linux")]
+#[test]
+fn gnome_rescue_uses_logind() {
+    if std::env::var("ELO_E2E_GNOME").is_err() {
+        eprintln!("fora de um GNOME de teste: pulado");
+        return;
+    }
+    use elo_proto::msg::Rescue;
+    let (_bg, cfg, host, host_id, dir) = gnome_host("socorro", 34);
+    let a = gnome_access(&cfg, &host, &host_id, 35, &dir);
+    let until_call = |what: &str| {
+        let end = Instant::now() + Duration::from_secs(10);
+        while !fake_logind_calls().contains(what) {
+            assert!(Instant::now() < end, "o logind não recebeu {what}: {}", fake_logind_calls());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    a.vh.cmd.send(session::Cmd::Rescue(Rescue::TextConsole)).unwrap();
+    until_call("SwitchTo 3");
+    a.vh.cmd.send(session::Cmd::Rescue(Rescue::GraphicConsole)).unwrap();
+    until_call("Activate");
+    // O usuário do logind falso ("teste") não tem login automático aqui.
+    a.vh.cmd.send(session::Cmd::Rescue(Rescue::RestartSession)).unwrap();
+    match wait(&a.vrx, 10, |e| matches!(e, ViewerEvent::Notice(t) if t.contains("login automático")) || matches!(e, ViewerEvent::Ended(_))) {
+        Some(ViewerEvent::Notice(_)) => {}
+        Some(ViewerEvent::Ended(r)) => panic!("encerrou: {r}"),
+        _ => panic!("não avisou que falta o login automático"),
+    }
+    assert!(!fake_logind_calls().contains("Terminate"), "encerrou a sessão sem login automático");
     a.vh.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = std::fs::remove_dir_all(&dir);
 }

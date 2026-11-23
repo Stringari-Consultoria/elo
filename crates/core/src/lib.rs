@@ -15,8 +15,11 @@ pub mod lock;
 pub mod net;
 pub mod platform;
 pub mod session;
+pub mod shell;
 #[cfg(target_os = "linux")]
 mod mutter;
+#[cfg(target_os = "linux")]
+pub mod rescue;
 #[cfg(target_os = "linux")]
 pub mod uinput;
 #[cfg(target_os = "linux")]

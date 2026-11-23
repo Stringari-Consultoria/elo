@@ -863,6 +863,98 @@ impl EloApp {
                 v.handle.stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        // Socorro que derruba a sessão: confirma antes.
+        if let Some(r) = v.confirm_rescue {
+            use elo_proto::msg::Rescue;
+            let (mut go, mut close) = (false, false);
+            let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+            let m = mac::DARK;
+            let (title, body, button) = if r == Rescue::RestartSession {
+                (t!("Reiniciar só a sessão de {}?", name), t!("Fecha todos os programas abertos lá (o que não estiver salvo se perde) e entra de novo sozinho em uns 10 segundos, pelo login automático. O Elo reconecta quando a sessão voltar."), t!("Reiniciar a sessão"))
+            } else {
+                (t!("Reinício de emergência de {}?", name), t!("Para quando o computador não reinicia do jeito normal. O Elo aperta lá Alt+SysRq e S, U e B: grava no disco o que estiver pendente, protege o disco e reinicia na hora, sem fechar os programas. O que não estiver salvo se perde. O Elo reconecta quando ele voltar."), t!("Reiniciar agora"))
+            };
+            egui::Modal::new(egui::Id::unique(("socorro", idx))).frame(mac::alert_frame(&m)).show(&ctx, |ui| {
+                ui.style_mut().visuals = egui::Visuals::dark();
+                ui.set_width(320.0);
+                ui.vertical_centered(|ui| {
+                    let (rr, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                    mac::icon_tile(ui.painter(), rr, Icon::Refresh, if r == Rescue::RestartSession { m.orange } else { m.red });
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(&title).font(theme::semibold(15.0)).color(m.label));
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(RichText::new(body).size(12.0).color(m.label2)).halign(Align::Center).wrap());
+                });
+                ui.add_space(18.0);
+                ui.columns(2, |c| {
+                    let w = Vec2::new(c[0].available_width(), 30.0);
+                    if mac::button(&mut c[0], &m, t!("Cancelar"), Kind::Secondary, Some(w), true).clicked() || c[0].input(|i| i.key_pressed(egui::Key::Escape)) {
+                        close = true;
+                    }
+                    if mac::button(&mut c[1], &m, button, Kind::Destructive, Some(w), true).clicked() {
+                        go = true;
+                    }
+                });
+            });
+            if go {
+                let _ = v.handle.cmd.send(Cmd::Rescue(r));
+            }
+            if go || close {
+                v.confirm_rescue = None;
+            }
+        }
+        if v.rescue_help {
+            let name = if v.target_name.is_empty() { pretty_id(&v.target_id) } else { v.target_name.clone() };
+            if rescue_help(&ctx, &name) {
+                v.rescue_help = false;
+            }
+        }
+        // Terminal de texto de lá (como SSH): no lugar da imagem.
+        if v.connected
+            && let Some(t) = v.term.as_mut()
+            && t.shown
+        {
+            let mut area = ui.available_rect_before_wrap();
+            area.max.x -= reserve;
+            let area = area.shrink2(Vec2::new(16.0, 8.0));
+            let head = egui::Rect::from_min_size(area.min, Vec2::new(area.width(), 34.0));
+            let (mut back, mut close, mut again) = (false, false, false);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(head).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.style_mut().visuals = egui::Visuals::dark();
+                let m = mac::DARK;
+                icons::icon(ui, Icon::Terminal, 15.0, GLASS_TEXT);
+                let what = if v.blind { t!("Sem imagem da tela de lá: terminal de texto (como SSH). A imagem volta sozinha quando der.") } else { t!("Terminal de texto do outro computador (como SSH)") };
+                ui.label(RichText::new(what).size(12.5).color(GLASS_TEXT));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if mac::button(ui, &m, t!("Fechar o terminal"), Kind::Secondary, None, true).clicked() {
+                        close = true;
+                    }
+                    if mac::button(ui, &m, t!("Ver a imagem"), Kind::Secondary, None, true).clicked() {
+                        back = true;
+                    }
+                    if t.ended.is_some() && mac::button(ui, &m, t!("Abrir de novo"), Kind::Primary, None, v.permissions.control).clicked() {
+                        again = true;
+                    }
+                });
+            });
+            let body = egui::Rect::from_min_max(egui::pos2(area.min.x, head.max.y + 6.0), area.max);
+            crate::term::show(ui, body, t, &v.handle.cmd);
+            if let Some(why) = &t.ended {
+                ui.painter().text(egui::pos2(body.center().x, body.max.y - 18.0), egui::Align2::CENTER_CENTER, why, egui::FontId::proportional(12.0), Color32::from_rgb(255, 160, 150));
+            }
+            if again {
+                t.reopen();
+            }
+            if back {
+                t.shown = false;
+                t.auto = false;
+            }
+            if close {
+                let _ = v.handle.cmd.send(Cmd::ShellClose);
+                v.term = None;
+            }
+            return;
+        }
         // Tela remota.
         if !v.connected {
             // Cartão de vidro no meio: quem, situação, código e Cancelar.
@@ -3069,6 +3161,9 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
         .frame(glass_frame(24, Margin::same(10)))
         .width(300.0)
         .show(|ui| {
+            // Em janela baixa o menu não cabe inteiro: rola.
+            let max_h = (ui.ctx().content_rect().height() - 150.0).max(240.0);
+            egui::ScrollArea::vertical().max_height(max_h).min_scrolled_height(max_h).show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(8.0);
             let half = (ui.available_width() - 8.0) / 2.0;
             ui.horizontal(|ui| {
@@ -3166,6 +3261,14 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
                     let _ = v.handle.cmd.send(Cmd::OpenTerminal);
                     egui::Popup::close_id(ui.ctx(), id);
                 }
+                // Terminal de texto aqui, como SSH: funciona sem a imagem.
+                if v.shell {
+                    let r = glass_row(ui, Icon::Terminal, t!("Terminal de texto (como SSH)"), ctrl, GLASS_TEXT).on_disabled_hover_text(denied);
+                    if r.on_hover_text(t!("Um terminal do outro computador nesta janela. Funciona mesmo com a tela de lá travada ou sem imagem")).clicked() {
+                        v.term.get_or_insert_with(|| crate::term::Term::new(false)).shown = true;
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                }
                 if glass_row(ui, Icon::Refresh, t!("Reiniciar o computador…"), ctrl, Color32::from_rgb(255, 128, 124))
                     .on_hover_text(t!("Reinicia o outro computador e reconecta quando ele voltar"))
                     .on_disabled_hover_text(denied)
@@ -3173,6 +3276,45 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
                 {
                     v.confirm_restart = true;
                     egui::Popup::close_id(ui.ctx(), id);
+                }
+                // Socorro para a tela de lá travada (Linux).
+                if v.rescue {
+                    use elo_proto::msg::Rescue;
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(t!("Se a tela de lá travar")).size(11.0).color(GLASS_MUTED));
+                    if glass_row(ui, Icon::Terminal, t!("Console de texto (Ctrl+Alt+F3)"), ctrl, GLASS_TEXT)
+                        .on_hover_text(t!("Vai para um console de texto lá. Sem imagem dele, esta janela vira um terminal (como SSH)"))
+                        .on_disabled_hover_text(denied)
+                        .clicked()
+                    {
+                        let _ = v.handle.cmd.send(Cmd::Rescue(Rescue::TextConsole));
+                        if v.shell {
+                            let t = v.term.get_or_insert_with(|| crate::term::Term::new(true));
+                            t.shown = true;
+                            t.auto = true;
+                        }
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                    if glass_row(ui, Icon::Monitor, t!("Voltar para a tela gráfica"), ctrl, GLASS_TEXT).on_hover_text(t!("Sai do console de texto e volta para a sessão gráfica de lá")).on_disabled_hover_text(denied).clicked() {
+                        let _ = v.handle.cmd.send(Cmd::Rescue(Rescue::GraphicConsole));
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                    if glass_row(ui, Icon::Refresh, t!("Reiniciar só a sessão…"), ctrl, GLASS_TEXT).on_hover_text(t!("Fecha os programas e entra de novo sozinho (precisa do login automático lá)")).on_disabled_hover_text(denied).clicked() {
+                        v.confirm_rescue = Some(Rescue::RestartSession);
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                    if glass_row(ui, Icon::Power, t!("Reinício de emergência (S, U, B)…"), ctrl, Color32::from_rgb(255, 128, 124))
+                        .on_hover_text(t!("Alt+SysRq S, U, B: para quando o computador não reinicia do jeito normal"))
+                        .on_disabled_hover_text(denied)
+                        .clicked()
+                    {
+                        v.confirm_rescue = Some(Rescue::EmergencyReboot);
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
+                    if glass_row(ui, Icon::Info, t!("O que fazer se a tela travar"), true, GLASS_TEXT2).clicked() {
+                        v.rescue_help = true;
+                        egui::Popup::close_id(ui.ctx(), id);
+                    }
                 }
             });
             if v.monitors.len() > 1 {
@@ -3193,6 +3335,7 @@ fn more_menu(button: &egui::Response, id: egui::Id, v: &mut ViewSession, right: 
                     act = Some(SessAct::BarSide);
                     egui::Popup::close_id(ui.ctx(), id);
                 }
+            });
             });
         });
     act
@@ -3312,6 +3455,51 @@ fn paint_cursor(painter: &egui::Painter, tip: egui::Pos2) {
     }
     painter.add(egui::Shape::mesh(mesh));
     painter.add(egui::Shape::closed_line(pts, Stroke::new(1.0, Color32::BLACK)));
+}
+
+/// "O que fazer se a tela travar": a ordem do que tentar daqui e, para quem
+/// estiver na frente do computador, as teclas. `true` = fechou.
+fn rescue_help(ctx: &egui::Context, name: &str) -> bool {
+    let mut close = false;
+    let m = mac::DARK;
+    egui::Modal::new(egui::Id::unique("socorro-ajuda")).frame(mac::alert_frame(&m)).show(ctx, |ui| {
+        ui.style_mut().visuals = egui::Visuals::dark();
+        ui.set_width(460.0);
+        ui.horizontal(|ui| {
+            icons::icon(ui, Icon::Info, 18.0, m.accent);
+            ui.label(RichText::new(t!("Se a tela de {} travar", name)).font(theme::semibold(15.0)).color(m.label));
+        });
+        ui.add_space(8.0);
+        let step = |ui: &mut egui::Ui, n: &str, title: &str, text: &str| {
+            ui.horizontal_top(|ui| {
+                ui.label(RichText::new(n).font(theme::semibold(12.5)).color(m.accent));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).font(theme::semibold(12.5)).color(m.label));
+                    ui.add(egui::Label::new(RichText::new(text).size(11.5).color(m.label2)).wrap());
+                });
+            });
+            ui.add_space(6.0);
+        };
+        ui.label(RichText::new(t!("Daqui, nesta ordem:")).size(12.0).color(m.label2));
+        ui.add_space(4.0);
+        step(ui, "1", t!("Espere um pouco"), t!("Quando a tela de lá volta, o Elo reabre a imagem sozinho."));
+        step(ui, "2", t!("Terminal de texto (como SSH)"), t!("Funciona mesmo sem a imagem: dá para ver o que está pesando (top) e reiniciar com sudo reboot. Sem imagem, esta janela vira o terminal sozinha."));
+        step(ui, "3", t!("Reiniciar só a sessão"), t!("Fecha os programas e entra de novo sozinho em uns 10 segundos. Precisa do login automático lá."));
+        step(ui, "4", t!("Reiniciar o computador"), t!("O reinício normal, o mesmo que sudo reboot."));
+        step(ui, "5", t!("Reinício de emergência (S, U, B)"), t!("Quando nada acima responde: grava os dados no disco, protege o disco e reinicia pelo kernel."));
+        ui.add_space(4.0);
+        ui.label(RichText::new(t!("Para quem estiver na frente do computador:")).size(12.0).color(m.label2));
+        ui.add_space(4.0);
+        step(ui, "•", t!("Ctrl+Alt+F3"), t!("Abre um terminal em modo texto. Entre com o usuário e rode sudo reboot. É um reinício limpo. Para voltar à tela gráfica sem reiniciar: Ctrl+Alt+F2 (ou F1)."));
+        step(ui, "•", t!("Alt + Print Screen e S, U, B"), t!("Se o teclado não responder a isso: segure Alt + Print Screen e aperte, com uma pausa entre cada letra, S, depois U, depois B. Isso grava os dados no disco, protege o disco e reinicia."));
+        ui.add_space(8.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if mac::button(ui, &m, t!("Entendi"), Kind::Primary, Some(Vec2::new(110.0, 30.0)), true).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+        });
+    });
+    close
 }
 
 /// A janela é do Wayland? (O winit usa o Wayland quando há `WAYLAND_DISPLAY`,

@@ -15,6 +15,7 @@ mod mac;
 mod onboarding;
 mod settings;
 mod store;
+mod term;
 mod tray;
 mod ui;
 mod update;

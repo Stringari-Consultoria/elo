@@ -161,6 +161,36 @@ pub enum Msg {
     /// Anfitrião → visualizador: a lista de telas mudou (monitor ligado ou
     /// desligado no meio do acesso). Versões antigas ignoram.
     Monitors(Vec<Monitor>),
+    /// Visualizador → anfitrião: abrir um terminal de texto lá, como um
+    /// acesso SSH (recurso "shell"; exige permissão de controle). Serve
+    /// também quando a imagem da tela não vem (tela gráfica travada, console
+    /// de texto).
+    ShellOpen { cols: u16, rows: u16 },
+    /// O que foi digitado no terminal (bytes, com as sequências de teclas).
+    ShellInput(Vec<u8>),
+    ShellResize { cols: u16, rows: u16 },
+    ShellClose,
+    /// Anfitrião → visualizador: saída do terminal.
+    ShellOutput(Vec<u8>),
+    /// Anfitrião → visualizador: o terminal acabou (motivo).
+    ShellEnd(String),
+    /// Visualizador → anfitrião: socorro quando a tela de lá trava (recurso
+    /// "socorro"; exige permissão de controle).
+    Rescue(Rescue),
+}
+
+/// Socorro para a tela travada (Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Rescue {
+    /// Ctrl+Alt+F3: vai para um console de texto.
+    TextConsole,
+    /// Volta para a tela gráfica da sessão.
+    GraphicConsole,
+    /// Sai da sessão; o login automático entra de novo e o Elo volta junto.
+    RestartSession,
+    /// Alt+SysRq S, U, B: grava os dados no disco, protege o disco e
+    /// reinicia pelo kernel (quando o sistema não reinicia do jeito normal).
+    EmergencyReboot,
 }
 
 /// Aviso mandado junto com `Locked`, para quem acessa com uma versão que não

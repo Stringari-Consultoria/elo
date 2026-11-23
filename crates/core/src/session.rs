@@ -55,6 +55,12 @@ impl Chan {
         if platform::fine_scroll() {
             feats.push("rolagem-fina");
         }
+        if platform::shell_available() {
+            feats.push("shell");
+        }
+        if platform::rescue_available() {
+            feats.push("socorro");
+        }
         self.send_bytes(&elo_proto::msg::with_features(m, &feats).map_err(|e| e.to_string())?)
     }
 
@@ -623,6 +629,13 @@ pub enum Cmd {
     Volume(f32),
     /// Visualizador: desbloquear a tela de lá com a senha do usuário de lá.
     Unlock(String),
+    /// Visualizador: terminal de texto lá (como SSH).
+    ShellOpen { cols: u16, rows: u16 },
+    ShellInput(Vec<u8>),
+    ShellResize { cols: u16, rows: u16 },
+    ShellClose,
+    /// Visualizador: socorro para a tela de lá travada.
+    Rescue(elo_proto::msg::Rescue),
 }
 
 fn new_handle() -> (Handle, Receiver<Cmd>) {
@@ -780,6 +793,8 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
     // conferência da senha de lá em andamento (leva uns segundos).
     let mut told_locked = false;
     let mut unlocking: Option<Receiver<Result<(), String>>> = None;
+    // Terminal de texto aberto por quem acessa (como SSH).
+    let mut shell: Option<crate::shell::Shell> = None;
     // Som: manda só se quem acessa pediu e se aqui está permitido.
     let mut audio_allowed = opt.audio;
     let mut audio_wanted = false;
@@ -876,6 +891,55 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                         let _ = ev.send(HostEvent::File(t));
                     }
                 }
+                Msg::ShellOpen { cols, rows } => {
+                    if !perms.control {
+                        ch.send(&Msg::ShellEnd("sem permissão de controle para abrir o terminal".into()))?;
+                    } else if !platform::shell_available() {
+                        ch.send(&Msg::ShellEnd("o terminal de texto ainda não funciona neste sistema".into()))?;
+                    } else if shell.is_none() {
+                        match crate::shell::Shell::open(cols, rows) {
+                            Ok(s) => {
+                                shell = Some(s);
+                                eprintln!("[terminal] {from_name} abriu um terminal de texto");
+                                let _ = ev.send(HostEvent::Chat(format!("[{from_name} abriu um terminal de texto neste computador]")));
+                            }
+                            Err(e) => ch.send(&Msg::ShellEnd(e))?,
+                        }
+                    }
+                }
+                Msg::ShellInput(data) => {
+                    if perms.control
+                        && let Some(s) = shell.as_mut()
+                        && let Err(e) = s.write(&data)
+                    {
+                        shell = None;
+                        ch.send(&Msg::ShellEnd(e))?;
+                    }
+                }
+                Msg::ShellResize { cols, rows } => {
+                    if let Some(s) = shell.as_mut() {
+                        s.resize(cols, rows);
+                    }
+                }
+                Msg::ShellClose => shell = None,
+                Msg::Rescue(r) => {
+                    use elo_proto::msg::Rescue;
+                    if !perms.control {
+                        ch.send(&Msg::Notice("sem permissão de controle para isso".into()))?;
+                    } else if let Err(e) = platform::rescue_check(r) {
+                        ch.send(&Msg::Notice(e))?;
+                    } else if matches!(r, Rescue::RestartSession | Rescue::EmergencyReboot) {
+                        // O Elo daqui cai junto: quem acessa reconecta quando voltar.
+                        let what = if r == Rescue::RestartSession { "reiniciar a sessão" } else { "o reinício de emergência" };
+                        let _ = ev.send(HostEvent::Chat(format!("[{from_name} pediu {what} deste computador]")));
+                        let _ = ch.send(&Msg::Bye(elo_proto::msg::BYE_RESTART.into()));
+                        std::thread::sleep(Duration::from_millis(300));
+                        platform::rescue(r)?;
+                        return Err(format!("{what} a pedido de quem acessava"));
+                    } else if let Err(e) = platform::rescue(r) {
+                        ch.send(&Msg::Notice(e))?;
+                    }
+                }
                 Msg::Unlock(password) => {
                     if !perms.control {
                         ch.send(&Msg::Locked(Some("sem permissão de controle para desbloquear a tela".into())))?;
@@ -961,6 +1025,10 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
                             let _ = ev.send(HostEvent::File(t));
                         }
                     }
+                    // Sem controle, sem terminal.
+                    if !p.control && shell.take().is_some() {
+                        ch.send(&Msg::ShellEnd("o outro lado retirou a permissão de controle".into()))?;
+                    }
                     perms = p;
                     ch.send(&Msg::Permissions(p))?;
                 }
@@ -999,6 +1067,17 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
         files.pump(&mut ch, &mut progress)?;
         for t in progress {
             let _ = ev.send(HostEvent::File(t));
+        }
+        // Saída do terminal de texto.
+        if let Some(s) = shell.as_mut() {
+            let (data, end) = s.poll(256 * 1024);
+            for chunk in data.chunks(64 * 1024) {
+                ch.send(&Msg::ShellOutput(chunk.to_vec()))?;
+            }
+            if let Some(why) = end {
+                shell = None;
+                ch.send(&Msg::ShellEnd(why))?;
+            }
         }
         let unlocked = unlocking.as_ref().and_then(|rx| match rx.try_recv() {
             Ok(r) => Some(r),
@@ -1103,12 +1182,11 @@ fn host_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], from_id: &str, from
 }
 
 /// Aviso quando a tela some (UAC, Ctrl+Alt+Del, bloqueio) e quando volta.
-#[cfg(not(target_os = "linux"))]
-const BLIND: &str = "a tela do outro computador está protegida (pedido de administrador ou tela de bloqueio): o Elo não consegue vê-la nem controlá-la. Peça para a pessoa responder lá; a imagem volta sozinha";
+const BLIND_OTHER: &str = "a tela do outro computador está protegida (pedido de administrador ou tela de bloqueio): o Elo não consegue vê-la nem controlá-la. Peça para a pessoa responder lá; a imagem volta sozinha";
 /// No Linux não há nada para aceitar: é o sistema que parou de mandar a
 /// imagem (no Wayland, tela bloqueada ou monitor desligado), e o Elo reabre.
-#[cfg(target_os = "linux")]
-const BLIND: &str = "o outro computador parou de mandar a imagem da tela (tela bloqueada, monitor desligado ou a sessão gráfica reiniciando). O Elo está tentando de novo sozinho; a imagem volta assim que der";
+const BLIND_LINUX: &str = "o outro computador parou de mandar a imagem da tela (tela bloqueada, monitor desligado ou a sessão gráfica reiniciando). O Elo está tentando de novo sozinho; a imagem volta assim que der";
+const BLIND: &str = if cfg!(target_os = "linux") { BLIND_LINUX } else { BLIND_OTHER };
 const BACK: &str = "a tela do outro computador voltou";
 /// Sem tela por mais que isso, desiste (captura quebrada de vez).
 const BLIND_MAX: Duration = Duration::from_secs(600);
@@ -1249,6 +1327,12 @@ pub enum ViewerEvent {
     Unlocked,
     /// A lista de telas de lá mudou (monitor ligado ou desligado).
     Monitors(Vec<Monitor>),
+    /// Saída do terminal de texto de lá.
+    ShellOutput(Vec<u8>),
+    /// O terminal de texto de lá acabou (motivo).
+    ShellEnd(String),
+    /// A imagem da tela de lá parou de vir (`true`) ou voltou (`false`).
+    Blind(bool),
     Ended(String),
 }
 
@@ -1448,7 +1532,18 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 // Esse aviso é para versões que não sabem desbloquear.
                 Msg::Notice(t) if t == elo_proto::msg::LOCKED => {}
                 Msg::Notice(t) => {
+                    if t == BLIND_LINUX || t == BLIND_OTHER {
+                        let _ = ev.send(ViewerEvent::Blind(true));
+                    } else if t == BACK {
+                        let _ = ev.send(ViewerEvent::Blind(false));
+                    }
                     let _ = ev.send(ViewerEvent::Notice(t));
+                }
+                Msg::ShellOutput(data) => {
+                    let _ = ev.send(ViewerEvent::ShellOutput(data));
+                }
+                Msg::ShellEnd(why) => {
+                    let _ = ev.send(ViewerEvent::ShellEnd(why));
                 }
                 Msg::Locked(e) => {
                     let _ = ev.send(ViewerEvent::Locked(e));
@@ -1482,6 +1577,35 @@ fn viewer_run(cfg: &ServerCfg, session: u64, secret: [u8; 16], password: &str, w
                 Cmd::ListDir(path) => ch.send(&Msg::ListDir { path })?,
                 Cmd::Restart => ch.send(&Msg::Restart)?,
                 Cmd::Unlock(password) => ch.send(&Msg::Unlock(password))?,
+                Cmd::ShellOpen { cols, rows } => {
+                    if ch.has("shell") {
+                        ch.send(&Msg::ShellOpen { cols, rows })?;
+                    } else {
+                        let _ = ev.send(ViewerEvent::ShellEnd("o Elo do outro computador é de uma versão que ainda não tem o terminal de texto. Atualize-o".into()));
+                    }
+                }
+                Cmd::ShellInput(data) => {
+                    if ch.has("shell") {
+                        ch.send(&Msg::ShellInput(data))?;
+                    }
+                }
+                Cmd::ShellResize { cols, rows } => {
+                    if ch.has("shell") {
+                        ch.send(&Msg::ShellResize { cols, rows })?;
+                    }
+                }
+                Cmd::ShellClose => {
+                    if ch.has("shell") {
+                        ch.send(&Msg::ShellClose)?;
+                    }
+                }
+                Cmd::Rescue(r) => {
+                    if ch.has("socorro") {
+                        ch.send(&Msg::Rescue(r))?;
+                    } else {
+                        let _ = ev.send(ViewerEvent::Notice("o Elo do outro computador não tem esse socorro (só no Linux, versão 0.2.11 ou mais nova)".into()));
+                    }
+                }
                 Cmd::OpenTerminal => {
                     if ch.has("terminal") {
                         ch.send(&Msg::OpenTerminal)?;

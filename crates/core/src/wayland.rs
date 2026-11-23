@@ -661,10 +661,10 @@ impl Screen for WaylandScreen {
 /// Ninguém respondeu à janela do sistema que pede para compartilhar a tela.
 pub const NOBODY_ANSWERED: &str = "o outro computador (Linux com Wayland) pediu na tela dele para liberar o compartilhamento e ninguém respondeu. Alguém precisa clicar em Compartilhar lá; para acessar sem ninguém por perto, entre lá na sessão Xorg";
 
-/// Antes e depois de uma letra feita com tecla morta. Sem a pausa, a janela
-/// que recebe troca a ordem: a letra acentuada passa na frente das teclas
-/// mandadas logo antes ("você" saía "vêoc").
-const PAUSE: Duration = Duration::from_millis(15);
+/// Intervalo entre as letras de um texto com tecla morta, e antes e depois
+/// da letra acentuada (ver `Input::Text`).
+const PAUSE: Duration = Duration::from_millis(12);
+const PAUSE_DEAD: Duration = Duration::from_millis(40);
 
 /// Acima disto na fila, texto novo é ignorado.
 const MAX_QUEUED: usize = 8192;
@@ -739,19 +739,25 @@ impl Control for WaylandControl {
                 if self.portal.as_ref().is_some_and(|p| p.pending.load(Ordering::Relaxed) > MAX_QUEUED) {
                     return;
                 }
-                for c in t.chars() {
-                    // Letra que não existe direto no teclado daqui: tecla
-                    // morta + letra (senão o sistema descarta).
-                    let keys = self.keymap().and_then(|k| k.plan(c)).unwrap_or_else(|| vec![crate::platform::char_keysym(c)]);
+                // Letra que não existe direto no teclado daqui: tecla morta +
+                // letra (senão o sistema descarta).
+                let plan: Vec<Vec<u32>> = t.chars().map(|c| self.keymap().and_then(|k| k.plan(c)).unwrap_or_else(|| vec![crate::platform::char_keysym(c)])).collect();
+                // Com tecla morta no meio, tudo vai com intervalo: a janela que
+                // recebe compõe a letra acentuada à parte e, sem folga, troca a
+                // ordem com as teclas vizinhas ("você" saía "vêoc").
+                let paced = plan.iter().any(|k| k.len() > 1);
+                for keys in plan {
                     let dead = keys.len() > 1;
                     if dead {
-                        self.send(Cmd::Pause(PAUSE));
+                        self.send(Cmd::Pause(PAUSE_DEAD));
                     }
                     for k in keys {
                         self.key(k, true);
                         self.key(k, false);
                     }
                     if dead {
+                        self.send(Cmd::Pause(PAUSE_DEAD));
+                    } else if paced {
                         self.send(Cmd::Pause(PAUSE));
                     }
                 }

@@ -169,6 +169,18 @@ pub struct ViewSession {
     pub split: Vec<SplitWin>,
     /// A tela de lá está bloqueada: pedindo a senha do usuário de lá.
     pub locked: Option<LockPrompt>,
+    /// Terminal de texto de lá (como SSH).
+    pub term: Option<crate::term::Term>,
+    /// O anfitrião tem o terminal de texto (recurso "shell") e o socorro da
+    /// tela travada (recurso "socorro", Linux).
+    pub shell: bool,
+    pub rescue: bool,
+    /// A imagem da tela de lá parou de vir.
+    pub blind: bool,
+    /// Confirmação de um socorro que derruba a sessão.
+    pub confirm_rescue: Option<elo_proto::msg::Rescue>,
+    /// Orientação "Se a tela travar" aberta.
+    pub rescue_help: bool,
 }
 
 /// Pedido da senha para desbloquear a tela do outro computador.
@@ -1016,6 +1028,12 @@ impl EloApp {
                         multi: false,
                         split: Vec::new(),
                         locked: None,
+                        term: None,
+                        shell: false,
+                        rescue: false,
+                        blind: false,
+                        confirm_rescue: None,
+                        rescue_help: false,
                     });
                     self.active_tab = self.views.len();
                     self.password.clear();
@@ -1141,6 +1159,8 @@ impl EloApp {
                         v.files.drives = f.iter().any(|x| x == "unidades");
                         v.terminal = f.iter().any(|x| x == "terminal");
                         v.multi = f.iter().any(|x| x == "multitela");
+                        v.shell = f.iter().any(|x| x == "shell");
+                        v.rescue = f.iter().any(|x| x == "socorro");
                     }
                     ViewerEvent::Chat(t) => {
                         v.chat.push(ChatLine { mine: false, text: t });
@@ -1167,6 +1187,38 @@ impl EloApp {
                         p.error = e.map(|e| crate::i18n::tr_dyn(&e));
                     }
                     ViewerEvent::Unlocked => v.locked = None,
+                    ViewerEvent::ShellOutput(data) => {
+                        if let Some(t) = v.term.as_mut() {
+                            t.feed(&data);
+                        }
+                    }
+                    ViewerEvent::ShellEnd(why) => {
+                        if let Some(t) = v.term.as_mut() {
+                            t.end(crate::i18n::tr_dyn(&why));
+                        }
+                    }
+                    ViewerEvent::Blind(on) => {
+                        v.blind = on;
+                        if on {
+                            // Sem imagem de um Linux: o terminal de texto, como um SSH.
+                            if v.shell && v.permissions.control && v.locked.is_none() && v.os == "Linux" {
+                                match v.term.as_mut() {
+                                    Some(t) if !t.shown => {
+                                        t.shown = true;
+                                        t.auto = true;
+                                    }
+                                    Some(_) => {}
+                                    None => v.term = Some(crate::term::Term::new(true)),
+                                }
+                            }
+                        } else if let Some(t) = v.term.as_mut()
+                            && t.auto
+                        {
+                            // A imagem voltou: volta para ela (o terminal continua aberto).
+                            t.shown = false;
+                            t.auto = false;
+                        }
+                    }
                     ViewerEvent::Monitors(list) => {
                         let n = list.len() as u8;
                         v.monitors = list;

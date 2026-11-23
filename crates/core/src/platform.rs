@@ -89,6 +89,43 @@ pub fn keep_awake() -> KeepAwake {
     }
 }
 
+/// Terminal de texto para quem acessa (recurso "shell"). No Windows ainda não.
+pub fn shell_available() -> bool {
+    !cfg!(target_os = "windows")
+}
+
+/// Socorro para a tela travada (recurso "socorro"): só no Linux.
+pub fn rescue_available() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// Dá para fazer este socorro aqui? Os que derrubam o Elo (reiniciar a
+/// sessão, reinício de emergência) conferem antes, para o aviso chegar a
+/// quem pediu.
+pub fn rescue_check(r: elo_proto::msg::Rescue) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::rescue::check(r)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = r;
+        Err("o socorro da tela travada só existe no Linux".into())
+    }
+}
+
+pub fn rescue(r: elo_proto::msg::Rescue) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::rescue::run(r)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = r;
+        Err("o socorro da tela travada só existe no Linux".into())
+    }
+}
+
 /// Desbloqueia a tela com a senha do usuário daqui (ver `locked_error`).
 pub fn unlock_screen(password: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
